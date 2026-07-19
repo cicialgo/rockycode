@@ -55,3 +55,19 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
+
+  # rockycode is pure-Python, so PyPI publishing builds on Ubuntu and does NOT
+  # depend on the macOS `release` job (which only exists for the cbor2 wheel on
+  # the GitHub-Release side). This keeps publishing off the slow macOS queue.
+  pypi:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write            # OIDC — this is what Trusted Publishing uses
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+      - name: Build rockycode (sdist + wheel — only our project lands in dist/)
+        run: uv build
+      - name: Publish to PyPI (Trusted Publishing, no token)
+        uses: pypa/gh-action-pypi-publish@release/v1
