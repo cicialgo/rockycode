@@ -1,0 +1,83 @@
+[project]
+name = "rockycode"
+version = "0.1.0"
+description = "A coding agent harness, benchmarked on SWE-bench Verified. amaze!"
+requires-python = ">=3.11"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "rockycode contributors" }]
+# Exact pins (==) for an explicit, audit-friendly spec. The lock already pins
+# these + transitives with hashes; this makes pyproject itself unambiguous.
+# Bump a version here, then `uv lock`, to update. (requires-python stays a
+# range — it's the supported interpreter span, not a dependency.)
+#
+# Core runtime — everything needed to RUN the agent (interactive CLI/TUI).
+# Command execution is local (asyncio subprocess), so no docker/datasets here.
+# Heavy optional capabilities live in the extras below and are installed on
+# demand. Keep this list lean: it is what every install (and the desktop app
+# sidecar) ships by default.
+dependencies = [
+    "openai==2.36.0",
+    "rich==15.0.0",
+    "typer==0.25.1",
+    "python-dotenv==1.2.2",
+    "textual==8.2.7",
+    "mcp==1.27.2",
+    "sqlite-vec==0.1.9",
+    "httpx==0.28.1",
+    "beautifulsoup4==4.14.3",
+    "aiohttp==3.13.5",
+    # Tiny (~230 KB, pure-Python, no config, no transitive deps) always-available
+    # fallback for the check_code tool when no ruff is installed — catches real
+    # bugs (undefined names, unused imports), not style noise.
+    "pyflakes==3.2.0",
+]
+
+[project.optional-dependencies]
+# Evaluation / SWE-bench harness. This is the source of the old ~260 MB bloat:
+# `datasets` pulls pyarrow (125M) + pandas + numpy; `swebench` pulls docker etc.
+# Only needed to score against SWE-bench, never to run the agent.
+#   uv pip install 'rockycode[bench]'
+bench = [
+    "swebench==4.1.0",
+    "datasets==4.8.5",
+    "docker==7.1.0",
+]
+
+# Data-analysis capability pack — provisioned on demand for the desktop app so
+# the agent's local code execution can crunch CSV/Excel/dataframes. pandas pulls
+# numpy; neither requires pyarrow.
+#   uv pip install 'rockycode[data-analysis]'
+data-analysis = [
+    "pandas>=2.2",
+    "numpy>=1.26",
+]
+
+# PDF reading/extraction pack. Commercial-friendly licenses only:
+# pypdf (BSD) for text, pdfplumber (MIT) for tables/layout. Deliberately NOT
+# PyMuPDF/fitz, which is AGPL/commercial.
+#   uv pip install 'rockycode[pdf]'
+pdf = [
+    "pypdf>=4.0",
+    "pdfplumber>=0.11",
+]
+
+# Store the API key in the OS keychain (macOS Keychain / Windows Credential
+# Manager / Linux Secret Service) instead of the ~/.rockycode/.env file —
+# encrypted at rest. Preferred automatically when installed.
+#   uv pip install 'rockycode[keyring]'
+keyring = ["keyring>=24"]
+
+[project.scripts]
+rockycode = "rockycode.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["rockycode"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"

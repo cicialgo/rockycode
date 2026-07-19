@@ -1,0 +1,13 @@
+{
+  // Build task used by the F5 launch config (esbuild bundle -> dist/extension.js).
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "type": "npm",
+      "script": "compile",
+      "label": "npm: compile",
+      "problemMatcher": [],
+      "group": { "kind": "build", "isDefault": true }
+    }
+  ]
+}

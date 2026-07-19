@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+
+# Virtual envs
+.venv/
+venv/
+.python-version
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+
+# Caches
+.cache/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Benchmark run artifacts (predictions, eval logs, scorer summaries)
+results/predictions/
+results/runs/
+results/*.jsonl
+logs/
+/raw-*.json
+/rockycode-*.json
+
+# rockycode runtime (trajectories, artifacts, local config)
+.rockycode/
+
+# OS
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
+*.swp
+# ...but the VS Code extension commits its own launch/build config so
+# contributors can F5 the Extension Development Host. Re-include it.
+!rockycode-vscode/.vscode/
+!rockycode-vscode/.vscode/*

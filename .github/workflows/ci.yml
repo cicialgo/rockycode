@@ -1,0 +1,27 @@
+name: ci
+
+# Smoke tier only: pure tests (fake DeepSeek streams) — no API key, no docker,
+# no network. Runs on every push/PR, including fork PRs, because there are no
+# secrets to leak. The real (token-spending) canary stays local; see
+# tests/run_real.py.
+on:
+  push:
+    branches: [main, permit]
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0  # no floating v8 tag; pin the exact release
+        with:
+          enable-cache: true
+
+      - name: Sync deps from the lockfile
+        run: uv sync --frozen
+
+      - name: Smoke tests (the CORE gate)
+        run: uv run python tests/run_all.py

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 190 34" fill="none">
+  <!-- note (brand purple) — nudged right so the augmentation dot sits closer to
+       'r'; the small dot reads airier than the tall caret, so the note→r gap is
+       set a touch tighter than code→| to look optically equal -->
+  <g transform="translate(5.5,5)" fill="#7d5cc6"><rect x="4.80" y="3.60" width="2.40" height="2.40"/><rect x="7.20" y="3.60" width="2.40" height="2.40"/><rect x="9.60" y="3.60" width="2.40" height="2.40"/><rect x="12.00" y="3.60" width="2.40" height="2.40"/><rect x="14.40" y="3.60" width="2.40" height="2.40"/><rect x="16.80" y="3.60" width="2.40" height="2.40"/><rect x="4.80" y="6.00" width="2.40" height="2.40"/><rect x="16.80" y="6.00" width="2.40" height="2.40"/><rect x="4.80" y="8.40" width="2.40" height="2.40"/><rect x="16.80" y="8.40" width="2.40" height="2.40"/><rect x="4.80" y="10.80" width="2.40" height="2.40"/><rect x="16.80" y="10.80" width="2.40" height="2.40"/><rect x="4.80" y="13.20" width="2.40" height="2.40"/><rect x="12.00" y="13.20" width="2.40" height="2.40"/><rect x="14.40" y="13.20" width="2.40" height="2.40"/><rect x="16.80" y="13.20" width="2.40" height="2.40"/><rect x="21.60" y="13.20" width="2.40" height="2.40"/><rect x="0.00" y="15.60" width="2.40" height="2.40"/><rect x="2.40" y="15.60" width="2.40" height="2.40"/><rect x="4.80" y="15.60" width="2.40" height="2.40"/><rect x="12.00" y="15.60" width="2.40" height="2.40"/><rect x="14.40" y="15.60" width="2.40" height="2.40"/><rect x="16.80" y="15.60" width="2.40" height="2.40"/><rect x="0.00" y="18.00" width="2.40" height="2.40"/><rect x="2.40" y="18.00" width="2.40" height="2.40"/><rect x="4.80" y="18.00" width="2.40" height="2.40"/></g>
+  <!-- wordmark: rocky (#4d3a7a) + code (#7d5cc6), system mono, no external font -->
+  <text x="36" y="26" font-family="'SF Mono','JetBrains Mono','DejaVu Sans Mono',ui-monospace,Menlo,Consolas,monospace"
+        font-size="24" font-weight="600" letter-spacing="-0.6" xml:space="preserve"><tspan fill="#4d3a7a">rocky</tspan><tspan fill="#7d5cc6">code</tspan></text>
+  <!-- terminal caret -->
+  <rect x="171" y="9" width="7" height="19" rx="1" fill="#7d5cc6"/>
+</svg>

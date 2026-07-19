@@ -1,0 +1,16 @@
+{
+  // Open the `rockycode-vscode` folder in VS Code, then press F5 (or pick
+  // "Run Rocky Extension" in the Run panel) to launch an Extension Development
+  // Host with the extension loaded. It builds first via the compile task.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run Rocky Extension",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": ["--extensionDevelopmentPath=${workspaceFolder}"],
+      "outFiles": ["${workspaceFolder}/dist/**/*.js"],
+      "preLaunchTask": "npm: compile"
+    }
+  ]
+}

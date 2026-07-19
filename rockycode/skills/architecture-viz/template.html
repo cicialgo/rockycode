@@ -1,0 +1,87 @@
+<!-- architecture-viz reference scaffold — COPY AND ADAPT.
+     This is create_artifact BODY content: NO <html>/<head>/<style> (rocky strips
+     <style> and applies its light theme). Style with INLINE style= only; the
+     <script> at the end survives and drives the cross-highlight. Self-contained,
+     no CDN. Example block = scaled dot-product attention; swap the diagram,
+     ribbon, and torch for the architecture you're visualizing. Keep the shared
+     data-step ids matched across all three panels — that IS the link. -->
+
+<p style="color:#5a5e7a;max-width:70ch">The diagram you know from the papers, the
+shape at every step, and the PyTorch that makes it — the same block three ways.
+<b style="color:#7c5cba">Hover any box, shape, or line of code</b> and the matching
+two light up.</p>
+
+<!-- shape ribbon: how the tensor shape changes, the through-line -->
+<div class="card" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:center">
+  <div data-step="in" style="display:flex;flex-direction:column;align-items:center;padding:7px 12px;border:1px solid #ddd4ef;border-radius:9px;background:#fff"><span style="font-family:ui-monospace,Menlo,monospace;font-weight:700;color:#6a4ca3">(n, d)</span><span style="font-size:.72rem;color:#5a5e7a">tokens in</span></div>
+  <span style="color:#5a5e7a">→</span>
+  <div data-step="qkv" style="display:flex;flex-direction:column;align-items:center;padding:7px 12px;border:1px solid #ddd4ef;border-radius:9px;background:#fff"><span style="font-family:ui-monospace,Menlo,monospace;font-weight:700;color:#6a4ca3">(n, dₖ)×3</span><span style="font-size:.72rem;color:#5a5e7a">Q K V</span></div>
+  <span style="color:#5a5e7a">→</span>
+  <div data-step="scores" style="display:flex;flex-direction:column;align-items:center;padding:7px 12px;border:1px solid #ddd4ef;border-radius:9px;background:#fff"><span style="font-family:ui-monospace,Menlo,monospace;font-weight:700;color:#6a4ca3">(n, n)</span><span style="font-size:.72rem;color:#5a5e7a">scores</span></div>
+  <span style="color:#5a5e7a">→</span>
+  <div data-step="softmax" style="display:flex;flex-direction:column;align-items:center;padding:7px 12px;border:1px solid #ddd4ef;border-radius:9px;background:#fff"><span style="font-family:ui-monospace,Menlo,monospace;font-weight:700;color:#6a4ca3">(n, n)</span><span style="font-size:.72rem;color:#5a5e7a">weights A</span></div>
+  <span style="color:#5a5e7a">→</span>
+  <div data-step="out" style="display:flex;flex-direction:column;align-items:center;padding:7px 12px;border:1px solid #ddd4ef;border-radius:9px;background:#fff"><span style="font-family:ui-monospace,Menlo,monospace;font-weight:700;color:#6a4ca3">(n, dₖ)</span><span style="font-size:.72rem;color:#5a5e7a">output</span></div>
+</div>
+
+<div style="display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start">
+  <!-- LEFT: the paper diagram (inline-styled SVG) -->
+  <div class="card" style="flex:1 1 240px">
+    <h2>the block (as the paper draws it)</h2>
+    <svg viewBox="0 0 240 430" width="240" style="max-width:100%;height:auto" role="img" aria-label="scaled dot-product attention">
+      <defs><marker id="af" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#7c5cba"/></marker></defs>
+      <path stroke="#7c5cba" stroke-width="1.6" fill="none" marker-end="url(#af)" d="M120,372 L120,346"/>
+      <path stroke="#7c5cba" stroke-width="1.6" fill="none" marker-end="url(#af)" d="M120,320 L120,286"/>
+      <path stroke="#7c5cba" stroke-width="1.6" fill="none" marker-end="url(#af)" d="M120,260 L120,226"/>
+      <path stroke="#7c5cba" stroke-width="1.6" fill="none" marker-end="url(#af)" d="M120,200 L120,150"/>
+      <path stroke="#7c5cba" stroke-width="1.6" fill="none" marker-end="url(#af)" d="M120,124 L120,78"/>
+      <text x="88" y="418" fill="#6a4ca3" font-family="ui-monospace,Menlo,monospace" font-size="13" font-weight="700" text-anchor="middle">Q</text>
+      <text x="120" y="418" fill="#6a4ca3" font-family="ui-monospace,Menlo,monospace" font-size="13" font-weight="700" text-anchor="middle">K</text>
+      <text x="208" y="418" fill="#6a4ca3" font-family="ui-monospace,Menlo,monospace" font-size="13" font-weight="700" text-anchor="middle">V</text>
+      <path stroke="#7c5cba" stroke-width="1.6" fill="none" marker-end="url(#af)" d="M88,408 L88,398 Q88,388 102,388 L110,388"/>
+      <path stroke="#7c5cba" stroke-width="1.6" fill="none" marker-end="url(#af)" d="M120,408 L120,398"/>
+      <path stroke="#8a6fc0" stroke-width="1.6" stroke-dasharray="4 3" fill="none" marker-end="url(#af)" d="M208,408 L208,105 Q208,93 182,93 L158,93"/>
+      <g data-step="scores"><rect x="70" y="372" width="100" height="26" rx="6" style="fill:#efeafa;stroke:#9d7cd8;stroke-width:1.5"/><text x="120" y="389" fill="#2a2a38" font-size="12.5" font-weight="600" text-anchor="middle" style="pointer-events:none">MatMul QKᵀ</text></g>
+      <g data-step="scores"><rect x="70" y="320" width="100" height="26" rx="6" style="fill:#efeafa;stroke:#9d7cd8;stroke-width:1.5"/><text x="120" y="337" fill="#2a2a38" font-size="12.5" font-weight="600" text-anchor="middle" style="pointer-events:none">Scale ÷√dₖ</text></g>
+      <g data-step="mask"><rect x="70" y="260" width="100" height="26" rx="6" style="fill:#efeafa;stroke:#9d7cd8;stroke-width:1.5;stroke-dasharray:5 4"/><text x="120" y="277" fill="#2a2a38" font-size="12.5" font-weight="600" text-anchor="middle" style="pointer-events:none">Mask (opt.)</text></g>
+      <g data-step="softmax"><rect x="70" y="200" width="100" height="26" rx="6" style="fill:#efeafa;stroke:#9d7cd8;stroke-width:1.5"/><text x="120" y="217" fill="#2a2a38" font-size="12.5" font-weight="600" text-anchor="middle" style="pointer-events:none">SoftMax</text></g>
+      <g data-step="out"><rect x="70" y="124" width="100" height="26" rx="6" style="fill:#efeafa;stroke:#9d7cd8;stroke-width:1.5"/><text x="120" y="141" fill="#2a2a38" font-size="12.5" font-weight="600" text-anchor="middle" style="pointer-events:none">MatMul ·V</text></g>
+      <text x="120" y="64" fill="#6a4ca3" font-family="ui-monospace,Menlo,monospace" font-size="13" font-weight="700" text-anchor="middle">Output</text>
+    </svg>
+  </div>
+
+  <!-- RIGHT: the same block, in the language she writes -->
+  <div class="card" style="flex:1 1 300px">
+    <h2>the same block, in PyTorch</h2>
+    <pre style="white-space:pre;overflow-x:auto"><span data-step="in" style="display:block;padding:1px 8px;border-radius:6px;border-left:3px solid transparent"># x: your tokens                (n, d)
+x</span><span data-step="qkv" style="display:block;padding:1px 8px;border-radius:6px;border-left:3px solid transparent">Q, K, V = x@Wq, x@Wk, x@Wv     # (n, dₖ) each</span><span data-step="scores" style="display:block;padding:1px 8px;border-radius:6px;border-left:3px solid transparent">scores = Q @ K.transpose(-2,-1) / dₖ**0.5   # (n, n)</span><span data-step="mask" style="display:block;padding:1px 8px;border-radius:6px;border-left:3px solid transparent">scores = scores.masked_fill(mask, -inf)     # (n, n)</span><span data-step="softmax" style="display:block;padding:1px 8px;border-radius:6px;border-left:3px solid transparent">A = scores.softmax(dim=-1)     # (n, n) rows→1</span><span data-step="out" style="display:block;padding:1px 8px;border-radius:6px;border-left:3px solid transparent">out = A @ V                    # (n, dₖ)</span></pre>
+  </div>
+</div>
+
+<p style="color:#5a5e7a;font-size:.9rem">
+<span class="tag tag-purple">◆ derived</span> shapes &amp; dataflow from the standard
+attention definition &nbsp;·&nbsp; <span class="tag tag-amber">◇ illustrative</span> n·dₖ are
+example sizes. Want a shape proven for every n? <code>/research prove</code>.</p>
+
+<script>
+(function(){
+  var els = Array.prototype.slice.call(document.querySelectorAll("[data-step]"));
+  function paint(step, on){
+    els.forEach(function(el){
+      if(el.getAttribute("data-step")!==step) return;
+      var rect = el.tagName.toLowerCase()==="g" ? el.querySelector("rect") : null;
+      if(rect){ rect.style.fill = on ? "#ede6fb" : "#efeafa"; rect.style.stroke = on ? "#7c5cba" : "#9d7cd8"; rect.style.strokeWidth = on ? "2.4" : "1.5"; }
+      else { el.style.background = on ? "#ede6fb" : ""; el.style.borderLeftColor = on ? "#7c5cba" : (el.tagName.toLowerCase()==="span" && el.style.borderLeft ? "transparent" : ""); if(el.style.border && el.tagName.toLowerCase()!=="span") el.style.borderColor = on ? "#7c5cba" : "#ddd4ef"; }
+    });
+  }
+  els.forEach(function(el){
+    var step = el.getAttribute("data-step");
+    el.style.cursor = "pointer";
+    el.addEventListener("mouseenter", function(){ paint(step, true); });
+    el.addEventListener("mouseleave", function(){ paint(step, false); });
+    el.setAttribute("tabindex","0");
+    el.addEventListener("focus", function(){ paint(step, true); });
+    el.addEventListener("blur", function(){ paint(step, false); });
+  });
+})();
+</script>

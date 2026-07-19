@@ -1,0 +1,39 @@
+services:
+  rockycode:
+    build: .
+    image: rockycode:latest
+    container_name: rockycode
+    stdin_open: true
+    tty: true
+    restart: "no"
+    mem_limit: 2g
+    cpus: 2
+    pids_limit: 100
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
+      - ROCKYCODE_MODEL=${ROCKYCODE_MODEL:-}
+      - ROCKYCODE_REASONING_EFFORT=${ROCKYCODE_REASONING_EFFORT:-max}
+      - ROCKYCODE_OLLAMA_URL=${ROCKYCODE_OLLAMA_URL:-http://localhost:11434}
+      - ROCKYCODE_DREAM_MODEL=${ROCKYCODE_DREAM_MODEL:-}
+      - ROCKYCODE_SANDBOX_IMAGE=${ROCKYCODE_SANDBOX_IMAGE:-debian:bookworm-slim}
+      - ROCKYCODE_TOKEN_BUDGET=${ROCKYCODE_TOKEN_BUDGET:-0}
+      - ROCKYCODE_MAX_STEPS=${ROCKYCODE_MAX_STEPS:-50}
+      - ROCKYCODE_MAX_TOKENS=${ROCKYCODE_MAX_TOKENS:-16384}
+      - ROCKYCODE_IN_DOCKER=1
+      - ROCKYCODE_ARTIFACT_PORT=9877
+      - TEXTUAL_DISABLE_KITTY_KEY=1
+    ports:
+      # Loopback-bound on the HOST side: your browser reaches artifacts at
+      # localhost:9877, but the port is NOT published to the LAN. (The in-
+      # container server binds 0.0.0.0 because Docker forwards to the bridge.)
+      - "127.0.0.1:9877:9877"
+    volumes:
+      - ./results:/app/results
+      - /var/run/docker.sock:/var/run/docker.sock
+    entrypoint: ["rockycode"]
+    command: ["chat"]

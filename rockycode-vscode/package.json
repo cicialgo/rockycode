@@ -1,0 +1,209 @@
+{
+  "name": "rockycode",
+  "displayName": "rockycode",
+  "description": "AI coding agent — chat, inline tools, diff previews, and in-panel Enter/arrow tool approvals. Powered by the rockycode CLI (DeepSeek).",
+  "version": "0.1.0",
+  "publisher": "rockycode",
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cicialgo/rockycode.git"
+  },
+  "homepage": "https://github.com/cicialgo/rockycode",
+  "bugs": {
+    "url": "https://github.com/cicialgo/rockycode/issues"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Chat",
+    "Programming Languages"
+  ],
+  "keywords": [
+    "ai",
+    "coding",
+    "agent",
+    "chat",
+    "rockycode"
+  ],
+  "activationEvents": [
+    "onView:rockycode.chatView"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "rockycode.openChat",
+        "title": "Open Rocky Chat",
+        "category": "Rocky Code",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "rockycode.newSession",
+        "title": "New Rocky Session",
+        "category": "Rocky Code"
+      },
+      {
+        "command": "rockycode.cancelTurn",
+        "title": "Cancel Current Turn",
+        "category": "Rocky Code"
+      },
+      {
+        "command": "rockycode.addToChat",
+        "title": "Add Selection to Rocky Chat",
+        "category": "Rocky Code"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "rockycode.addToChat",
+          "group": "navigation"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "rockycode.openChat",
+          "group": "navigation"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "rockycode.openChat",
+        "key": "cmd+shift+l",
+        "mac": "cmd+shift+l",
+        "linux": "ctrl+shift+l",
+        "win": "ctrl+shift+l"
+      },
+      {
+        "command": "rockycode.cancelTurn",
+        "key": "escape",
+        "when": "rockycode.turnRunning"
+      },
+      {
+        "command": "rockycode.addToChat",
+        "key": "ctrl+k ctrl+l",
+        "mac": "cmd+k cmd+l",
+        "when": "editorTextFocus"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "rockycode-sidebar",
+          "title": "rockycode",
+          "icon": "media/rocky-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "rockycode-sidebar": [
+        {
+          "type": "webview",
+          "id": "rockycode.chatView",
+          "name": "Chat"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Rocky Code",
+      "properties": {
+        "rockycode.apiKey": {
+          "type": "string",
+          "default": "",
+          "markdownDeprecationMessage": "**Insecure — don't use this.** A value here is stored in plaintext in settings.json and can sync to the cloud. Paste your key in the rockycode panel instead — it's kept in encrypted VS Code Secret Storage. Any value here is auto-migrated to Secret Storage on activation and this field cleared.",
+          "description": "Deprecated: API key (OpenAI-compatible). Use the panel — the key is stored encrypted."
+        },
+        "rockycode.baseUrl": {
+          "type": "string",
+          "default": "https://api.deepseek.com/v1",
+          "description": "API base URL (OpenAI-compatible endpoint)."
+        },
+        "rockycode.model": {
+          "type": "string",
+          "default": "deepseek-v4-flash",
+          "description": "Model ID to use for chat."
+        },
+        "rockycode.thinking": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable thinking/reasoning chain (DeepSeek style)."
+        },
+        "rockycode.reasoningEffort": {
+          "type": "string",
+          "enum": [
+            "high",
+            "max"
+          ],
+          "default": "max",
+          "description": "Reasoning depth when thinking is on."
+        },
+        "rockycode.maxTokens": {
+          "type": "number",
+          "default": 384000,
+          "description": "Max output tokens per API call, including thinking/CoT (DeepSeek V4 max is 384K, so it never truncates)."
+        },
+        "rockycode.contextWindow": {
+          "type": "number",
+          "default": 1048576,
+          "description": "Model context window in tokens (DeepSeek V4 = 1M). Soft reminder at 50% (the model degrades past the half); auto-compacts near full."
+        },
+        "rockycode.permissionMode": {
+          "type": "string",
+          "enum": [
+            "ask",
+            "yolo",
+            "careful"
+          ],
+          "enumDescriptions": [
+            "Prompt before running risky tools",
+            "Never prompt — auto-approve everything",
+            "Prompt for every tool call"
+          ],
+          "default": "ask",
+          "description": "Tool-approval strictness."
+        },
+        "rockycode.autoInjectContext": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically inject active editor context (file, selection, lint) into prompts."
+        },
+        "rockycode.enrichSelectionContext": {
+          "type": "boolean",
+          "default": true,
+          "description": "When pinning a selection to chat, include its enclosing symbol (function/class) from the language server."
+        },
+        "rockycode.pythonPath": {
+          "type": "string",
+          "default": "rockycode",
+          "description": "Path or command for the rockycode CLI."
+        },
+        "rockycode.systemPrompt": {
+          "type": "string",
+          "default": "",
+          "description": "Custom system prompt. Leave empty to use the built-in ROCKY_SYSTEM. Supports multi-line. Example: 'You are a senior TypeScript engineer. Be concise.'"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "node esbuild.config.mjs",
+    "watch": "node esbuild.config.mjs --watch",
+    "package": "node esbuild.config.mjs --production",
+    "check-types": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "highlight.js": "^11.10.0",
+    "marked": "^18.0.5"
+  }
+}

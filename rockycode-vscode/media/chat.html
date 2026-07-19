@@ -1,0 +1,983 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- Locked-down CSP: only nonce'd scripts run (no inline event handlers, no
+     injected script tags, no javascript: URLs), no remote/network access,
+     images from the extension or data: only. The nonce and cspSource tokens are
+     filled by the provider. This is what makes model output safe as markdown. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src {{cspSource}} data:; style-src {{cspSource}} 'unsafe-inline'; font-src {{cspSource}}; script-src 'nonce-{{nonce}}';">
+<style>
+:root {
+  /* Adopt the user's VS Code theme via --vscode-* vars; the hex after each
+     comma is only a fallback for when a var is undefined. The two purples are
+     rocky's brand and stay CONSTANT across light/dark so the identity holds. */
+  --bg: var(--vscode-sideBar-background, #1e1e2e);
+  --surface: var(--vscode-input-background, #282840);
+  --code-bg: var(--vscode-textCodeBlock-background, #1a1a2e);
+  --border: var(--vscode-panel-border, #3a3a5c);
+  --text: var(--vscode-foreground, #cdd6f4);
+  --muted: var(--vscode-descriptionForeground, #6c7086);
+  --accent: #c4a7e7;                 /* rocky brand purple — constant */
+  --accent2: #a78bfa;                /* rocky brand purple, deeper — constant */
+  --on-accent: #1e1e2e;              /* text on an accent-filled button (dark,
+                                        readable since accent is always light) */
+  --green: var(--vscode-testing-iconPassed, #a6e3a1);
+  --red: var(--vscode-errorForeground, #f38ba8);
+  --amber: var(--vscode-editorWarning-foreground, #f9e2af);
+  --radius: 8px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 13px;
+  background: var(--bg);
+  color: var(--text);
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+/* header */
+.header {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.header .logo { font-size: 16px; font-weight: 700; color: var(--accent); }
+.header .model { font-size: 11px; color: var(--muted); margin-left: auto; }
+.header .keyhint { font-size: 10px; color: var(--muted); font-family: 'SF Mono', 'Fira Code', monospace; }
+.header .keyhint:empty { display: none; }
+.header .status {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+.header .status.thinking { color: var(--amber); border-color: var(--amber); }
+.header .status.working { color: var(--accent); border-color: var(--accent); }
+.header .status.idle { color: var(--muted); }
+.header .hdr-btn {
+  background: none; border: 1px solid var(--border); color: var(--muted);
+  border-radius: 4px; cursor: pointer; font-size: 14px; padding: 2px 8px;
+  line-height: 1;
+}
+.header .hdr-btn:hover { color: var(--text); border-color: var(--accent); }
+
+/* setup card */
+.setup-card {
+  margin: 20px 12px;
+  padding: 16px;
+  border: 1px solid var(--amber);
+  border-radius: var(--radius);
+  background: rgba(249, 226, 175, 0.06);
+}
+.setup-title { font-size: 15px; font-weight: 700; color: var(--amber); margin-bottom: 4px; }
+.setup-desc { font-size: 12px; color: var(--muted); margin-bottom: 14px; }
+.setup-row { margin-bottom: 10px; }
+.setup-row label {
+  display: block; font-size: 11px; color: var(--muted); margin-bottom: 3px;
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+.setup-row input, .setup-row select {
+  width: 100%; padding: 6px 8px; border-radius: 4px;
+  border: 1px solid var(--border); background: var(--bg); color: var(--text);
+  font-size: 13px; outline: none;
+}
+.setup-row input:focus, .setup-row select:focus { border-color: var(--accent); }
+.setup-save {
+  width: 100%; padding: 8px; border: none; border-radius: 4px;
+  background: var(--accent); color: var(--on-accent); font-weight: 600;
+  font-size: 13px; cursor: pointer; margin-top: 4px;
+}
+.setup-save:hover { background: var(--accent2); }
+.setup-link {
+  text-align: center; font-size: 11px; color: var(--muted); margin-top: 8px;
+  cursor: pointer; text-decoration: underline;
+}
+.setup-link:hover { color: var(--text); }
+
+/* messages */
+.messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.msg {
+  max-width: 100%;
+  animation: fadeIn 0.15s ease-out;
+}
+@keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+
+.msg.user {
+  align-self: flex-end;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  max-width: 85%;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.msg.thinking {
+  border-left: 2px solid var(--amber);
+  padding-left: 10px;
+  color: var(--muted);
+  font-style: italic;
+  font-size: 12px;
+}
+.msg.thinking summary {
+  cursor: pointer;
+  color: var(--amber);
+  font-size: 11px;
+  margin-bottom: 4px;
+  user-select: none;
+}
+.msg.thinking details[open] summary { margin-bottom: 6px; }
+
+.msg.rocky {
+  padding: 4px 0;
+  line-height: 1.5;
+}
+.msg.rocky .rocky-label {
+  font-size: 10px;
+  color: var(--muted);
+  font-weight: 400;
+  margin-bottom: 4px;
+}
+/* while streaming, show plain text (parsed to markdown on finalize) */
+.rocky-body.streaming { white-space: pre-wrap; word-break: break-word; }
+
+.tool-call {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin: 4px 0;
+  overflow: hidden;
+  font-size: 12px;
+}
+.tool-call summary {
+  padding: 6px 10px;
+  cursor: pointer;
+  background: var(--surface);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+}
+.tool-call summary .icon { font-size: 14px; }
+.tool-call summary .tool-name { font-weight: 600; color: var(--accent2); }
+.tool-call summary .duration { margin-left: auto; font-size: 11px; color: var(--muted); }
+.tool-call summary .ok { color: var(--green); }
+.tool-call summary .fail { color: var(--red); }
+.tool-call .output {
+  padding: 8px 10px;
+  background: var(--code-bg);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 300px;
+  overflow-y: auto;
+  color: var(--text);
+  line-height: 1.4;
+}
+
+/* system messages */
+.msg.system {
+  align-self: center;
+  font-size: 11px;
+  color: var(--muted);
+  padding: 2px 8px;
+}
+
+.msg.error {
+  color: var(--red);
+  font-size: 12px;
+  padding: 6px 10px;
+  border: 1px solid var(--red);
+  border-radius: var(--radius);
+  background: rgba(243, 139, 168, 0.1);
+}
+
+.permission-box {
+  border: 1px solid var(--amber);
+  border-radius: var(--radius);
+  padding: 10px;
+  margin: 4px 0;
+  background: rgba(249, 226, 175, 0.08);
+}
+.permission-box .perm-tool { font-weight: 600; color: var(--amber); margin-bottom: 4px; }
+.permission-box .perm-detail {
+  font-size: 11px; color: var(--muted); margin-bottom: 8px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 180px; overflow-y: auto;   /* full command, scroll if very long */
+}
+.permission-box .perm-options { display: flex; flex-direction: column; gap: 2px; margin: 6px 0 2px; }
+.permission-box .perm-opt {
+  padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;
+  border: 1px solid transparent; color: var(--text); user-select: none;
+}
+.permission-box .perm-opt.selected {
+  background: var(--surface); border-color: var(--accent); color: var(--accent);
+}
+.permission-box .perm-hint { font-size: 10px; color: var(--muted); margin-top: 4px; }
+
+/* input */
+.input-area {
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.input-area textarea {
+  flex: 1;
+  resize: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 8px 10px;
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+  min-height: 36px;
+  max-height: 120px;
+}
+.input-area textarea:focus { border-color: var(--accent); }
+.input-area button {
+  padding: 0 14px;
+  border: none;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.input-area button:hover { background: var(--accent2); }
+.input-area button:disabled { opacity: 0.4; cursor: default; }
+
+/* live active-file pill — always shows what auto-inject attaches (no shortcut) */
+.active-ctx { padding: 6px 12px 0; }
+.active-ctx:empty { display: none; }
+.active-ctx .apill {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+  font-size: 11px; padding: 3px 8px; border-radius: 6px; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--border); color: var(--muted);
+}
+.active-ctx .apill:hover { border-color: var(--accent); }
+.active-ctx .apill .af {
+  font-family: 'SF Mono', 'Fira Code', monospace; color: var(--accent);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.active-ctx .apill .ahint { color: var(--muted); font-size: 10px; white-space: nowrap; }
+
+/* pinned-context chips (selection → chat) */
+.context-tray { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 12px 0; }
+.context-tray:empty { display: none; }
+.ctx-chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+  font-size: 11px; padding: 3px 5px 3px 8px; border-radius: 6px;
+  background: var(--surface); border: 1px solid var(--border);
+}
+.ctx-chip .ctx-ref {
+  font-family: 'SF Mono', 'Fira Code', monospace; color: var(--accent);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ctx-chip .ctx-sym { color: var(--muted); white-space: nowrap; }
+.ctx-chip .ctx-x {
+  border: none; background: none; color: var(--muted); cursor: pointer;
+  font-size: 13px; line-height: 1; padding: 0 2px;
+}
+.ctx-chip .ctx-x:hover { color: var(--red); }
+
+.cancel-bar {
+  padding: 8px 12px;
+  border-top: 1px solid var(--amber);
+  background: rgba(249, 226, 175, 0.06);
+  display: none;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--amber);
+}
+.cancel-bar.active { display: flex; }
+.cancel-bar button {
+  margin-left: auto;
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--amber);
+  background: transparent;
+  color: var(--amber);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+/* empty state */
+.empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  gap: 8px;
+}
+.empty-state .big { font-size: 32px; }
+.empty-state .title { font-size: 16px; color: var(--accent); font-weight: 600; }
+.empty-state .hint { font-size: 12px; }
+
+/* scrollbar */
+.messages::-webkit-scrollbar { width: 6px; }
+.messages::-webkit-scrollbar-track { background: transparent; }
+.messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* syntax highlighting (highlight.js) — token palette keyed to the editor theme */
+.hljs {
+  --hl-kw:#c4a7e7; --hl-str:#98c379; --hl-num:#d19a66; --hl-fn:#82aaff; --hl-ty:#56b6c2;
+}
+body.vscode-light .hljs, :root[data-theme="light"] .hljs {
+  --hl-kw:#7d5cc6; --hl-str:#3f8a3a; --hl-num:#b5730b; --hl-fn:#3a6db5; --hl-ty:#227a7a;
+}
+.rocky-body pre code.hljs { background: transparent; padding: 0; color: var(--text); }
+.hljs-comment, .hljs-quote { color: var(--muted); font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-section, .hljs-doctag, .hljs-name, .hljs-strong { color: var(--hl-kw); }
+.hljs-string, .hljs-attr, .hljs-regexp, .hljs-addition, .hljs-meta-string { color: var(--hl-str); }
+.hljs-number, .hljs-meta, .hljs-symbol, .hljs-bullet, .hljs-link, .hljs-selector-id { color: var(--hl-num); }
+.hljs-title, .hljs-title.function_, .hljs-built_in { color: var(--hl-fn); }
+.hljs-type, .hljs-class .hljs-title, .hljs-title.class_, .hljs-tag { color: var(--hl-ty); }
+.hljs-variable, .hljs-template-variable, .hljs-params { color: var(--text); }
+.hljs-deletion { color: var(--red); }
+.hljs-emphasis { font-style: italic; }
+
+pre, code {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 12px;
+  background: var(--surface);
+  border-radius: 4px;
+}
+pre { padding: 8px; overflow-x: auto; margin: 4px 0; }
+code { padding: 1px 4px; }
+
+/* rendered markdown styles */
+.rocky-body h3, .rocky-body h4, .rocky-body h5 {
+  color: var(--accent);
+  margin: 8px 0 4px;
+}
+.rocky-body p { margin: 4px 0; line-height: 1.5; }
+.rocky-body ul, .rocky-body ol { padding-left: 18px; margin: 4px 0; }
+.rocky-body li { margin: 2px 0; }
+.rocky-body strong { color: var(--accent2); }
+.rocky-body a { color: var(--accent); }
+.rocky-body table { border-collapse: collapse; margin: 8px 0; width: 100%; }
+.rocky-body th, .rocky-body td { border: 1px solid var(--border); padding: 4px 8px; text-align: left; font-size: 12px; }
+.rocky-body th { background: var(--surface); font-weight: 600; }
+.rocky-body hr { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
+.rocky-body blockquote {
+  border-left: 2px solid var(--accent);
+  padding-left: 10px;
+  color: var(--muted);
+  margin: 4px 0;
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <span class="logo">♫ rockycode</span>
+  <span class="status idle" id="status">idle</span>
+  <span class="model" id="model-name"></span>
+  <span class="keyhint" id="key-hint" title="Your API key (last 4), stored in encrypted Secret Storage"></span>
+  <button class="hdr-btn" id="new-chat-btn" title="New Chat">+</button>
+  <button class="hdr-btn" id="settings-btn" title="Settings">⚙</button>
+</div>
+
+<div class="messages" id="messages">
+  <div class="empty-state" id="empty-state">
+    <div class="big">🪨</div>
+    <div class="title">Rocky Code</div>
+    <div class="hint">I read, edit, and run code in your project.<br>amaze!</div>
+  </div>
+</div>
+
+<!-- setup card — shown when no API key -->
+<div class="setup-card" id="setup-card" style="display:none">
+  <div class="setup-title">⚡ Setup Required</div>
+  <div class="setup-desc">Configure at least an API key to get started.</div>
+  <div class="setup-row">
+    <label>API Key</label>
+    <input type="password" id="setup-apikey" placeholder="sk-...">
+  </div>
+  <div class="setup-row">
+    <label>Base URL</label>
+    <input type="text" id="setup-baseurl" value="https://api.deepseek.com/v1" placeholder="https://api.deepseek.com/v1">
+  </div>
+  <div class="setup-row">
+    <label>Model</label>
+    <select id="setup-model">
+      <option value="deepseek-v4-pro">DeepSeek V4 Pro</option>
+      <option value="deepseek-v4-flash" selected>DeepSeek V4 Flash</option>
+      <option value="gpt-4o">GPT-4o</option>
+      <option value="claude-sonnet-4-6">Claude Sonnet 4.6</option>
+    </select>
+  </div>
+  <button class="setup-save" id="setup-save">Save & Connect</button>
+  <div class="setup-link" id="setup-advanced">Advanced settings (VS Code settings JSON)</div>
+</div>
+
+<div class="cancel-bar" id="cancel-bar">
+  <span id="cancel-status">♪ thinking...</span>
+  <button id="cancel-btn">Cancel</button>
+</div>
+
+<div class="active-ctx" id="active-ctx"></div>
+<div class="context-tray" id="context-tray"></div>
+
+<div class="input-area">
+  <textarea id="input" rows="1" placeholder="Ask Rocky to do something..."></textarea>
+  <button id="send-btn">Send</button>
+</div>
+
+<!-- HLJS_JS -->
+<!-- MARKED_JS -->
+<script nonce="{{nonce}}">
+// ── state ──────────────────────────────────────────────────────────────
+const vscode = acquireVsCodeApi();
+const state = vscode.getState() || { messages: [], sessionId: null };
+let currentThinking = null;
+let currentRockyMsg = null;
+let currentToolCall = null;
+let running = false;
+let sessionId = state.sessionId;
+
+// ── helpers ────────────────────────────────────────────────────────────
+const $ = (sel) => document.querySelector(sel);
+const el = (tag, cls, html) => {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (html) e.innerHTML = html;
+  return e;
+};
+
+function scrollBottom() {
+  const msgs = $('#messages');
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+function hideEmpty() {
+  const es = $('#empty-state');
+  if (es) es.style.display = 'none';
+}
+
+function setStatus(text, cls) {
+  const s = $('#status');
+  s.textContent = text;
+  s.className = 'status ' + (cls || 'idle');
+}
+
+function setRunning(r) {
+  running = r;
+  $('#send-btn').disabled = r;
+  $('#cancel-bar').classList.toggle('active', r);
+  if (r) {
+    $('#cancel-status').textContent = '♪ thinking...';
+  }
+}
+
+function escapeHtml(s) {
+  const div = document.createElement('div');
+  div.textContent = s;
+  return div.innerHTML;
+}
+
+// Defense-in-depth for the marked -> innerHTML render below: escape every raw
+// HTML token (block AND inline) so injected markup in model/tool output (an
+// image-onerror handler, a script tag) is shown as literal text, never live.
+// The nonce'd CSP is the execution backstop; this stops it at the source.
+if (typeof marked !== 'undefined') {
+  marked.use({ renderer: {
+    html(token) { return escapeHtml(typeof token === 'string' ? token : token.text); },
+  }});
+}
+
+function renderMarkdown(text) {
+  let lines = text.split('\n');
+  let out = [];
+  for (let line of lines) {
+    let l = escapeHtml(line);
+    let tag = null; // wrap in this tag if set
+    if (/^#### /.test(l))           { l = l.slice(5); tag = 'h5'; }
+    else if (/^### /.test(l))       { l = l.slice(4); tag = 'h4'; }
+    else if (/^## /.test(l))        { l = l.slice(3); tag = 'h3'; }
+    else if (/^---$/.test(l))       { l = ''; tag = 'hr'; }
+    else if (/^[-*] /.test(l))      { l = '<span style="color:var(--accent2)">•</span> ' + l.slice(2); }
+    // Apply inline formatting to ALL lines
+    if (tag !== 'hr') {
+      l = l.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+      l = l.replace(/`([^`]+)`/g, '<code>$1</code>');
+      l = l.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" style="color:var(--accent)">$1</a>');
+    }
+    if (tag === 'h3') l = '<h3 style="margin:8px 0 2px;color:var(--accent)">' + l + '</h3>';
+    else if (tag === 'h4') l = '<h4 style="margin:6px 0 2px;color:var(--accent)">' + l + '</h4>';
+    else if (tag === 'h5') l = '<h5 style="margin:4px 0 2px;color:var(--accent2)">' + l + '</h5>';
+    else if (tag === 'hr') l = '<hr style="border-color:var(--border);margin:6px 0">';
+    out.push(l);
+  }
+  return out.join('\n');
+}
+
+// ── message rendering ──────────────────────────────────────────────────
+
+function addUserMsg(text) {
+  hideEmpty();
+  const div = el('div', 'msg user', escapeHtml(text));
+  $('#messages').appendChild(div);
+  scrollBottom();
+}
+
+function addThinkingDelta(text) {
+  hideEmpty();
+  if (!currentThinking) {
+    currentThinking = el('details', 'msg thinking', '<summary>♪ thinking...</summary><div class="think-text"></div>');
+    currentThinking.open = true;
+    $('#messages').appendChild(currentThinking);
+  }
+  currentThinking.querySelector('.think-text').textContent += text;
+  scrollBottom();
+}
+
+function closeThinking() {
+  if (currentThinking) {
+    currentThinking.open = false;
+    currentThinking.querySelector('summary').textContent = '♪ thought (click to expand)';
+    currentThinking = null;
+  }
+}
+
+let rockyRawText = '';
+
+function addRockyDelta(text) {
+  hideEmpty();
+  if (!currentRockyMsg) {
+    const label = el('div', 'rocky-label', '♪♫ rocky ▸');
+    const body = el('div', 'rocky-body streaming');
+    const wrap = el('div', 'msg rocky');
+    wrap.appendChild(label);
+    wrap.appendChild(body);
+    $('#messages').appendChild(wrap);
+    currentRockyMsg = body;
+    rockyRawText = '';
+  }
+  rockyRawText += text;
+  // Stream as PLAIN text. Parsing half-finished markdown on every token renders
+  // unclosed code fences / tables / rules as empty broken boxes — the mess you
+  // saw. We parse ONCE, when the message finalizes (below).
+  currentRockyMsg.textContent = rockyRawText;
+  scrollBottom();
+}
+
+// Close a dangling ``` fence (model interrupted mid-block by a tool call) so
+// marked renders a normal code block instead of an empty/greedy one.
+function closeFences(md) {
+  return ((md.match(/^```/gm) || []).length % 2) ? md + '\n```' : md;
+}
+
+function highlightCode(root) {
+  if (typeof hljs === 'undefined') return;
+  root.querySelectorAll('pre code').forEach((block) => {
+    try { hljs.highlightElement(block); } catch (e) { /* unknown language — leave plain */ }
+  });
+}
+
+function finalizeRocky() {
+  if (currentRockyMsg) {
+    if (rockyRawText.trim()) {
+      currentRockyMsg.classList.remove('streaming');
+      currentRockyMsg.innerHTML = marked.parse(closeFences(rockyRawText), { breaks: true });
+      highlightCode(currentRockyMsg);
+    } else {
+      currentRockyMsg.parentElement?.remove();   // drop an empty bubble
+    }
+  }
+  rockyRawText = '';
+  currentRockyMsg = null;
+}
+
+function addToolStart(callId, toolName, args) {
+  hideEmpty();
+  closeThinking();
+  finalizeRocky();
+
+  const argsSummary = args && args.raw
+    ? escapeHtml(String(args.raw).slice(0, 80))
+    : '';
+  const html = `<span class="icon">⚒</span> <span class="tool-name">${escapeHtml(toolName)}</span> <span style="color:var(--muted);font-size:11px;overflow:hidden">${argsSummary}</span>`;
+  const details = el('details', 'tool-call', `<summary>${html}</summary><div class="output">running...</div>`);
+  details.dataset.callId = callId;
+  details.open = true;
+  $('#messages').appendChild(details);
+  scrollBottom();
+}
+
+function addToolFinish(callId, ok, output, duration) {
+  const details = document.querySelector(`.tool-call[data-call-id="${callId}"]`);
+  if (!details) return;
+  const summary = details.querySelector('summary');
+  const icon = ok ? '✓' : '✗';
+  const cls = ok ? 'ok' : 'fail';
+  summary.innerHTML += `<span class="duration ${cls}">${icon} ${duration.toFixed(1)}s</span>`;
+  details.querySelector('.output').textContent = output.slice(0, 3000);
+  if (output.length > 3000) {
+    details.querySelector('.output').textContent += '\n... [truncated]';
+  }
+  // Collapse after a moment
+  setTimeout(() => { details.open = false; }, 1500);
+  scrollBottom();
+}
+
+function addCompact(strategy, before, after) {
+  const div = el('div', 'msg system',
+    `♻ context squeezed: ~${before.toLocaleString()} → ~${after.toLocaleString()} tokens (${strategy})`);
+  $('#messages').appendChild(div);
+  scrollBottom();
+}
+
+function addTurnFinished(steps, usage) {
+  finalizeRocky();   // render the final answer's markdown now the turn is done
+  if (usage) {
+    const inputK = Math.round((usage.prompt_tokens || 0) / 1000);
+    const outputK = Math.round((usage.completion_tokens || 0) / 1000);
+    const div = el('div', 'msg system', `${steps} steps · ${inputK}K in / ${outputK}K out`);
+    $('#messages').appendChild(div);
+  }
+  scrollBottom();
+  setRunning(false);
+  setStatus('idle', 'idle');
+}
+
+function addError(message) {
+  finalizeRocky();
+  const div = el('div', 'msg error', escapeHtml(message));
+  $('#messages').appendChild(div);
+  scrollBottom();
+  setRunning(false);
+  setStatus('error', '');
+}
+
+// ── permission prompt (Enter approves, arrows choose — mirrors rocky's TUI) ──
+
+let activePerm = null;  // { eventId, options, selected, boxEl, optsEl }
+
+function renderPermission(req) {
+  hideEmpty();
+  const options = [
+    { id: 'once',    label: '▶  Run once' },
+    { id: 'session', label: '✓  Allow ' + req.tool + ' for this session' },
+    { id: 'deny',    label: '✗  Deny' },
+  ];
+  const box = el('div', 'permission-box');
+  box.appendChild(el('div', 'perm-tool', '⚠ approve tool · ' + escapeHtml(req.tool)));
+  const detail = el('div', 'perm-detail');
+  detail.textContent = req.detail || '';          // textContent — never parse args as HTML
+  box.appendChild(detail);
+  const opts = el('div', 'perm-options');
+  box.appendChild(opts);
+  box.appendChild(el('div', 'perm-hint', '↑↓ choose · enter select · esc deny'));
+  activePerm = { eventId: req.eventId, options, selected: 0, boxEl: box, optsEl: opts };
+  drawPermOptions();
+  $('#messages').appendChild(box);
+  scrollBottom();
+}
+
+function drawPermOptions() {
+  if (!activePerm) return;
+  const { options, selected, optsEl } = activePerm;
+  optsEl.innerHTML = '';
+  options.forEach((o, i) => {
+    const row = el('div', 'perm-opt' + (i === selected ? ' selected' : ''));
+    row.textContent = o.label;                    // textContent — label carries the tool name
+    row.addEventListener('click', () => choosePerm(o.id));
+    optsEl.appendChild(row);
+  });
+}
+
+function choosePerm(id) {
+  if (!activePerm) return;
+  const eventId = activePerm.eventId;
+  activePerm.boxEl.remove();
+  activePerm = null;
+  vscode.postMessage({ type: 'permissionResponse', eventId, choice: id });
+}
+
+// Drop a pending prompt without answering (turn cancelled / chat cleared) — the
+// backend cancels the approver, so no response is owed.
+function dismissPerm() {
+  if (activePerm) { activePerm.boxEl.remove(); activePerm = null; }
+}
+
+// Capture phase, so a pending prompt takes the keys before the textarea's
+// Enter-to-send handler (bubble phase) ever sees them.
+document.addEventListener('keydown', (e) => {
+  if (!activePerm) return;
+  const n = activePerm.options.length;
+  if (e.key === 'ArrowDown')      { activePerm.selected = (activePerm.selected + 1) % n; drawPermOptions(); }
+  else if (e.key === 'ArrowUp')   { activePerm.selected = (activePerm.selected - 1 + n) % n; drawPermOptions(); }
+  else if (e.key === 'Enter')     { choosePerm(activePerm.options[activePerm.selected].id); }
+  else if (e.key === 'Escape')    { choosePerm('deny'); }
+  else return;                    // let every other key through
+  e.preventDefault();
+  e.stopPropagation();
+}, true);
+
+// ── vscode message handlers ────────────────────────────────────────────
+
+window.addEventListener('message', (e) => {
+  const msg = e.data;
+  switch (msg.type) {
+    case 'stateChanged':
+      if (msg.state === 'thinking') {
+        setStatus('thinking...', 'thinking');
+        $('#cancel-status').textContent = '♪ thinking...';
+      } else if (msg.state === 'responding') {
+        setStatus('responding...', 'working');
+        $('#cancel-status').textContent = 'Responding...';
+      } else if (msg.state === 'tool') {
+        setStatus('working...', 'working');
+        $('#cancel-status').textContent = 'Running tools...';
+      } else if (msg.state === 'compacting') {
+        setStatus('compacting...', 'working');
+      } else if (msg.state === 'idle') {
+        setStatus('idle', 'idle');
+        setRunning(false);
+      }
+      break;
+
+    case 'thinkingDelta':
+      addThinkingDelta(msg.text);
+      break;
+
+    case 'textDelta':
+      addRockyDelta(msg.text);
+      break;
+
+    case 'toolStarted':
+      addToolStart(msg.callId, msg.tool, msg.args);
+      break;
+
+    case 'toolFinished':
+      addToolFinish(msg.callId, msg.ok, msg.output, msg.duration);
+      break;
+
+    case 'compacted':
+      addCompact(msg.strategy, msg.tokensBefore, msg.tokensAfter);
+      break;
+
+    case 'turnFinished':
+      addTurnFinished(msg.steps, msg.usage);
+      break;
+
+    case 'error':
+      addError(msg.message);
+      break;
+
+    case 'permissionRequest':
+      renderPermission(msg);
+      break;
+
+    case 'noApiKey':
+      showSetup();
+      setStatus('setup required', '');
+      break;
+
+    case 'configSaved':
+      hideSetup();
+      setStatus('idle', 'idle');
+      $('#model-name').textContent = msg.model || '';
+      break;
+
+    case 'keyHint':
+      $('#key-hint').textContent = msg.hint ? ('🔑 ••••' + msg.hint) : '';
+      break;
+
+    case 'clearChat':
+      // Reset all state
+      dismissPerm();
+      $('#messages').innerHTML = '<div class="empty-state" id="empty-state"><div class="big">🪨</div><div class="title">Rocky Code</div><div class="hint">amaze!</div></div>';
+      currentThinking = null;
+      currentRockyMsg = null;
+      currentToolCall = null;
+      setRunning(false);
+      setStatus('idle', 'idle');
+      break;
+
+    case 'addContext':
+      hideEmpty();
+      addContextChip(msg.ctx);
+      $('#input').focus();
+      break;
+
+    case 'activeContext':
+      renderActiveCtx(msg.ctx);
+      break;
+  }
+});
+
+// ── setup card ────────────────────────────────────────────────────────
+
+function showSetup() {
+  $('#setup-card').style.display = 'block';
+  $('#empty-state').style.display = 'none';
+}
+
+function hideSetup() {
+  $('#setup-card').style.display = 'none';
+}
+
+$('#setup-save').addEventListener('click', () => {
+  const apiKey = $('#setup-apikey').value.trim();
+  const baseUrl = $('#setup-baseurl').value.trim();
+  const model = $('#setup-model').value;
+  if (!apiKey) return;
+  vscode.postMessage({ type: 'saveConfig', apiKey, baseUrl, model });
+  hideSetup();
+  $('#empty-state').style.display = 'flex';
+  $('#model-name').textContent = model;
+});
+
+$('#setup-advanced').addEventListener('click', () => {
+  vscode.postMessage({ type: 'openSettings' });
+});
+
+// ── header buttons ─────────────────────────────────────────────────────
+
+$('#settings-btn').addEventListener('click', () => {
+  vscode.postMessage({ type: 'openSettings' });
+});
+
+$('#new-chat-btn').addEventListener('click', () => {
+  vscode.postMessage({ type: 'newSession' });
+});
+
+// ── user actions ───────────────────────────────────────────────────────
+
+// ── pinned context (selection → chat) ────────────────────────────────────
+let contextChips = [];  // [{file,startLine,endLine,code,lang,symbol}]
+
+function chipRef(c) {
+  return '@' + c.file + (c.startLine === c.endLine
+    ? ':' + c.startLine
+    : ':' + c.startLine + '-' + c.endLine);
+}
+
+function addContextChip(c) {
+  contextChips.push(c);
+  renderContextTray();
+}
+
+function renderContextTray() {
+  const tray = $('#context-tray');
+  tray.innerHTML = '';
+  contextChips.forEach((c, i) => {
+    const chip = el('div', 'ctx-chip');
+    const ref = el('span', 'ctx-ref'); ref.textContent = chipRef(c);
+    chip.appendChild(ref);
+    if (c.symbol) { const s = el('span', 'ctx-sym'); s.textContent = '· ' + c.symbol; chip.appendChild(s); }
+    const x = el('button', 'ctx-x'); x.textContent = '✕'; x.title = 'remove';
+    x.addEventListener('click', () => { contextChips.splice(i, 1); renderContextTray(); });
+    chip.appendChild(x);
+    tray.appendChild(chip);
+  });
+}
+
+function buildContextBlocks() {
+  return contextChips.map((c) => {
+    const head = chipRef(c) + (c.symbol ? '  (' + c.symbol + ')' : '');
+    return head + '\n```' + (c.lang || '') + '\n' + c.code + '\n```';
+  }).join('\n\n');
+}
+
+// live active-file pill — shows what auto-inject attaches; click to pin selection
+function renderActiveCtx(ctx) {
+  const box = $('#active-ctx');
+  box.innerHTML = '';
+  if (!ctx) return;
+  const range = ctx.startLine
+    ? (ctx.startLine === ctx.endLine ? ':' + ctx.startLine : ':' + ctx.startLine + '-' + ctx.endLine)
+    : '';
+  const pill = el('div', 'apill');
+  pill.title = 'Rocky already sees this file. Click to pin the selection as a saved snippet.';
+  pill.appendChild(el('span', '', '📎'));
+  const f = el('span', 'af'); f.textContent = ctx.file + range; pill.appendChild(f);
+  pill.appendChild(el('span', 'ahint', ctx.startLine ? '· auto · click to pin' : '· open · auto'));
+  if (ctx.startLine) pill.addEventListener('click', () => vscode.postMessage({ type: 'pinContext' }));
+  else pill.style.cursor = 'default';
+  box.appendChild(pill);
+}
+
+function sendMessage() {
+  const input = $('#input');
+  const text = input.value.trim();
+  if ((!text && !contextChips.length) || running || activePerm) return;
+
+  hideEmpty();
+  // rocky receives the pinned snippets first, then the question.
+  const ctxBlocks = buildContextBlocks();
+  const full = ctxBlocks ? (text ? ctxBlocks + '\n\n' + text : ctxBlocks) : text;
+  // the transcript shows the user's text + a compact list of pinned refs.
+  const shown = contextChips.length
+    ? (text ? text + '\n' : '') + contextChips.map(chipRef).join('  ')
+    : text;
+  addUserMsg(shown);
+
+  input.value = '';
+  input.style.height = 'auto';
+  contextChips = [];
+  renderContextTray();
+
+  setRunning(true);
+  closeThinking();
+  finalizeRocky();
+
+  vscode.postMessage({ type: 'sendMessage', text: full });
+
+  state.messages.push({ role: 'user', text: shown });
+  vscode.setState(state);
+}
+
+$('#cancel-btn').addEventListener('click', () => {
+  dismissPerm();
+  vscode.postMessage({ type: 'cancelTurn' });
+});
+
+// Send button
+$('#send-btn').addEventListener('click', () => sendMessage());
+
+// Textarea: Enter to send, Shift+Enter for newline, auto-resize
+$('#input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+});
+$('#input').addEventListener('input', function() {
+  this.style.height = 'auto';
+  this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+});
+
+// Focus input on load
+$('#input').focus();
+</script>
+</body>
+</html>
