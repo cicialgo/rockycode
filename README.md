@@ -70,9 +70,16 @@ run offline in the sandbox by design, so a delegated or unattended task cannot
 touch your host or reach the network.
 
 ```bash
+uv pip install rockycode      # with uv  (or: uv tool install rockycode — isolated CLI on PATH)
+pip install rockycode         # or plain pip
+rockycode                     # the first run walks you through API-key setup
+```
+
+Or install from source:
+
+```bash
 git clone https://github.com/cicialgo/rockycode.git && cd rockycode
-uv tool install .      # puts the `rockycode` command on your PATH
-rockycode              # the first run walks you through API-key setup
+uv tool install .
 ```
 
 On first launch you paste your API key once. It is stored in the OS keychain
