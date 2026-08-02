@@ -3,7 +3,9 @@ fake model stream drives Engine through read→edit→test, then extract_patch.
 Verifies the whole `--runner rockycode` flow except `docker exec` itself.
 """
 import asyncio
+import shlex
 import subprocess
+import sys
 import tempfile
 import types
 from pathlib import Path
@@ -50,7 +52,9 @@ class FakeCompletions:
             })
             return stream_from([chunk(tool_calls=[tc(0, "c2", "edit_file", args)])])
         if self.calls == 3:
-            args = json.dumps({"command": "python buggy.py"})
+            # sys.executable, not bare `python` — macOS/PEP 668 hosts ship
+            # python3 only, and the test must stay pure outside any venv.
+            args = json.dumps({"command": f"{shlex.quote(sys.executable)} buggy.py"})
             return stream_from([chunk(tool_calls=[tc(0, "c3", "bash", args)])])
         return stream_from([chunk(content="DONE. fixed add(). amaze!")])
 

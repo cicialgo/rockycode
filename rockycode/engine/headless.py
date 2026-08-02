@@ -276,6 +276,7 @@ async def drive(
     approver: HeadlessApprover,
     prompt: str,
     *,
+    images: Optional[list[Path]] = None,
     write: Optional[Callable[[dict], None]] = None,
     include_thinking: bool = False,
     output_last_message: Optional[Path] = None,
@@ -321,7 +322,7 @@ async def drive(
             write({"type": "text", "text": "".join(text_buf)})
             text_buf.clear()
 
-    gen = engine.run_turn(prompt)
+    gen = engine.run_turn(prompt, images=images)
     try:
         async for ev in gen:
             if isinstance(ev, TextDelta):
@@ -416,6 +417,7 @@ async def run_exec(
     prompt: str,
     model: str,
     workdir: Path,
+    images: Optional[list[Path]] = None,
     allowed_roots: tuple[Path, ...] = (),
     grants: frozenset[str] = frozenset(),
     max_steps: int = 30,
@@ -468,8 +470,14 @@ async def run_exec(
             max_steps=max_steps, originator=originator, client=client, registry=registry,
             sandbox_meta=sandbox_meta, extra_meta=extra_meta,
         )
+        if images:
+            # --image is the caller asserting the target endpoint takes image
+            # input — there is no provider profile in exec (base_url comes from
+            # env), so trust the flag; a text-only endpoint rejects the request
+            # with a clear API error in the JSONL stream.
+            engine.vision_enabled = True
         return await drive(
-            engine, approver, prompt,
+            engine, approver, prompt, images=images,
             write=write, include_thinking=include_thinking,
             output_last_message=output_last_message,
         )

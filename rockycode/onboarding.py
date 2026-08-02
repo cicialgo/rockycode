@@ -302,8 +302,8 @@ def run_setup(console) -> None:
     while _key_rejected(key, base_url):
         info(console, "that key was rejected by the endpoint (401) — check for typos or stray spaces.")
         key = typer.prompt("  paste your API key again", hide_input=True).strip()
-    model = typer.prompt("  default model (deepseek-v4-flash is the cheaper, lighter tier)",
-                         default="deepseek-v4-pro").strip()
+    model = typer.prompt("  default model (deepseek-v4-pro is the heavier preview tier)",
+                         default="deepseek-v4-flash").strip()
     # Reply language — asked once so a 中文 user's first session already
     # answers in Chinese instead of depending on model luck. auto mirrors
     # whatever language each message is written in. Changeable anytime:

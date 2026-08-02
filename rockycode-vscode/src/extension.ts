@@ -8,12 +8,15 @@ import { PermissionManager } from './permissionManager';
 import { DiffManager } from './diffManager';
 import { RockyStatusBar } from './statusBar';
 import { gatherSelectionContext } from './editorContext';
+import { ArtifactTreeProvider } from './artifactTree';
+import type { ArtifactInfo } from './artifactTree';
 
 const output = vscode.window.createOutputChannel('Rocky Code', { log: true });
 
 let connection: RockyConnection | undefined;
 let statusBar: RockyStatusBar | undefined;
 let chatProvider: RockyChatViewProvider | undefined;
+let artifactProvider: ArtifactTreeProvider | undefined;
 let reconnectAttempts = 0;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -53,6 +56,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   const permissions = new PermissionManager(connection);
   const diffManager = new DiffManager();
+  artifactProvider = new ArtifactTreeProvider(connection);
   chatProvider = new RockyChatViewProvider(
     context.extensionUri, connection, statusBar, permissions, diffManager, context.secrets,
   );
@@ -66,13 +70,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.window.registerWebviewViewProvider('rockycode.chatView', chatProvider, {
       webviewOptions: { retainContextWhenHidden: true },
     }),
+    vscode.window.registerTreeDataProvider('rockycode.artifactsView', artifactProvider),
     vscode.commands.registerCommand('rockycode.openChat', () => {
       vscode.commands.executeCommand('workbench.view.extension.rockycode-sidebar');
     }),
     vscode.commands.registerCommand('rockycode.newSession', async () => {
       if (!connection) return;
       try {
-        const result = await connection.request('initialize', {}) as { session_id: string };
+        const result = await connection.createSession();
+        chatProvider?._postMessage?.({
+          type: 'clearChat', sessionId: result.session_id, model: result.model,
+        });
         vscode.window.showInformationMessage(`New session: ${result.session_id.slice(0, 8)}...`);
       } catch (err) {
         vscode.window.showErrorMessage(`Rocky Code: ${err instanceof Error ? err.message : String(err)}`);
@@ -90,8 +98,37 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       // Bring the panel forward so the pinned chip is visible.
       vscode.commands.executeCommand('workbench.view.extension.rockycode-sidebar');
     }),
+    vscode.commands.registerCommand(
+      'rockycode.openArtifact',
+      async (artifact: ArtifactInfo, serverRunning: boolean = true) => {
+        // A live page needs its server; fall back to the saved file when it is
+        // stopped. Both go to the system browser — Simple Browser iframes the
+        // URL, and Chromium refuses to load file:// inside a subframe.
+        const target = artifact.live && !serverRunning
+          ? vscode.Uri.file(artifact.path)
+          : vscode.Uri.parse(artifact.url);
+        await vscode.env.openExternal(target);
+      },
+    ),
+    vscode.commands.registerCommand('rockycode.refreshArtifacts', async () => {
+      await artifactProvider?.refreshActive().catch((err) => {
+        vscode.window.showErrorMessage(`Rocky Code: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    }),
+    vscode.commands.registerCommand('rockycode.stopArtifactServer', async () => {
+      const stopped = await artifactProvider?.stopActiveServer().catch((err) => {
+        vscode.window.showErrorMessage(`Rocky Code: ${err instanceof Error ? err.message : String(err)}`);
+        return false;
+      });
+      vscode.window.showInformationMessage(
+        stopped
+          ? 'Rocky Artifact server stopped. Saved files remain.'
+          : 'Rocky Artifact server is already stopped.',
+      );
+    }),
     connection,
     statusBar,
+    artifactProvider,
     { dispose: () => permissions?.reset() },
   );
   output.info('Webview provider + commands registered');
@@ -108,6 +145,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           const wf = vscode.workspace.workspaceFolders?.[0];
           if (wf && connection) {
             await connection.start(wf.uri.fsPath);
+            artifactProvider?.reset(connection.sessionId);
             chatProvider?._postMessage?.({ type: 'configSaved', model: connection.model });
           }
         } catch (err) {
@@ -154,6 +192,7 @@ async function tryConnect(workdir: string): Promise<void> {
     statusBar?.setThinking();
     output.info(`Starting rockycode serve (workdir: ${workdir})...`);
     await connection.start(workdir);
+    artifactProvider?.reset(connection.sessionId);
     statusBar?.setIdle();
     reconnectAttempts = 0; // healthy connection — clear the auto-reconnect budget
     output.info(`Connected. session=${connection.sessionId} model=${connection.model} hasApiKey=${connection.hasApiKey}`);

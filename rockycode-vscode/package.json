@@ -2,7 +2,7 @@
   "name": "rockycode",
   "displayName": "rockycode",
   "description": "AI coding agent — chat, inline tools, diff previews, and in-panel Enter/arrow tool approvals. Powered by the rockycode CLI (DeepSeek).",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "rockycode",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -54,6 +54,23 @@
         "command": "rockycode.addToChat",
         "title": "Add Selection to Rocky Chat",
         "category": "Rocky Code"
+      },
+      {
+        "command": "rockycode.openArtifact",
+        "title": "Open Artifact",
+        "category": "Rocky Code"
+      },
+      {
+        "command": "rockycode.refreshArtifacts",
+        "title": "Refresh Artifacts",
+        "category": "Rocky Code",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "rockycode.stopArtifactServer",
+        "title": "Stop Artifact Server",
+        "category": "Rocky Code",
+        "icon": "$(debug-stop)"
       }
     ],
     "menus": {
@@ -67,6 +84,18 @@
         {
           "command": "rockycode.openChat",
           "group": "navigation"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "rockycode.refreshArtifacts",
+          "when": "view == rockycode.artifactsView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "rockycode.stopArtifactServer",
+          "when": "view == rockycode.artifactsView",
+          "group": "navigation@2"
         }
       ]
     },
@@ -105,6 +134,10 @@
           "type": "webview",
           "id": "rockycode.chatView",
           "name": "Chat"
+        },
+        {
+          "id": "rockycode.artifactsView",
+          "name": "Artifacts"
         }
       ]
     },

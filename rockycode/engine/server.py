@@ -187,11 +187,25 @@ class SessionManager:
             from rockycode.engine.artifact import ArtifactServer, build_artifact_tools
             tools = build_artifact_tools(workdir=self._workdir, engine=engine)
             engine.registry.update(tools)
-            server = ArtifactServer(self._workdir)
+            registry = engine.artifact_registry
+            server = ArtifactServer(self._workdir, registry=registry)
+
+            def _artifact_changed(action, record):
+                _write_line(_notify("session/artifact_changed", {
+                    "session_id": sid,
+                    "action": action,
+                    "artifact": record.as_dict(),
+                    "server_running": server.is_running,
+                    "server_url": server.base_url if server.is_running else None,
+                }))
+
+            registry.subscribe(_artifact_changed)
+
             async def _artifact_target():
                 await server.start()
                 return server
             engine.artifact_target = _artifact_target
+            engine.artifact_server = server
         except Exception:
             pass  # artifacts are optional
 
@@ -268,9 +282,33 @@ class SessionManager:
                 "created_at": s.created_at,
                 "n_messages": len(s.engine.history),
                 "running": s.running,
+                "artifact_count": getattr(
+                    getattr(s.engine, "artifact_registry", None), "count", 0),
+                "artifact_server_running": bool(getattr(
+                    getattr(s.engine, "artifact_server", None), "is_running", False)),
             }
             for s in self._sessions.values()
         ]
+
+    def artifact_status(self, session_id: str) -> dict:
+        sess = self.get(session_id)
+        registry = getattr(sess.engine, "artifact_registry", None) if sess else None
+        server = getattr(sess.engine, "artifact_server", None) if sess else None
+        running = bool(getattr(server, "is_running", False))
+        return {
+            "session_id": session_id,
+            "server_running": running,
+            "server_url": server.base_url if running else None,
+            "artifacts": registry.snapshot() if registry is not None else [],
+        }
+
+    async def stop_artifacts(self, session_id: str) -> bool:
+        sess = self.get(session_id)
+        server = getattr(sess.engine, "artifact_server", None) if sess else None
+        if server is None or not server.is_running:
+            return False
+        await server.stop()
+        return True
 
     def cancel_session(self, session_id: str) -> bool:
         sess = self.get(session_id)
@@ -299,6 +337,12 @@ class SessionManager:
         # heuristic outcome now that its turns are done. Idempotent, and a
         # no-turn session writes nothing.
         for sess in self._sessions.values():
+            server = getattr(sess.engine, "artifact_server", None)
+            if server is not None:
+                try:
+                    await server.stop()
+                except Exception:  # noqa: BLE001 — best-effort at teardown
+                    pass
             try:
                 sess.engine.finalize_outcome()
             except Exception:  # noqa: BLE001 — best-effort at teardown
@@ -371,7 +415,7 @@ async def run_server(
                 # from the editor's own environment.
                 from rockycode.onboarding import is_configured
                 _write_line(_response(msg_id, {
-                    "version": "0.1.0",
+                    "version": "0.1.1",
                     "session_id": sess.session_id,
                     "model": model,
                     "configured": is_configured(),
@@ -409,6 +453,18 @@ async def run_server(
                 _write_line(_response(msg_id, {
                     "session_id": sid,
                     "state": "busy" if (sess and sess.running) else "idle",
+                }))
+
+            elif method == "artifact/list":
+                sid = params.get("session_id", "")
+                _write_line(_response(msg_id, mgr.artifact_status(sid)))
+
+            elif method == "artifact/stop":
+                sid = params.get("session_id", "")
+                stopped = await mgr.stop_artifacts(sid)
+                _write_line(_response(msg_id, {
+                    **mgr.artifact_status(sid),
+                    "stopped": stopped,
                 }))
 
             elif method == "session/permission_response":

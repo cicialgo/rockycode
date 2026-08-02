@@ -13,7 +13,9 @@ ROCKYCODE_SANDBOX_IMAGE if Docker Hub is unreachable.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
+import secrets
 import shlex
 from pathlib import Path
 from typing import Optional
@@ -33,6 +35,51 @@ from rockycode.engine.tools import (
 DEFAULT_SANDBOX_IMAGE = "python:3.12-slim"
 EXEC_TIMEOUT_S = 120
 
+# docker exec has no host-side API for killing one running exec. Run each tool
+# command under a small Python supervisor inside the container: the child bash
+# gets its own process group and its group leader is written to a per-call file.
+# A second docker exec can then terminate that exact group on timeout/cancel.
+_EXEC_WRAPPER = """
+import os, subprocess, sys
+pidfile, script = sys.argv[1], sys.argv[2]
+proc = subprocess.Popen(["bash", "-c", script], start_new_session=True)
+with open(pidfile, "w", encoding="ascii") as f:
+    f.write(str(proc.pid))
+try:
+    code = proc.wait()
+finally:
+    try:
+        os.unlink(pidfile)
+    except FileNotFoundError:
+        pass
+raise SystemExit(code)
+"""
+
+_KILL_WRAPPER = """
+import os, signal, sys, time
+pidfile = sys.argv[1]
+pid = None
+for _ in range(20):
+    try:
+        with open(pidfile, encoding="ascii") as f:
+            pid = int(f.read().strip())
+        break
+    except (FileNotFoundError, ValueError):
+        time.sleep(0.05)
+if pid is not None:
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(pid, sig)
+        except ProcessLookupError:
+            break
+        if sig == signal.SIGTERM:
+            time.sleep(0.2)
+try:
+    os.unlink(pidfile)
+except FileNotFoundError:
+    pass
+"""
+
 
 class ChatSandbox:
     """One lightweight container per chat session; project dir mounted at /workspace."""
@@ -41,6 +88,7 @@ class ChatSandbox:
         self.container_id = container_id
         self.workdir = workdir
         self._running = True
+        self._has_py3 = True  # start() probes; direct construction assumes the default image
 
     @classmethod
     async def start(cls, workdir: Path, *, image: str | None = None,
@@ -74,7 +122,18 @@ class ChatSandbox:
             elif "Cannot connect" in msg or "Is the docker daemon" in msg:
                 hint = "\n  [hint] docker daemon is not running or not reachable."
             raise RuntimeError(f"sandbox start failed for {img}: {msg}{hint}")
-        return cls(out.decode().strip(), wd)
+        sandbox = cls(out.decode().strip(), wd)
+        # The cancel/timeout supervisor runs under python3 inside the container.
+        # A custom ROCKYCODE_SANDBOX_IMAGE without it (node, go, …) falls back
+        # to plain bash -c: commands still run, but cancel can only kill the
+        # host-side docker client, not the in-container process tree.
+        probe = await asyncio.create_subprocess_exec(
+            "docker", "exec", sandbox.container_id, "python3", "-c", "",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        sandbox._has_py3 = await probe.wait() == 0
+        return sandbox
 
     async def exec(
         self,
@@ -85,8 +144,11 @@ class ChatSandbox:
     ) -> tuple[str, int]:
         if not self._running:
             return "[error] sandbox has been stopped", 1
+        pidfile = f"/tmp/rockycode-exec-{secrets.token_hex(12)}.pid" if self._has_py3 else None
+        cmd = (["python3", "-c", _EXEC_WRAPPER, pidfile, script] if pidfile
+               else ["bash", "-c", script])
         proc = await asyncio.create_subprocess_exec(
-            "docker", "exec", "-i", self.container_id, "bash", "-c", script,
+            "docker", "exec", "-i", self.container_id, *cmd,
             stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
@@ -94,9 +156,42 @@ class ChatSandbox:
         try:
             out, _ = await asyncio.wait_for(proc.communicate(input=stdin), timeout=timeout)
         except asyncio.TimeoutError:
-            proc.kill()
+            await self._terminate_exec(proc, pidfile)
             return f"[timeout] command exceeded {timeout}s and was killed", 124
+        except asyncio.CancelledError:
+            # Esc/new-submit cancellation must not leave a command running in the
+            # container against the read-write /workspace mount.
+            await self._terminate_exec(proc, pidfile)
+            raise
         return out.decode(errors="replace"), proc.returncode or 0
+
+    async def _terminate_exec(self, proc, pidfile: str | None) -> None:
+        """Kill one supervised in-container command, then reap docker exec."""
+        try:
+            if self._running and pidfile is not None:
+                try:
+                    killer = await asyncio.create_subprocess_exec(
+                        "docker", "exec", self.container_id,
+                        "python3", "-c", _KILL_WRAPPER, pidfile,
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    try:
+                        await asyncio.wait_for(killer.wait(), timeout=3)
+                    except asyncio.TimeoutError:
+                        with contextlib.suppress(ProcessLookupError):
+                            killer.kill()
+                        await killer.wait()
+                except OSError:
+                    # Docker may disappear during app shutdown. Preserve the
+                    # caller's TimeoutError/CancelledError and still reap the
+                    # host-side client below.
+                    pass
+        finally:
+            if proc.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()  # reap a stuck host-side docker client too
+            await proc.wait()
 
     async def stop(self) -> None:
         self._running = False

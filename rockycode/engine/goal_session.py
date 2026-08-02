@@ -14,7 +14,7 @@ CLI. `LiveGoalBackend` is the real implementation; tests substitute their own.
 from __future__ import annotations
 
 import time as _time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, List, Optional
 

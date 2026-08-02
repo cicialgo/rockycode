@@ -180,6 +180,9 @@ def _read_info(traj: Path) -> Optional[SessionInfo]:
             n_messages += 1
             if not summary and data.get("role") == "user":
                 c = data.get("content")
+                if isinstance(c, list):  # image-bearing turn — its text part
+                    c = next((p.get("text") for p in c
+                              if isinstance(p, dict) and p.get("type") == "text"), "")
                 if isinstance(c, str) and c.strip():
                     summary = c.strip().splitlines()[0][:80]
     if not _is_chat_session(meta):
@@ -282,7 +285,14 @@ def project_current_path(project_id: str) -> Optional[Path]:
 def load_history(traj: Path) -> list[dict]:
     """Reconstruct an engine message history from a trajectory file — exactly
     the {role, content, tool_calls, tool_call_id} dicts that were sent to the
-    API (reasoning_content was never stored, so this is clean to replay)."""
+    API (reasoning_content was never stored, so this is clean to replay).
+
+    The result is repaired before returning: a hard-killed process (SIGKILL,
+    crash, OOM) can leave an assistant tool_calls message with NO tool
+    response in the trajectory — the engine's finally-block stub never ran —
+    and sending that verbatim 400s the next request. repair_history() makes
+    --resume self-healing exactly like the live engine's in-memory repair.
+    """
     history: list[dict] = []
     try:
         lines = Path(traj).read_text(encoding="utf-8", errors="replace").splitlines()
@@ -295,4 +305,74 @@ def load_history(traj: Path) -> list[dict]:
             continue
         if rec.get("kind") == "message":
             history.append(rec["data"])
+    repair_history(history)
     return history
+
+
+def repair_history(history: list[dict]) -> None:
+    """Inject synthetic tool responses for ANY orphaned tool_calls — in place.
+
+    The load-time twin of `Engine._repair_history` (rockycode/engine/loop.py),
+    with identical semantics so the in-memory path and the --resume path can
+    never drift apart:
+
+      - idempotent: a call that already has a response is left alone, so it is
+        safe to call repeatedly without ever producing a DUPLICATE response;
+      - in-position: a stub goes right after its own assistant message (past
+        any responses already there), never at the end — so it can't land
+        after a newly-appended user message and break ordering;
+      - fixes every orphan, not just the most recent (a multi-orphan resume
+        otherwise still 400s with "insufficient tool messages following
+        tool_calls message").
+
+    When does this trigger? The engine's finally-block repairs history and
+    trajectory stubs on a *cancelled* turn (new submit / Esc), but a process
+    that dies hard mid-tool never runs it — the trajectory then ends with an
+    unanswered assistant tool_calls, and `--resume` would 400 on the first
+    request. This closes that gap.
+    """
+    i = 0
+    while i < len(history):
+        msg = history[i]
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            # The API validates CONTIGUOUS tool messages only: the assistant
+            # tool_calls message must be followed immediately by tool responses
+            # for every call_id — nothing else (assistant/user) may interleave.
+            # A response that exists FARTHER down (e.g. after an interleaved
+            # user message) does NOT satisfy the check, so it must not count.
+            answered: list[str] = []
+            j = i + 1
+            while j < len(history) and history[j].get("role") == "tool":
+                answered.append(history[j].get("tool_call_id"))
+                j += 1
+            insert_at = i + 1 + len(answered)
+            for tc in msg["tool_calls"]:
+                cid = tc.get("id", "")
+                if cid and cid not in answered:
+                    # Prefer MOVING a distant real response here (keeps its
+                    # output, and a copied stub would leave the distant tool
+                    # message orphaned — the API rejects stray tool messages
+                    # with "must be a response to a preceding tool_calls").
+                    moved = _take_response(history, j, cid)
+                    if moved is None:
+                        moved = {
+                            "role": "tool",
+                            "tool_call_id": cid,
+                            "content": "[error] tool execution was interrupted",
+                        }
+                    history.insert(insert_at, moved)
+                    insert_at += 1
+        i += 1
+
+
+def _take_response(history: list[dict], start: int, call_id: str) -> dict | None:
+    """Find a tool response for call_id at/after `start`, remove it, return it.
+
+    Returns None when no distant response exists (the caller then falls back
+    to a synthetic interrupt stub). Moving — not copying — keeps every
+    call_id unique and leaves no stray tool message behind.
+    """
+    for k in range(start, len(history)):
+        if history[k].get("role") == "tool" and history[k].get("tool_call_id") == call_id:
+            return history.pop(k)
+    return None

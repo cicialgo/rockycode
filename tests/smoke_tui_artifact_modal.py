@@ -16,8 +16,10 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 os.chdir(tempfile.mkdtemp(prefix="rockyartmodal-"))
 
-from rockycode.engine.loop import Engine
-from rockycode.tui.app import ArtifactLiveModal, RockyCodeApp
+from rockycode.engine.loop import Engine  # noqa: E402
+from rockycode.engine.artifact import ArtifactRegistry  # noqa: E402
+from rockycode.tui.app import ArtifactLiveModal, RockyCodeApp  # noqa: E402
+from textual.widgets import Static  # noqa: E402
 
 
 def build_app():
@@ -42,6 +44,24 @@ async def pick(keys):
         return out.get("v")
 
 
+async def check_session_inventory():
+    app = build_app()
+    registry = ArtifactRegistry()
+    registry.upsert(
+        name="Review", title="Review", path=Path.cwd() / "Review.html",
+        url=(Path.cwd() / "Review.html").as_uri(), live=False,
+    )
+    app.engine.artifact_registry = registry
+    async with app.run_test(size=(100, 28)) as pilot:
+        await pilot.pause(0.1)
+        app._render_cwd()
+        assert "1 artifact" in str(app.query_one("#cwd", Static).render()), \
+            "session footer must show the Artifact count"
+        await app._handle_artifact("/artifact list")
+        transcript = " ".join(str(widget.render()) for widget in app.query(Static))
+        assert "Review" in transcript and "static" in transcript, transcript
+
+
 async def main():
     # right moves to 'just once' → Enter picks static
     assert await pick(["right", "enter"]) == "static", "→ then Enter should pick 'just once'"
@@ -56,7 +76,9 @@ async def main():
     # Esc is the safe static default
     assert await pick(["escape"]) == "static", "Esc should pick the safe 'just once'"
 
-    print("TUI ARTIFACT-MODAL SMOKE OK — ←→/↑↓ move · Enter picks · Esc = static. amaze!")
+    await check_session_inventory()
+
+    print("TUI ARTIFACT SMOKE OK — modal keys + session inventory badge/list. amaze!")
 
 
 asyncio.run(main())

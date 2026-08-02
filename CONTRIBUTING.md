@@ -40,7 +40,7 @@ rockycode goal "…"             # autonomous run (sandboxed worktree copy)
 ## Before you open a PR
 
 1. **Run the test suite** — `python tests/run_all.py`. It should be green.
-2. **Lint** — `ruff check .` (config is in `pyproject.toml`).
+2. **Lint** — `uv run ruff check .` (pinned version and conservative rules are in `pyproject.toml`).
 3. **Match the surrounding code.** Read the file you're editing and mirror its
    naming, comment density, and idioms. New code should be indistinguishable in
    style from what's around it.

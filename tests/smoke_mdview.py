@@ -81,7 +81,23 @@ async def main():
         assert not app.query(DocDock), "esc must close the dock"
         assert transcript.display and transcript.size.width == full_w, \
             "exact single-column view restored"
-    print("dock: beside-not-over, policy-gated nav, back/width/full, esc-close  ✓")
+
+        # ✕ close is markup inside the dock's OWN header: its action runs on
+        # the clicked widget's pump, where awaiting remove() once deadlocked
+        # the whole app. Click it for real and prove the next round types.
+        await app._open_doc(doc1.as_uri())
+        await pilot.pause()
+        assert app.query(DocDock)
+        await pilot.click("#docdock-head", offset=(20, 0))  # inside "✕ close · esc"
+        await pilot.pause()
+        assert not app.query(DocDock), "✕ click must close the dock"
+        assert transcript.display and transcript.size.width == full_w
+        prompt = app.query_one("#prompt")
+        await pilot.press("h", "i")
+        assert prompt.has_focus and prompt.text == "hi", \
+            "input panel must take the next round after ✕ close"
+    print("dock: beside-not-over, policy-gated nav, back/width/full, "
+          "esc-close, ✕-close-then-type  ✓")
 
 
 asyncio.run(main())

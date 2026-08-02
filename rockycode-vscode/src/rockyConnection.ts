@@ -9,6 +9,14 @@ import { spawn, ChildProcess } from 'child_process';
 import { createInterface, Interface } from 'readline';
 
 type NotificationHandler = (params: Record<string, unknown>) => void;
+type SessionHandler = (session: RockySessionResult) => void;
+
+export interface RockySessionResult {
+  version: string;
+  session_id: string;
+  model: string;
+  configured?: boolean;
+}
 
 /**
  * Locate the rockycode CLI. An explicit rockycode.pythonPath wins. Otherwise
@@ -41,6 +49,7 @@ export class RockyConnection implements vscode.Disposable {
   private nextId = 1;
   private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
   private handlers = new Map<string, Set<NotificationHandler>>();
+  private sessionHandlers = new Set<SessionHandler>();
   private buffer = '';
   private _sessionId: string | null = null;
   private _model: string | null = null;
@@ -146,12 +155,19 @@ export class RockyConnection implements vscode.Disposable {
     });
 
     // Initialize handshake
-    const result = await this.request('initialize', {}) as { version: string; session_id: string; model: string; configured?: boolean };
-    this._sessionId = result.session_id;
-    this._model = result.model;
+    const result = await this.request('initialize', {}) as RockySessionResult;
+    this.selectSession(result);
     // serve is the source of truth for "is a key present" (it may load a .env
     // the editor never saw) — trust it over the editor's own environment.
     if (result.configured) this._hasApiKey = true;
+  }
+
+  /** Create and select a fresh backend session on the existing serve process. */
+  async createSession(): Promise<RockySessionResult> {
+    const result = await this.request('initialize', {}) as RockySessionResult;
+    this.selectSession(result);
+    if (result.configured) this._hasApiKey = true;
+    return result;
   }
 
   async dispose(): Promise<void> {
@@ -207,6 +223,14 @@ export class RockyConnection implements vscode.Disposable {
     this.handlers.get(method)?.delete(handler);
   }
 
+  onSessionChanged(handler: SessionHandler): void {
+    this.sessionHandlers.add(handler);
+  }
+
+  offSessionChanged(handler: SessionHandler): void {
+    this.sessionHandlers.delete(handler);
+  }
+
   // ── accessors ────────────────────────────────────────────────────────
 
   get sessionId(): string | null {
@@ -247,6 +271,12 @@ export class RockyConnection implements vscode.Disposable {
         }
       }
     }
+  }
+
+  private selectSession(result: RockySessionResult): void {
+    this._sessionId = result.session_id;
+    this._model = result.model;
+    for (const handler of this.sessionHandlers) handler(result);
   }
 
   private rejectAllPending(error: Error): void {

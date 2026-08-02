@@ -47,11 +47,31 @@ export interface SessionInfo {
   created_at: string;
   n_messages: number;
   running: boolean;
+  artifact_count: number;
+  artifact_server_running: boolean;
 }
 
 export interface StatusResult {
   session_id: string;
   state: 'idle' | 'busy';
+}
+
+export interface ArtifactInfo {
+  name: string;
+  title: string;
+  path: string;
+  url: string;
+  live: boolean;
+  created_at: number;
+  updated_at: number;
+  open_clients: number;
+}
+
+export interface ArtifactStatusResult {
+  session_id: string;
+  server_running: boolean;
+  server_url: string | null;
+  artifacts: ArtifactInfo[];
 }
 
 // ── notification payloads ──────────────────────────────────────────────
@@ -111,4 +131,12 @@ export interface PermissionRequestParams {
   tool: string;
   args: Record<string, unknown>;
   risk: string;
+}
+
+export interface ArtifactChangedParams {
+  session_id: string;
+  action: 'created' | 'updated' | 'clients' | 'server';
+  artifact: ArtifactInfo;
+  server_running: boolean;
+  server_url: string | null;
 }

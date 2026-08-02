@@ -53,6 +53,11 @@ class Provider:
     endpoints: list[Endpoint]
     reasoning: str = "openai"   # deepseek | openai | none
     tools: str = "native"      # native | off
+    # Every listed model takes image input (the builtins list exactly the
+    # vision flagships — minimax-m3, kimi-k3, step-3.7-flash — so a provider-
+    # level flag is accurate; a TOML provider mixing vision and text models
+    # should be split into two entries).
+    vision: bool = False
     label: str = ""
     builtin: bool = True
 
@@ -84,7 +89,9 @@ def _builtins() -> dict[str, Provider]:
     # first test one; correcting a URL is a one-line data edit here or in TOML.
     return {
         "deepseek": Provider(
-            name="deepseek", models=["deepseek-v4-pro", "deepseek-v4-flash"],
+            # flash first: it is the default pick (models[0]) for a bare
+            # `/model deepseek` — the normal serving tier; pro is the preview.
+            name="deepseek", models=["deepseek-v4-flash", "deepseek-v4-pro"],
             endpoints=[Endpoint("deepseek",
                                 (os.getenv(BASE_URL_ENV) or "").strip() or DEFAULT_BASE_URL,
                                 KEY_ENV)],
@@ -95,14 +102,19 @@ def _builtins() -> dict[str, Provider]:
                 Endpoint("minimax-en", "https://api.minimaxi.chat/v1", "ROCKYCODE_MINIMAX_EN_API_KEY"),
                 Endpoint("minimax-cn", "https://api.minimax.chat/v1", "ROCKYCODE_MINIMAX_CN_API_KEY"),
             ],
-            reasoning="openai", label="MiniMax M3"),
+            reasoning="openai", vision=True, label="MiniMax M3"),
         "kimi": Provider(
             name="kimi", models=["kimi-k3"],
             endpoints=[
                 Endpoint("kimi-en", "https://api.moonshot.ai/v1", "ROCKYCODE_KIMI_EN_API_KEY"),
                 Endpoint("kimi-cn", "https://api.moonshot.cn/v1", "ROCKYCODE_KIMI_CN_API_KEY"),
             ],
-            reasoning="none", label="Kimi / Moonshot"),
+            reasoning="none", vision=True, label="Kimi / Moonshot"),
+        "stepfun": Provider(
+            name="stepfun", models=["step-3.7-flash"],
+            endpoints=[Endpoint("stepfun", "https://api.stepfun.com/v1",
+                                "ROCKYCODE_STEPFUN_API_KEY")],
+            reasoning="none", vision=True, label="StepFun — native multimodal"),
         "glm": Provider(
             name="glm", models=["glm-5.2"],
             endpoints=[
@@ -147,6 +159,7 @@ def _parse_toml(path: Path) -> dict[str, Provider]:
         out[name] = Provider(name=name, models=list(models), endpoints=eps,
                              reasoning=cfg.get("reasoning", "openai"),
                              tools=cfg.get("tools", "native"),
+                             vision=bool(cfg.get("vision", False)),
                              label=cfg.get("label", ""), builtin=False)
     return out
 

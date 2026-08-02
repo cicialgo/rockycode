@@ -209,7 +209,7 @@ class GoalScreen(Screen):
         for i, m in enumerate(plan, 1):
             await self._line(f"  [{PURPLE}]{i}.[/] {escape(m)}")
         if permits.needs_notice:
-            await self._line(f"[dim]this run will need — approve before you leave:[/]")
+            await self._line("[dim]this run will need — approve before you leave:[/]")
             if permits.use_network:
                 await self._line(f"  [magenta]🌐 network[/] — {escape(permits.net_reason or 'requested')}")
             elif permits.net_reason:
@@ -217,7 +217,7 @@ class GoalScreen(Screen):
             for v in permits.asks:
                 await self._line(f"  [{AMBER}]⬆ {escape(v.reason)}[/]")
         else:
-            await self._line(f"[dim]no extra permissions (offline, no privileged commands).[/]")
+            await self._line("[dim]no extra permissions (offline, no privileged commands).[/]")
         self._foot(f"[{LAVENDER}]y[/] run   [{LAVENDER}]e[/] discuss/edit   [{LAVENDER}]n[/] cancel"
                    f"   [dim]· pgup/pgdn scroll[/]")
 
@@ -241,8 +241,8 @@ class GoalScreen(Screen):
             await self._line(f"[{LAVENDER}]log:[/]    [dim]{escape(s.log)}[/]")
         if s.branch:
             await self._line(
-                f"\n[dim]↵ back to chat — ask rocky to review or merge it for you, "
-                f"or run the commands above yourself.[/]")
+                "\n[dim]↵ back to chat — ask rocky to review or merge it for you, "
+                "or run the commands above yourself.[/]")
 
     # ---- input plumbing -----------------------------------------------------
 

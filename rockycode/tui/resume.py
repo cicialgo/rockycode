@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Optional
 
 from textual import on
 from textual.binding import Binding
@@ -20,7 +19,7 @@ from textual.widgets.option_list import Option
 
 from rich.markup import escape
 
-from rockycode.palette import LAVENDER, MUTED, VIOLET
+from rockycode.palette import LAVENDER, MUTED
 from rockycode.session import SessionInfo, list_sessions, public_id
 
 

@@ -266,8 +266,8 @@ async def run_routine(store: RoutineStore, r: Routine, *, model: str,
                     "project_name": project.name},
     )
 
-    meta = next((l for l in lines if l.get("type") == "meta"), {})
-    result = next((l for l in lines if l.get("type") == "result"), {})
+    meta = next((line for line in lines if line.get("type") == "meta"), {})
+    result = next((line for line in lines if line.get("type") == "result"), {})
     status = {0: "done", 2: "blocked", 3: "budget"}.get(code, "error")
     ledger = UsageLedger()
     if result.get("usage"):

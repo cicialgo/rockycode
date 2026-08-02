@@ -223,4 +223,101 @@ assert inspect.signature(ChatSandbox.start).parameters["network"].default is Fal
     "the sandbox default must be offline everywhere"
 print("sandbox: exec defaults on + offline; ChatSandbox default offline  ✓")
 
+
+async def check_sandbox_interrupt_cleanup():
+    """Timeout and task cancellation both invoke in-container termination."""
+    original_create = asyncio.create_subprocess_exec
+    started = asyncio.Event()
+    made = []
+
+    class FakeProc:
+        def __init__(self):
+            self.returncode = None
+
+        async def communicate(self, input=None):
+            started.set()
+            await asyncio.Future()
+
+        def kill(self):
+            self.returncode = -9
+
+        async def wait(self):
+            return self.returncode or 0
+
+    async def fake_create(*args, **kwargs):
+        proc = FakeProc()
+        made.append(proc)
+        return proc
+
+    sandbox = ChatSandbox("fake-container", Path.cwd())
+    terminated = []
+
+    async def fake_terminate(proc, pidfile):
+        terminated.append((proc, pidfile))
+        proc.kill()
+
+    sandbox._terminate_exec = fake_terminate
+    asyncio.create_subprocess_exec = fake_create
+    try:
+        out, code = await sandbox.exec("sleep forever", timeout=0.01)
+        assert code == 124 and out.startswith("[timeout]"), (out, code)
+        assert terminated and terminated[-1][0] is made[-1]
+
+        started.clear()
+        task = asyncio.create_task(sandbox.exec("sleep forever"))
+        await started.wait()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        else:
+            raise AssertionError("sandbox exec must propagate CancelledError")
+        assert len(terminated) == 2 and terminated[-1][0] is made[-1], \
+            "cancel must terminate the supervised container command"
+    finally:
+        asyncio.create_subprocess_exec = original_create
+
+
+asyncio.run(check_sandbox_interrupt_cleanup())
+print("sandbox: timeout + CancelledError terminate the in-container command  ✓")
+
+
+async def check_sandbox_no_python3_fallback():
+    """An image without python3 falls back to plain bash -c (no supervisor)."""
+    original_create = asyncio.create_subprocess_exec
+    calls = []
+
+    class FakeProc:
+        returncode = 0
+
+        async def communicate(self, input=None):
+            return b"ok", b""
+
+        def kill(self):
+            pass
+
+        async def wait(self):
+            return 0
+
+    async def fake_create(*args, **kwargs):
+        calls.append(args)
+        return FakeProc()
+
+    sandbox = ChatSandbox("fake-container", Path.cwd())
+    sandbox._has_py3 = False
+    asyncio.create_subprocess_exec = fake_create
+    try:
+        out, code = await sandbox.exec("echo hi")
+        assert (out, code) == ("ok", 0), (out, code)
+        assert calls[-1][:4] == ("docker", "exec", "-i", "fake-container")
+        assert calls[-1][4:] == ("bash", "-c", "echo hi"), \
+            "without python3 the command must run under plain bash -c"
+    finally:
+        asyncio.create_subprocess_exec = original_create
+
+
+asyncio.run(check_sandbox_no_python3_fallback())
+print("sandbox: no-python3 image falls back to plain bash -c  ✓")
+
 print("smoke_exec: OK")

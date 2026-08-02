@@ -40,8 +40,22 @@ Write only the state document, no preamble. Be dense; facts over prose.
 """
 
 
+# A pending image_path part costs whatever the provider bills for the pixels,
+# not its ~30-char reference — assume a mid-detail image so projection stays
+# conservative (stepfun low ≈ 169, minimax default ≤ ~5k, kimi by resolution).
+IMAGE_PART_EST_TOKENS = 1_200
+
+
 def estimate_msg_tokens(msg: dict) -> int:
-    chars = len(msg.get("content") or "")
+    content = msg.get("content")
+    if isinstance(content, list):  # image-bearing user turn (engine/images.py)
+        chars = sum(len(p.get("text") or "") for p in content
+                    if isinstance(p, dict) and p.get("type") == "text")
+        images = sum(1 for p in content
+                     if isinstance(p, dict) and p.get("type") == "image_path")
+        return (MSG_OVERHEAD_TOKENS + chars // CHARS_PER_TOKEN
+                + images * IMAGE_PART_EST_TOKENS)
+    chars = len(content or "")
     for tc in msg.get("tool_calls") or []:
         fn = tc.get("function", {})
         chars += len(fn.get("name", "")) + len(fn.get("arguments", ""))
@@ -129,6 +143,18 @@ def truncate_oversized(history: list[dict], max_chars: int = MAX_MSG_CHARS) -> i
     keep = max_chars // 2 - 60
     for msg in history[1:]:  # never the system prompt
         content = msg.get("content")
+        if isinstance(content, list):
+            # Image-bearing turn: the text part can still be a giant paste.
+            # Image parts are tiny references (engine/images.py) — untouched.
+            for p in content:
+                text = p.get("text") if isinstance(p, dict) and p.get("type") == "text" else None
+                if text and len(text) > max_chars:
+                    elided = len(text) - 2 * keep
+                    p["text"] = (text[:keep]
+                                 + f"\n… [{elided:,} chars elided to fit the context window] …\n"
+                                 + text[-keep:])
+                    n += 1
+            continue
         if not isinstance(content, str) or len(content) <= max_chars:
             continue
         elided = len(content) - 2 * keep

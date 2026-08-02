@@ -130,6 +130,21 @@ SCHEMAS: dict[str, dict] = {
         },
         ["pattern"],
     ),
+    "view_image": _fn_schema(
+        "view_image",
+        "Look at an image file (png/jpg/gif/webp) and get a detailed text "
+        "description from a vision model. Use it to understand a screenshot or "
+        "diagram the user mentioned, or to REVIEW an image you just generated "
+        "(e.g. a matplotlib/PIL output) with your own eyes before calling it done.",
+        {
+            "path": {"type": "string", "description": "Path to the image file."},
+            "question": {
+                "type": "string",
+                "description": "What you specifically want to know about it (optional).",
+            },
+        },
+        ["path"],
+    ),
 }
 
 
@@ -325,6 +340,34 @@ async def _edit_file(path: str, old_string: str, new_string: str, *, workdir: Pa
     return f"[ok] edited {p}"
 
 
+async def _view_image(path: str, question: str = "", *, workdir: Path,
+                      allowed_roots: tuple[Path, ...] = (), read_grants=None) -> str:
+    """Describe an image via the configured vision route (engine/vision.py):
+    the user's image CLI when set, else a keyed vision provider. Same READ
+    jail as read_file — the pixels leave the machine (a provider API or a
+    user command), which is also why this tool stays in the 'risky' approval
+    tier rather than the auto-allowed read tier."""
+    p, err = _jail(path, workdir, allowed_roots, grants=tuple(read_grants or ()))
+    if err:
+        return err
+    if not p.is_file():
+        return f"[error] file not found: {p}"
+    from rockycode.engine.images import IMAGE_EXTS
+    if p.suffix.lower() not in IMAGE_EXTS:
+        return f"[error] not an image file ({p.suffix or 'no extension'}) — supported: " \
+               + " ".join(sorted(IMAGE_EXTS))
+    from rockycode.config import load as load_config
+    from rockycode.engine import vision
+    cfg = load_config(workdir)
+    try:
+        desc, source = await vision.describe(
+            p, question or "", route="auto",
+            preferred=cfg["image_provider"], template=cfg["image_cli"])
+    except vision.VisionError as e:
+        return f"[error] {e}"
+    return f"[image {p.name} · seen by {source}]\n{desc}"
+
+
 def _walk_files(root: Path):
     """Files under root, sorted, skipping junk dirs."""
     stack = [root]
@@ -434,6 +477,9 @@ def build_registry(workdir: Path, allowed_roots: tuple[Path, ...] = (), read_gra
             pattern, path, include, workdir=workdir
         ),
         "glob": lambda pattern: _glob(pattern, workdir=workdir),
+        "view_image": lambda path, question="": _view_image(
+            path, question, workdir=workdir, allowed_roots=allowed_roots,
+            read_grants=read_grants),
     }
     reg = {
         name: Tool(name=name, schema=SCHEMAS[name], fn=fn, risk=RISK.get(name, "risky"))

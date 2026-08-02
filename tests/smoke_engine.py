@@ -10,7 +10,7 @@ os.chdir(tempfile.mkdtemp(prefix="rockysmoke-"))
 
 from rockycode.engine.loop import Engine
 from rockycode.engine.events import (
-    TextDelta, ThinkingDelta, ToolFinished, ToolStarted, TurnFinished,
+    TextDelta, ThinkingDelta, ToolFinished, TurnFinished,
 )
 
 

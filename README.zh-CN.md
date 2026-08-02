@@ -9,7 +9,8 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
-![SWE-bench Verified](https://img.shields.io/badge/SWE--bench_Verified-~80%25_100--task_slice-7d5cc6)
+![SWE-bench Verified](https://img.shields.io/badge/SWE--bench_Verified-79.8%25_V4--flash-7d5cc6)
+![V4-pro preview](https://img.shields.io/badge/V4--pro_preview-81.8%25_pass@3-8d6cd0)
 ![Python](https://img.shields.io/badge/Python-3.11%2B-9d7cd8)
 ![License](https://img.shields.io/badge/License-MIT-a9b1d6)
 
@@ -36,11 +37,17 @@ rockycode 是一个编程智能体 harness，为 DeepSeek V4 系列适配，也�
 
 ## 能力量化：SWE bench
 
-在 SWE-bench Verified 上，**随机抽选 100 题**测试（资源所限，没有在完整 500 题上做重复取平均）：
+完整 500 题的成绩：**独立的完整 500 题运行**（`deepseek-v4-pro` 与 `minimax-m3` 各 3 轮，`deepseek-v4-flash` 目前 1 轮），所有模型使用完全相同的 harness 与配置（步数上限 100、单次最大输出 32,768 token、推理力度 `max`、thinking 开启），由官方 SWE-bench harness 打分，未针对任务做任何调优。
 
-**结果：在这个 100 题切片上约 80%** —— 用 `deepseek-v4-pro`，未针对这些任务做调优，是一次四臂配置扫描的均值。
+| 轮次 | `deepseek-v4-pro` | `deepseek-v4-flash` | `minimax-m3` |
+|---|---|---|---|
+| 第 1 轮 | 75.6%（378/500） | 79.8%（399/500） | 72.8%（364/500） |
+| 第 2 轮 | 74.8%（374/500） | — | 71.2%（356/500） |
+| 第 3 轮 | 74.4%（372/500） | — | 70.0%（350/500） |
+| **平均** | **74.9%** | **79.8%**（1 轮） | **71.3%** |
+| 多轮并集（pass@3） | 81.8%（409/500） | — | 83.6%（418/500） |
 
-请连同它的边界一起看：这是一个**随机抽取的代表性切片**，不是官方 500 题的完整Verified 集；其中较难的 20 题核心得分 60–70%，另外 80 题得分 >80%。请把它当作诚实的内部测量，而非排行榜成绩；完整拆解请关注我们的X账号（@rockycode_ai）。
+两行汇总要分开读。**平均值**是可以与排行榜对比的数字 —— 每一轮都是独立的单次完整 500 题。**并集**是 pass@3：至少被某一轮解出的任务。两者之间的差距（DeepSeek 约 7 个点、MiniMax 约 12 个点）是轮次间方差，不是能力上限 —— 模型在这套 harness 下已经"够得着"这些任务，只是无法每一轮都稳住。当前的工作重心就是收掉这个差距：finish 前的验证门控与多轮选择，而不是继续改提示词。作为参照：DeepSeek 用自家 scaffold 报告 80.6%，三轮并集已越过这个数字。逐轮拆解请关注我们的X账号（@rockycode_ai）。
 
 我们计划支持DeepSWE bench，目前还在调试中。
 
@@ -51,10 +58,28 @@ rockycode 是一个编程智能体 harness，为 DeepSeek V4 系列适配，也�
 **Docker Desktop** 仅在需要容器隔离工具执行的模式下才必需：`goal`（自主运行）、`exec`（自动化委托）、`bench`（SWE-bench 打分），以及 chat 里可选的`/sandbox`。这些模式在沙箱内默认离线运行，被委托或无人值守的任务因此无法触碰你的主机、无法访问网络。
 
 ```bash
-uv pip install rockycode      # 用 uv（或 uv tool install rockycode 装成独立命令）
-pip install rockycode         # 或用普通 pip
+uv tool install rockycode     # 推荐 —— `rockycode` 命令直接进 PATH
 rockycode                     # 首次运行会引导你完成 API key 设置
 ```
+
+还没有 uv？一条命令安装：
+`curl -LsSf https://astral.sh/uv/install.sh | sh`（Windows 及其他方式见
+[uv 安装文档](https://docs.astral.sh/uv/getting-started/installation/)）。
+
+三种装法看着像，落点完全不同：
+
+- **`uv tool install rockycode`**（推荐）—— 给 CLI 一个独立的隔离环境，并把
+  `rockycode` 命令放上 PATH；系统 Python 低于 3.11 时，uv 会自动拉取一个匹配
+  的解释器。想「当应用装」就用它。
+- **`uv pip install rockycode`** —— 只装进**当前激活的虚拟环境**：`rockycode`
+  命令只存在于那个 venv 里，新开一个 shell 会找不到它（要么先激活 venv，
+  要么用 `uv run rockycode` 运行）。
+- **`pip install rockycode`** —— 同样只进当前环境，且要求 Python 3.11+。在更老
+  的 Python 上会报一个很有误导性的
+  `ERROR: No matching distribution found for rockycode`。原因：pip 只会提供
+  `requires-python` 与你解释器匹配的版本，老 Python 下它一个可装的版本都看
+  不到，于是把「版本不满足」报成了「包不存在」。遇到这个错不用纠结 —— 直接用
+  上面的 `uv tool install rockycode`，uv 自带 3.11+ 的 Python。
 
 或从源码安装：
 
@@ -105,7 +130,8 @@ SSH 远程会话下剪贴板走 OSC 52 —— 在本地端开启「允许应用�
 | `/permission yolo\|ask\|careful` | 本次会话的工具审批严格度 |
 | `/sandbox on\|off\|status` | 把工具执行隔离进容器 |
 | `/lsp` | 语言服务器状态；诊断信息随 `read_file` 一并返回 |
-| `/artifact live on\|off` | 浏览器中自动刷新 HTML artifact |
+| `/artifact` | 本会话的 artifact：`list` · `open <n>` · `stop` · `live on\|off` |
+| `/paste` | 粘贴剪贴板图片（或 `ctrl+v`）；无视觉模型自选识图路由 |
 | `/prompt` | 查看当前生效的系统提示词 |
 | `/mcp` | 已连接的 MCP 服务及其工具 |
 | `/skills` | 已安装的技能 |
@@ -135,15 +161,15 @@ DeepSeek 是主场模型，但提供商是数据而非代码：每个提供商�
 
 | 提供商 | 模型 |
 |---|---|
-| **deepseek**（默认） | `deepseek-v4-pro`、`deepseek-v4-flash` |
+| **deepseek**（默认） | `deepseek-v4-flash`（默认）、`deepseek-v4-pro`（preview） |
 | **minimax** | `minimax-m3` |
 | **kimi** | `kimi-k3` |
 | **glm** | `glm-5.2` |
 
 区域端点写作 `<提供商>-<区域>`（如 `kimi-cn`）；自定义提供商 —— 包括本地
 vLLM/SGLang 服务 —— 写进 `~/.rockycode/providers.toml`。`/model` 选择器
-只展示已配置好 key 的提供商。只有 DeepSeek 在 harness 上验证过，其余为
-[实验性功能](#实验性功能)。
+只展示已配置好 key 的提供商。DeepSeek 与 MiniMax 都有完整 500 题的 bench
+成绩（见上方「能力量化」）；Kimi 与 GLM 属于[实验性功能](#实验性功能)。
 
 推理深度旋钮（`/effort off|high|xhigh|max`）与提供商无关；各提供商在请求层
 把它映射到自己的档位（例如 DeepSeek 只区分 `high|max`，`xhigh` 会收敛为
@@ -227,8 +253,8 @@ sqlite-vec + FTS5 索引；没有 Ollama 则平滑退化为关键词检索。删
   有界的只读调查，只拿回带引用、经机械校验的报告；搜索噪声绝不进入你的会话。
   它同样为 goal 模式的分支评审与里程碑验证提供依据。
 - **DeepSeek 以外的提供商。** MiniMax、GLM / z.ai、Kimi 都以 OpenAI 兼容的
-  profile 接入（`/model`），但只有 DeepSeek 在 harness 上验证过 —— 其余在拿到
-  bench 分数前，请当作未验证。
+  profile 接入（`/model`）。DeepSeek 与 MiniMax 已有完整 bench 成绩（见
+  「能力量化」）；GLM 与 Kimi 在拿到 bench 分数前，请当作未验证。
 
 ## 复用你已有的配置
 

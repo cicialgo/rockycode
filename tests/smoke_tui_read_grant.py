@@ -24,7 +24,6 @@ REF.write_text("# reference notes\nMAGIC = 42\n")
 SECRET = REFDIR / ".env"
 SECRET.write_text("API_KEY=supersecret\n")
 
-from textual.widgets import Static
 
 from rockycode.engine.loop import Engine
 from rockycode.engine.tools import build_registry

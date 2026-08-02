@@ -114,10 +114,11 @@ HELP_TEXT = f"""\
   [{LAVENDER}]/goal [objective][/]  go autonomous — plan → confirm → work, in its own view (needs Docker)
   [{LAVENDER}]/research[/]  research mode — pick how we work: deep-research · paper-reading · whiteboard
   [{LAVENDER}]/learn[/]   learn mode — rocky tutors you through a paper, a codebase, or a concept
-  [{LAVENDER}]/model[/]   switch provider + model (deepseek · minimax · glm · kimi · mimo)
+  [{LAVENDER}]/model[/]   switch provider + model (deepseek · minimax · glm · kimi · stepfun)
+  [{LAVENDER}]/paste[/]   attach a clipboard image (or ctrl+v in the input). vision models see it raw; others pick a route — another provider key or your own CLI (/config image_cli)
   [{LAVENDER}]/sandbox[/]  sandbox on | off | status — isolate tools in a container
   [{LAVENDER}]/lsp[/]     language-server status (diagnostics ride along read_file)
-  [{LAVENDER}]/artifact[/]  artifact live on | off — auto-refresh artifacts in the browser
+  [{LAVENDER}]/artifact[/]  list | open | stop | live on/off — manage this session's artifacts
   [{LAVENDER}]/prompt[/]  show rocky's system prompt
   [{LAVENDER}]/mcp[/]     show connected MCP servers + tools
   [{LAVENDER}]/skills[/]  show installed skills
@@ -248,6 +249,8 @@ class ChatInput(TextArea):
 
     SLASH_COMMANDS = [
         "/help", "/plan", "/goal", "/research", "/learn", "/sandbox", "/lsp", "/artifact",
+        "/artifacts",
+        "/paste",
         "/prompt", "/config", "/model", "/effort", "/permission", "/mcp", "/skills", "/memory",
         "/proposals", "/routines", "/remember", "/clear", "/exit", "/quit",
     ]
@@ -256,6 +259,11 @@ class ChatInput(TextArea):
         def __init__(self, value: str) -> None:
             self.value = value
             super().__init__()
+
+    class PasteRequested(Message):
+        """Ctrl+V in the input: ask the app to read the OS clipboard — an image
+        becomes an attachment chip, text just pastes. (The terminal never
+        forwards image bytes itself, so this has to go around it.)"""
 
     def __init__(self, *, history: PromptHistory | None = None, **kwargs) -> None:
         super().__init__(soft_wrap=True, show_line_numbers=False, **kwargs)
@@ -324,6 +332,11 @@ class ChatInput(TextArea):
             event.stop()
             self.insert("\n")
             return
+        if event.key == "ctrl+v":  # OS-clipboard paste: image → chip, text → insert
+            event.prevent_default()
+            event.stop()
+            self.post_message(self.PasteRequested())
+            return
         # Up/Down recall previous inputs — but only from the top/bottom VISUAL
         # row, so while there's text above/below the cursor they just move a row
         # within it (like an editor). Only past the top row does up reach into
@@ -374,7 +387,7 @@ class ChatInput(TextArea):
             if matches:
                 self._show_suggestions(matches, prefix)
             else:
-                self._show_suggestions([f"  ? no match — /help for all commands"], "")
+                self._show_suggestions(["  ? no match — /help for all commands"], "")
         else:
             self._hide_suggestions()
 
@@ -392,7 +405,7 @@ class ChatInput(TextArea):
         if self._suggest_widget is not None:
             try:
                 self.app.query_one("#hints", Static).update(
-                    "/help · /model · /effort · /sandbox · /prompt · /config · /mcp · /skills · /memory · !cmd · /clear · /exit"
+                    "/help · /model · /effort · /paste · /sandbox · /prompt · /config · /mcp · /skills · /memory · !cmd · /clear · /exit"
                 )
             except Exception:  # noqa: BLE001
                 pass
@@ -414,6 +427,98 @@ class ChatInput(TextArea):
     def on_mouse_scroll_down(self, event) -> None:
         self._scroll_chat(3)
         event.stop()
+
+
+class ImageRouteChoice(Vertical):
+    """Pick how rocky should understand attached images when the active model
+    has no vision. Same inline pattern as InlineApproval (permission.py): docked
+    above the input, transcript stays scrollable, ↑↓ + Enter, and the future
+    resolves 'provider' | 'provider_always' | 'cli' | 'cli_always' | 'skip'.
+    The *_always variants also persist image_route to config — ask once, not
+    every paste. Esc skips (sends the honest placeholder), never cancels the turn.
+    """
+
+    can_focus = True
+
+    BINDINGS = [
+        ("up", "move(-1)", "up"),
+        ("down", "move(1)", "down"),
+        ("enter", "confirm", "select"),
+        ("escape", "pick('skip')", "skip"),
+    ]
+
+    DEFAULT_CSS = """
+    ImageRouteChoice {
+        height: auto;
+        margin: 0 1 1 1;
+        padding: 1 2;
+        background: $surface;
+        border: round $primary;
+        border-title-color: $text-muted;
+    }
+    ImageRouteChoice .route-opt { height: 1; }
+    ImageRouteChoice #route-keys { color: $text-muted; margin-top: 1; }
+    """
+
+    def __init__(self, n_images: int, provider_label: str, cli_label: str,
+                 future: "asyncio.Future[str]") -> None:
+        super().__init__()
+        self._n = n_images
+        self._future = future
+        self._choices: list[tuple[str, str]] = []
+        if provider_label:
+            self._choices += [
+                ("provider", f"◈  describe via {provider_label} — this time"),
+                ("provider_always", f"✓  always describe via {provider_label}"),
+            ]
+        if cli_label:
+            # Name the tool, not "it": `mmx describe {path}` → always row says
+            # "always use mmx" so what gets saved to config is unmistakable.
+            cli_name = cli_label.split()[0] if cli_label.split() else cli_label
+            self._choices += [
+                ("cli", f"⌁  {cli_label} — this time"),
+                ("cli_always", f"✓  always use {cli_name} for images"),
+            ]
+        self._choices.append(("skip", "◦  send without pixels (model is told an image exists)"))
+        self._idx = 0
+
+    def compose(self):
+        for i in range(len(self._choices)):
+            yield Static("", id=f"route-opt-{i}", classes="route-opt")
+        yield Static(
+            f"[{LAVENDER}]↑↓[/] choose   [{LAVENDER}]↵[/] select   "
+            f"[{LAVENDER}]esc[/] skip   [dim]or switch to a model that sees "
+            f"natively: /model (kimi · minimax · stepfun)[/]",
+            id="route-keys",
+        )
+
+    def on_mount(self) -> None:
+        plural = "s" if self._n > 1 else ""
+        self.border_title = f"❖ {self._n} image{plural} — this model can't see"
+        self._render_choices()
+        self.focus()
+
+    def _render_choices(self) -> None:
+        for i, (_value, text) in enumerate(self._choices):
+            row = self.query_one(f"#route-opt-{i}", Static)
+            if i == self._idx:
+                row.update(f"[b {LAVENDER}]▸ {escape(text)}[/]")
+            else:
+                row.update(f"[{MUTED}]  {escape(text)}[/]")
+
+    def action_move(self, delta: int) -> None:
+        self._idx = (self._idx + delta) % len(self._choices)
+        self._render_choices()
+
+    def action_confirm(self) -> None:
+        self._resolve(self._choices[self._idx][0])
+
+    def action_pick(self, choice: str) -> None:
+        self._resolve(choice)
+
+    def _resolve(self, value: str) -> None:
+        if not self._future.done():
+            self._future.set_result(value)
 
 
 class RockyCodeApp(App):
@@ -536,6 +641,11 @@ class RockyCodeApp(App):
         # memory off, or exited before the worker ran). "auto" sheets key off
         # this: no live dream consumer → the user is never asked for feedback.
         self._ollama_ok: bool | None = None
+        # Image attachments pending for the NEXT message: chip number → file
+        # path. A paste/attach inserts "[image #N]" into the input; submit sends
+        # the images whose chip text survived (deleting a chip detaches it).
+        self._pending_images: dict[int, str] = {}
+        self._img_seq = 0  # session-wide chip counter, so numbers never reuse
 
     # animate=False on purpose: instant, snappy scroll (the default animation
     # lags on a fast keypress and, in headless pilot runs, hadn't applied yet).
@@ -563,7 +673,7 @@ class RockyCodeApp(App):
         if w is not None and w.is_running:
             w.cancel()
             return
-        await self.action_doc_close()
+        self.action_doc_close()
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         # A binding-Esc cancel raises CancelledError (BaseException), which the
@@ -835,6 +945,9 @@ class RockyCodeApp(App):
             return args.get("command", "") or "(no command)"
         if name == "web_fetch":
             return args.get("url", "") or "(no url)"
+        if name == "view_image":
+            q = args.get("question", "")
+            return f"look at {args.get('path', '?')}" + (f" — {q}" if q else "")
         if name in ("write_file", "edit_file"):
             return f"{name} → {args.get('path', '?')}"
         if name == "remember":
@@ -871,9 +984,19 @@ class RockyCodeApp(App):
 
     def _render_cwd(self) -> None:
         plan = f"   [{VIOLET}]📋 plan[/]" if self.engine.plan_file is not None else ""
-        self.query_one("#cwd", Static).update(
-            f"[{MUTED}]📁 {self.engine.workdir.name}[/]{plan}   {self._perm_chip()}"
-        )
+        registry = getattr(self.engine, "artifact_registry", None)
+        artifacts = ""
+        if registry is not None and registry.count:
+            opened = registry.open_clients
+            open_note = f" · {opened} open" if opened else ""
+            plural = "" if registry.count == 1 else "s"
+            artifacts = f"   [{VIOLET}]▣ {registry.count} artifact{plural}{open_note}[/]"
+        try:
+            self.query_one("#cwd", Static).update(
+                f"[{MUTED}]📁 {self.engine.workdir.name}[/]{plan}{artifacts}   {self._perm_chip()}"
+            )
+        except NoMatches:
+            pass  # a screen is on top of chat — the badge isn't visible now
 
     def _set_permission_mode(self, mode: str) -> None:
         """Flip the approval mode for this session (does NOT persist — use /config
@@ -944,13 +1067,15 @@ class RockyCodeApp(App):
         except Exception:  # noqa: BLE001 — OSC 52 already attempted
             return False
 
+    def _title_text(self) -> str:
+        # Single source for the topbar title: compose() renders it once, and a
+        # /model switch re-renders it — the two must never drift apart.
+        return (f"[bold {VIOLET}]ROCKYCODE[/] [{MUTED}]· {self.engine.model}[/]\n"
+                f"[italic {MUTED}]{ROCKY_TAGLINE}[/]")
+
     def compose(self) -> ComposeResult:
         with Horizontal(id="topbar"):
-            yield Static(
-                f"[bold {VIOLET}]ROCKYCODE[/] [{MUTED}]· {self.engine.model}[/]\n"
-                f"[italic {MUTED}]{ROCKY_TAGLINE}[/]",
-                id="title-block",
-            )
+            yield Static(self._title_text(), id="title-block")
             yield Static("", id="status")
         # #workspace: the doc dock mounts beside the transcript in here, so a
         # docked paper narrows the chat instead of covering it.
@@ -972,7 +1097,7 @@ class RockyCodeApp(App):
             yield Static(f"[{MUTED}]📁 {self.engine.workdir.name}[/]", id="cwd")
             yield Static("", id="modechip")
             yield Static("", id="total")
-        yield Static(f"[{MUTED}]drag text = copy · /help · /research · /learn · /model · /effort · /sandbox · /artifact · /permission · /config · /mcp · /skills · /memory · /proposals · !cmd · /clear · /exit[/]", id="hints")
+        yield Static(f"[{MUTED}]drag text = copy · /help · /research · /learn · /model · /effort · /paste · /sandbox · /artifact · /permission · /config · /mcp · /skills · /memory · /proposals · !cmd · /clear · /exit[/]", id="hints")
 
     async def on_mount(self) -> None:
         self.register_theme(ROCKY_THEME)
@@ -1076,7 +1201,7 @@ class RockyCodeApp(App):
             await self._add(Static(f"[dim]· connecting mcp servers: {names}…[/]", classes="tool-line"))
             self._connect_mcp()
         if getattr(self.engine, "lsp_manager", None) is not None:
-            await self._add(Static(f"[dim]· connecting lsp…[/]", classes="tool-line"))
+            await self._add(Static("[dim]· connecting lsp…[/]", classes="tool-line"))
             self._connect_lsp()
         # Artifacts are lazy: create_artifact calls _artifact_target, which asks
         # once (unless --live) and starts the server on demand. No idle server.
@@ -1222,10 +1347,11 @@ class RockyCodeApp(App):
         first-message fallback."""
         if self._titled:
             return
+        from rockycode.engine import images as images_mod
         first_user = first_reply = ""
         for m in self.engine.history:
-            role, c = m.get("role"), m.get("content")
-            if not isinstance(c, str) or not c.strip():
+            role, c = m.get("role"), images_mod.content_text(m.get("content"))
+            if not c.strip():
                 continue
             if role == "user" and not first_user and not c.startswith("[harness]"):
                 first_user = c
@@ -1247,11 +1373,19 @@ class RockyCodeApp(App):
 
     async def _replay(self, messages: list[dict]) -> None:
         """Render a carried conversation so the prior session is visible."""
+        from rockycode.engine import images as images_mod
         for m in messages:
             role, content = m.get("role"), m.get("content")
             if role == "user":
-                if isinstance(content, str) and not content.startswith("[harness]"):
-                    await self._add(Static(f"[bold {VIOLET}]you ▸[/] {escape(content)}", classes="user-msg"))
+                # An image-bearing turn is list content — show its text + a chip.
+                text = images_mod.content_text(content)
+                if text and not text.startswith("[harness]"):
+                    await self._add(Static(f"[bold {VIOLET}]you ▸[/] {escape(text)}", classes="user-msg"))
+                n_img = images_mod.count_images(content)
+                if n_img:
+                    await self._add(Static(
+                        f"  [{LAVENDER}]❖ {n_img} image{'s' if n_img > 1 else ''}[/]",
+                        classes="tool-line"))
             elif role == "assistant":
                 if m.get("tool_calls"):
                     for tc in m["tool_calls"]:
@@ -1297,7 +1431,10 @@ class RockyCodeApp(App):
                 return None
         if self._artifact_server is None:
             from rockycode.engine.artifact import ArtifactServer
-            srv = ArtifactServer(self.engine.workdir)
+            srv = ArtifactServer(
+                self.engine.workdir,
+                registry=getattr(self.engine, "artifact_registry", None),
+            )
             await srv.start()
             self._artifact_server = srv
             self.engine.artifact_server = srv
@@ -1570,13 +1707,16 @@ class RockyCodeApp(App):
         if self._state in (AgentState.THINKING, AgentState.RESPONDING, AgentState.AMAZED):
             self._note_i += 1
             self._render_status()
+        # SSE connects/disconnects independently of an engine event. Refresh the
+        # one-line session badge here so browser-tab counts never go stale.
+        self._render_cwd()
 
     async def _handle_model(self, text: str) -> None:
-        """/model — switch provider AND exact model live. Bare shows only the
-        options you've KEYED (so an EN/CN catalog stays short), with an "N more"
-        footer; `/model all` shows the full catalog. A spec (provider,
-        provider-region, provider:model, or a unique model id) rebuilds the
-        client with that endpoint's base_url + rocky-owned key."""
+        """/model — switch provider AND exact model live. Bare opens the PICKER
+        over the options you've KEYED (↑↓/click + ↵, so an EN/CN catalog stays
+        short) with an "N more" row; `/model all` opens the full catalog. A spec
+        (provider, provider-region, provider:model, or a unique model id) still
+        switches directly — the picker's guide line teaches that path."""
         from rockycode.engine import providers as P
 
         parts = text.split(maxsplit=1)
@@ -1585,19 +1725,8 @@ class RockyCodeApp(App):
         if not arg or arg == "all":
             show_all = arg == "all"
             picks = P.choices() if show_all else P.configured_choices()
-            lines = [f"[bold {VIOLET}]model[/] [dim](provider + model, this session)[/]",
-                     f"  now: [{VIOLET}]{escape(self.engine.provider_name)}:{escape(self.engine.model)}[/]"]
-            for c in picks:
-                cur = (c.prov_id == self.engine.provider_name and c.model == self.engine.model)
-                tag = "" if c.configured else " [dim]✗ no key[/]"
-                lines.append(f"  [{'bold ' + VIOLET if cur else LAVENDER}]/model {c.id}[/]"
-                             f"[dim] — {escape(c.provider.label)}[/]{tag}")
-            if not show_all:
-                hidden = len(P.choices()) - len(picks)
-                if hidden > 0:
-                    lines.append(f"[dim]  + {hidden} more (no key yet) — /model all to see · "
-                                 f"keys go in ~/.rockycode as ROCKYCODE_<PROVIDER>[_CN]_API_KEY[/]")
-            await self._add(Static("\n".join(lines), classes="tool-line"))
+            hidden = 0 if show_all else len(P.choices()) - len(picks)
+            self._model_picker_flow(picks, hidden)
             return
 
         resolved = P.resolve(arg)
@@ -1607,6 +1736,25 @@ class RockyCodeApp(App):
                 classes="tool-line"))
             return
         prov, ep, model = resolved
+        await self._apply_model_choice(prov, ep, model)
+
+    @work
+    async def _model_picker_flow(self, picks: list, hidden: int) -> None:
+        from rockycode.engine import providers as P
+        from rockycode.tui.modelpicker import ModelPicker
+
+        current = f"{self.engine.provider_name}:{self.engine.model}"
+        result = await self.push_screen_wait(
+            ModelPicker(picks, current=current, hidden=hidden))
+        if result == "all":  # the "N more" row reopens over the full catalog
+            result = await self.push_screen_wait(
+                ModelPicker(P.choices(), current=current, hidden=0))
+        if isinstance(result, P.Choice):
+            await self._apply_model_choice(result.provider, result.endpoint, result.model)
+        self.query_one(ChatInput).focus()
+
+    async def _apply_model_choice(self, prov, ep, model: str) -> None:
+        """The one switch path — picker picks and typed specs both land here."""
         prev_model = self.engine.model
         try:
             from rockycode.onboarding import provider_key
@@ -1619,9 +1767,15 @@ class RockyCodeApp(App):
         self.engine.switch_provider(
             client, model, provider_name=ep.eid,
             reasoning_policy=prov.reasoning, tools_enabled=(prov.tools == "native"),
+            vision=prov.vision,
         )
         self._render_status()
+        # The topbar title bakes the model name in at compose() time — repaint
+        # it here or it shows the launch model forever.
+        self.query_one("#title-block", Static).update(self._title_text())
         note = "" if prov.tools == "native" else " [dim](tools off — plain responder)[/]"
+        if prov.vision:
+            note += " [dim]· sees images — /paste or ctrl+v to attach[/]"
         await self._add(Static(
             f"[{VIOLET}]✦ model → {escape(ep.eid)}:{escape(model)}[/]{note} "
             f"[dim]applies from the next reply[/]", classes="tool-line"))
@@ -1655,6 +1809,95 @@ class RockyCodeApp(App):
             self.query_one("#status", Static).update(base)
         except NoMatches:
             pass  # a screen is on top of chat — the status bar isn't visible now
+
+    async def _stop_artifact_server(self) -> bool:
+        server = self._artifact_server
+        if server is None:
+            return False
+        await server.stop()
+        self._artifact_server = None
+        self.engine.artifact_server = None
+        self._render_cwd()
+        return True
+
+    async def _handle_artifact(self, text: str) -> None:
+        """Manage the current session's Artifact inventory and live server."""
+        parts = text.split(maxsplit=2)
+        sub = parts[1].lower() if len(parts) > 1 else "status"
+        arg = parts[2].strip() if len(parts) > 2 else ""
+        registry = getattr(self.engine, "artifact_registry", None)
+
+        if sub == "live" and arg.lower() == "on":
+            self._artifact_live = True
+            await self._artifact_target()
+        elif sub == "live" and arg.lower() == "off":
+            self._artifact_live = False
+            await self._stop_artifact_server()
+        elif sub == "stop":
+            stopped = await self._stop_artifact_server()
+            note = "stopped; saved files remain" if stopped else "already stopped"
+            await self._add(Static(
+                f"[{MUTED}]· artifact server {note}[/]", classes="tool-line"))
+            return
+        elif sub == "list":
+            records = registry.records() if registry is not None else []
+            if not records:
+                await self._add(Static(
+                    f"[{MUTED}]no artifacts in this session yet[/]", classes="tool-line"))
+                return
+            lines = [f"[bold {VIOLET}]artifacts[/] [dim]this session[/]"]
+            for i, record in enumerate(records, 1):
+                mark = f"[{VIOLET}]●[/]" if record.open_clients else f"[{MUTED}]○[/]"
+                state = (f"{record.open_clients} open" if record.open_clients
+                         else "saved")
+                mode = "live" if record.live else "static"
+                lines.append(
+                    f"  {mark} [{LAVENDER}]{i}. {escape(record.title)}[/] "
+                    f"[dim]({mode} · {state}) · {escape(record.name)}[/]")
+            lines.append("[dim]  /artifact open <number|name> · /artifact stop[/]")
+            await self._add(Static("\n".join(lines), classes="tool-line"))
+            return
+        elif sub == "open":
+            records = registry.records() if registry is not None else []
+            record = None
+            if arg.isdigit() and 1 <= int(arg) <= len(records):
+                record = records[int(arg) - 1]
+            else:
+                folded = arg.casefold()
+                record = next((r for r in records
+                               if r.name.casefold() == folded
+                               or r.title.casefold() == folded), None)
+            if record is None:
+                await self._add(Static(
+                    f"[{AMBER}]? artifact not found — /artifact list[/]", classes="tool-line"))
+                return
+            from rockycode.engine.artifact import _open_browser
+            server_live = self._artifact_server is not None and self._artifact_server.is_running
+            url = record.url if (not record.live or server_live) else record.path.resolve().as_uri()
+            _open_browser(url)
+            suffix = "" if (not record.live or server_live) else " (saved copy; live server is stopped)"
+            await self._add(Static(
+                f"[{MUTED}]· opened {escape(record.title)}{escape(suffix)}[/]",
+                classes="tool-line"))
+            return
+        elif sub not in ("status", "live"):
+            await self._add(Static(
+                f"[{MUTED}]usage: /artifact list | open <number|name> | stop | live on|off[/]",
+                classes="tool-line"))
+            return
+
+        state = ("live" if self._artifact_live else
+                 "static (file://)" if self._artifact_live is False else
+                 "undecided — rocky asks on first artifact")
+        url = (f" [dim]{self._artifact_server.base_url}[/]"
+               if self._artifact_server is not None else "")
+        count = registry.count if registry is not None else 0
+        opened = registry.open_clients if registry is not None else 0
+        await self._add(Static(
+            f"[bold {VIOLET}]artifact[/] [{LAVENDER}]{state}[/]{url}\n"
+            f"  [dim]{count} saved this session · {opened} browser connection(s)\n"
+            f"  /artifact list | open <number|name> | stop | live on|off[/]",
+            classes="tool-line"))
 
     # ---- exit + slash commands -----------------------------------------------
 
@@ -1730,6 +1973,8 @@ class RockyCodeApp(App):
             await self._transcript().remove_children()
         elif cmd == "/help":
             await self._add(Static(HELP_TEXT, classes="tool-line"))
+        elif cmd == "/paste":
+            self._paste_worker(text_fallback=False)
         elif cmd in ("/research", "/learn"):
             await self._handle_mode_cmd(cmd[1:], text)
         elif cmd == "/config":
@@ -1751,6 +1996,11 @@ class RockyCodeApp(App):
                     elif parts[1] == "dream":
                         self._dream_mode = v
                         note = "applies at next launch"
+                    elif parts[1] in ("image_route", "image_cli", "image_provider"):
+                        # Re-read from disk at every paste/view_image — a false
+                        # "restart to apply" here sends new users on a pointless
+                        # restart right at the end of image setup.
+                        note = "applied now — read at each use"
                     else:
                         note = "restart to apply"
                     await self._add(Static(
@@ -1840,26 +2090,8 @@ class RockyCodeApp(App):
                         classes="tool-line",
                     )
                 )
-        elif cmd == "/artifact":
-            parts = text.split()
-            sub = parts[1].lower() if len(parts) > 1 else "status"
-            arg = parts[2].lower() if len(parts) > 2 else ""
-            if sub == "live" and arg == "on":
-                self._artifact_live = True
-                await self._artifact_target()  # ensure server (announces if it starts)
-            elif sub == "live" and arg == "off":
-                self._artifact_live = False
-                if self._artifact_server is not None:
-                    await self._artifact_server.stop()
-                    self._artifact_server = None
-                    self.engine.artifact_server = None
-            state = ("live" if self._artifact_live else
-                     "static (file://)" if self._artifact_live is False else
-                     "undecided — rocky asks on first artifact")
-            url = f" [dim]{self._artifact_server.base_url}[/]" if self._artifact_server is not None else ""
-            await self._add(Static(
-                f"[bold {VIOLET}]artifact[/] [{LAVENDER}]{state}[/]{url}\n"
-                f"  [dim]/artifact live on | off[/]", classes="tool-line"))
+        elif cmd in ("/artifact", "/artifacts"):
+            await self._handle_artifact(text)
         elif cmd == "/mcp":
             mgr = getattr(self.engine, "mcp_manager", None)
             if mgr is None:
@@ -2007,10 +2239,11 @@ class RockyCodeApp(App):
     def _chat_digest(self, max_chars: int = 4000) -> str:
         """A compact recap of the chat for the goal — recent user/assistant turns,
         truncated, so the goal continues what we were doing."""
+        from rockycode.engine import images as images_mod
         parts = []
         for m in self.engine.history:
-            role, content = m.get("role"), m.get("content")
-            if role in ("user", "assistant") and isinstance(content, str) and content.strip():
+            role, content = m.get("role"), images_mod.content_text(m.get("content"))
+            if role in ("user", "assistant") and content.strip():
                 parts.append(f"{role}: {content.strip()}")
         return "\n".join(parts[-12:])[-max_chars:]
 
@@ -2135,6 +2368,171 @@ class RockyCodeApp(App):
 
         await self._add(Static(f"[{MUTED}]usage: /sandbox on | off | status[/]", classes="tool-line"))
 
+    # ---- image attachments ---------------------------------------------------
+
+    @on(ChatInput.PasteRequested)
+    def _on_paste_requested(self, _event: ChatInput.PasteRequested) -> None:
+        self._paste_worker(text_fallback=True)
+
+    @work(group="paste", exclusive=True, exit_on_error=False)
+    async def _paste_worker(self, *, text_fallback: bool) -> None:
+        """Read the OS clipboard (a worker — osascript/xclip block). An image
+        becomes a pending [image #N] chip; with text_fallback (the Ctrl+V key,
+        not /paste) clipboard TEXT is inserted instead, so the key always
+        pastes something."""
+        from rockycode.engine import images as images_mod
+        from rockycode.tui import clipboard
+
+        dest = images_mod.assets_dir(self.engine.trajectory.session_id)
+        path = await asyncio.to_thread(clipboard.grab_image, dest)
+        if path is not None:
+            await self._attach_image(str(path))
+            return
+        if text_fallback:
+            text = await asyncio.to_thread(clipboard.grab_text)
+            if text:
+                self.query_one(ChatInput).insert(text)
+                return
+        self.notify("no image on the clipboard", timeout=3)
+
+    async def _attach_image(self, path: str) -> None:
+        """Register a pending image + drop its chip into the input box."""
+        self._img_seq += 1
+        n = self._img_seq
+        self._pending_images[n] = path
+        inp = self.query_one(ChatInput)
+        inp.insert(f"[image #{n}] ")
+        inp.focus()
+        kb = max(1, Path(path).stat().st_size // 1024)
+        self.notify(f"❖ image #{n} · {Path(path).name} · {kb} KB", timeout=3)
+        if not self.engine.vision_enabled:
+            # Say what will ACTUALLY happen under the current route, and name
+            # the config vocabulary right where it matters — the picker says
+            # "once/always" but the switch is /config image_route ask|cli|….
+            from rockycode.config import load as load_config
+            route = load_config(self.engine.workdir)["image_route"]
+            how = {
+                "cli": "your image CLI will describe it on send",
+                "provider": "a vision provider will describe it on send",
+                "off": "image_route is off — the model is only told it exists",
+            }.get(route, "on send you'll pick a route (a vision provider / your image CLI)")
+            await self._add(Static(
+                f"[{MUTED}]· {escape(self.engine.model)} can't see images itself — {how} · "
+                f"[/][{LAVENDER}]/config image_route ask|provider|cli|off[/]"
+                f"[{MUTED}] · [/][{LAVENDER}]/model[/]",
+                classes="tool-line"))
+
+    async def _route_images(self, text: str, images: list[str]) -> list:
+        """The no-vision path: decide a route (config image_route, or the
+        inline picker on `ask`), then describe each image ONCE via
+        engine/vision.py and store the description on its image_path part —
+        history/trajectory carry it, images._flatten emits it. Any failure
+        degrades to the honest placeholder; the turn always proceeds."""
+        from rockycode.config import load as load_config, set_value
+        from rockycode.engine import images as images_mod
+        from rockycode.engine import vision
+
+        cfg = load_config(self.engine.workdir)
+        route = cfg["image_route"]
+        choice = vision.sidecar_choice(cfg["image_provider"])
+        template = (cfg["image_cli"] or "").strip()
+        if route == "off":
+            return images
+        if route == "provider" and choice is None:
+            await self._add(Static(
+                f"[{AMBER}]· image_route=provider but no vision endpoint is keyed — "
+                f"sending a placeholder. key one (kimi · minimax · stepfun) or /config image_route[/]",
+                classes="tool-line"))
+            return images
+        if route == "cli" and not template:
+            await self._add(Static(
+                f"[{AMBER}]· image_route=cli but image_cli is empty — sending a placeholder. "
+                f"set it: [/][{LAVENDER}]/config image_cli mmx[/]",
+                classes="tool-line"))
+            return images
+        if route == "ask":
+            if choice is None and not template:
+                await self._add(Static(
+                    f"[{AMBER}]· {escape(self.engine.model)} can't see images and no route is set up. "
+                    f"three ways:[/]\n"
+                    f"  [dim]· key a vision provider →[/] [{LAVENDER}]/model[/] [dim](kimi · minimax · stepfun; "
+                    f"pin one: /config image_provider minimax-cn:minimax-m3)[/]\n"
+                    f"  [dim]· use a vision CLI →[/] [{LAVENDER}]/config image_cli mmx[/] "
+                    f"[dim](or a full command template with {{path}})[/]\n"
+                    f"  [dim]· or continue text-only — the model is told an image exists[/]",
+                    classes="tool-line"))
+                return images
+            picked = await self._ask_image_route(
+                len(images), choice.id if choice else "", template)
+            if picked.endswith("_always"):
+                picked = picked.removesuffix("_always")
+                _v, err = set_value("image_route", picked)
+                if not err:
+                    await self._add(Static(
+                        f"[{VIOLET}]✦ saved: image_route = {picked}[/] "
+                        f"[dim]— /config image_route ask to be asked again[/]",
+                        classes="tool-line"))
+            if picked == "skip":
+                return images
+            route = picked
+        out: list = []
+        question = text[:500]  # the user's message focuses the description
+        for pth in images:
+            part = pth if isinstance(pth, dict) else images_mod.image_part(pth)
+            name = Path(part["path"]).name
+            await self._add(Static(f"[{MUTED}]❖ looking at {escape(name)}…[/]",
+                                   classes="tool-line"))
+            try:
+                desc, src = await vision.describe(
+                    part["path"], question, route=route,
+                    preferred=cfg["image_provider"], template=template)
+                part["description"], part["described_by"] = desc, src
+                await self._add(Static(
+                    f"[{LAVENDER}]❖ {escape(name)}[/] [dim]— seen by {escape(src)}[/]",
+                    classes="tool-line"))
+            except vision.VisionError as e:
+                await self._add(Static(
+                    f"[{AMBER}]✗ {escape(name)}: {escape(str(e))} — sending a placeholder[/]",
+                    classes="tool-line"))
+            out.append(part)
+        return out
+
+    async def _ask_image_route(self, n: int, provider_label: str, cli_label: str) -> str:
+        """Dock the route picker above the input and await the choice — same
+        inline mechanics as _ask_inline, so the transcript stays scrollable."""
+        fut: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        widget = ImageRouteChoice(n, provider_label, cli_label, fut)
+        await self.mount(widget, before=self.query_one("#prompt"))
+        try:
+            return await fut
+        finally:
+            if widget.is_mounted:
+                await widget.remove()
+            try:
+                self.query_one(ChatInput).focus()
+            except Exception:  # noqa: BLE001 — app may be tearing down
+                pass
+
+    def _collect_images(self, text: str) -> list[str]:
+        """Images riding this message: every [image #N] chip still present in
+        the text (deleting a chip detaches that image), plus any image-file
+        path typed or dragged into the message — on a no-vision model those go
+        through the describe route (_route_images), so drag-and-drop works
+        everywhere. Pending chips clear on submit either way."""
+        import re
+        from rockycode.engine import images as images_mod
+
+        found: list[str] = []
+        for m in re.finditer(r"\[image #(\d+)\]", text):
+            p = self._pending_images.get(int(m.group(1)))
+            if p and p not in found:
+                found.append(p)
+        self._pending_images.clear()
+        for p in images_mod.extract_image_paths(text):
+            if str(p) not in found:
+                found.append(str(p))
+        return found
+
     # ---- input → engine ------------------------------------------------------
 
     @on(ChatInput.Submitted)
@@ -2148,8 +2546,14 @@ class RockyCodeApp(App):
         if text.startswith("/"):
             await self._handle_slash(text)
             return
+        images = self._collect_images(text)
         await self._add(Static(f"[bold {VIOLET}]you ▸[/] {escape(text)}", classes="user-msg"))
-        self._turn_worker = self._run_turn(text)
+        if images:
+            names = " · ".join(Path(p).name for p in images)
+            await self._add(Static(
+                f"  [{LAVENDER}]❖ {len(images)} image{'s' if len(images) > 1 else ''}[/] "
+                f"[dim]{escape(names)}[/]", classes="tool-line"))
+        self._turn_worker = self._run_turn(text, images)
 
     @work(group="shell", exclusive=True, exit_on_error=False)
     async def _run_shell(self, cmd: str) -> None:
@@ -2178,14 +2582,16 @@ class RockyCodeApp(App):
         )
 
     @work(group="turn", exclusive=True)
-    async def _run_turn(self, text: str) -> None:
+    async def _run_turn(self, text: str, images: list[str] | None = None) -> None:
         """Drive one turn; turn the modal's Esc (CancelTurn) into a clean stop.
         A worker .cancel() (new submit / Esc binding) is handled in
         on_worker_state_changed — run_turn's finally already keeps history valid."""
         from rockycode.tui.permission import CancelTurn
         try:
+            if images and not self.engine.vision_enabled:
+                images = await self._route_images(text, images)
             plan_before = self._plan_digest()
-            await self._drive_turn(text)
+            await self._drive_turn(text, images)
             await self._maybe_plan_gate(plan_before)  # no-op unless plan mode + file changed
             self._maybe_title()  # first completed turn names the session (async, free)
         except CancelTurn:
@@ -2211,7 +2617,7 @@ class RockyCodeApp(App):
             await self._add(Static(f"✗ {escape(f'{type(e).__name__}: {e}')}", classes="error-msg"))
             self.query_one(ChatInput).focus()
 
-    async def _drive_turn(self, text: str) -> None:
+    async def _drive_turn(self, text: str, images: list[str] | None = None) -> None:
         self._think_buf = ""
         self._reply_buf = ""
         self._think_flushed = 0
@@ -2220,7 +2626,7 @@ class RockyCodeApp(App):
         self._think_box = None
         self._reply_widget = None
 
-        async for ev in self.engine.run_turn(text):
+        async for ev in self.engine.run_turn(text, images=images):
             if isinstance(ev, StateChanged):
                 self._set_status(ev.state)
                 if ev.state == AgentState.RESPONDING and self._think_box is not None:
@@ -2380,11 +2786,17 @@ class RockyCodeApp(App):
             await self.query_one("#workspace").mount(dock)
         await dock.load(path)
 
-    async def action_doc_close(self) -> None:
+    def action_doc_close(self) -> None:
+        """Sync on purpose: the ✕ lives in the dock's own header, so this
+        action runs on the clicked widget's message pump. Awaiting remove()
+        there gathers the dock's child pumps — including the header's own,
+        which is blocked on this very handler — and the app wedges for good.
+        Schedule the removal, hand focus back, return."""
         dock = self._dock()
         if dock is not None:
             self._transcript().display = True  # in case it closed while ⛶ full
-            await dock.remove()
+            dock.remove()
+            self.query_one(ChatInput).focus()
 
     async def action_doc_back(self) -> None:
         dock = self._dock()

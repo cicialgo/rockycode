@@ -41,6 +41,19 @@ DEFAULTS: dict[str, Any] = {
     # / ROCKYCODE_MAX_TOKENS and the CLI flags override at runtime).
     "context_window": 1_048_576,  # DeepSeek V4 = 1M; compaction acts at 50%
     "max_tokens": 384_000,        # per-call output cap incl. CoT (DeepSeek V4 max = 384K)
+    # Image understanding on a NO-vision model (engine/vision.py). `ask` shows
+    # a picker at paste time (its "always" buttons write image_route here);
+    # provider/cli skip the picker; off = honest placeholder only.
+    "image_route": "ask",   # ask | provider | cli | off
+    # Which vision model describes: endpoint (minimax-cn) or endpoint:model
+    # (minimax-cn:minimax-m3), same spec shape as /model. "" = first keyed.
+    "image_provider": "",
+    # The cli route: a bare known tool name ("mmx") — rocky knows its real
+    # describe invocation (vision.KNOWN_CLIS) — or a full command template
+    # with {path} / optional {question}; a template without {path} gets the
+    # image appended as the last argument. kimi's CLI has no verified image
+    # input and stepfun ships no CLI — those go via image_provider.
+    "image_cli": "",        # e.g. "mmx"
 }
 
 _ALLOWED = {
@@ -50,6 +63,7 @@ _ALLOWED = {
     "permission": {"yolo", "ask", "careful"},
     "exit_sheet": {"auto", "on", "off"},
     "dream": {"auto", "manual"},
+    "image_route": {"ask", "provider", "cli", "off"},
 }
 
 
@@ -117,7 +131,13 @@ def _coerce(key: str, raw: str) -> Any:
         except ValueError:
             return default
         return v if v > 0 else default
-    return raw.strip()
+    raw = raw.strip()
+    # Users quote values out of shell habit (/config image_cli "mmx …") — the
+    # quotes are not part of the value, and stored literally they would both
+    # break shlex-split consumers and corrupt the emitted TOML.
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
+        raw = raw[1:-1]
+    return raw
 
 
 def _emit(cfg: dict) -> str:
@@ -128,7 +148,10 @@ def _emit(cfg: dict) -> str:
         elif isinstance(v, (int, float)):
             lines.append(f"{k} = {v}")
         else:
-            lines.append(f'{k} = "{v}"')
+            # Escape backslash + quote: a value must never be able to produce
+            # unparseable TOML (which would silently reset the WHOLE config).
+            s = str(v).replace("\\", "\\\\").replace('"', '\\"')
+            lines.append(f'{k} = "{s}"')
     return "\n".join(lines) + "\n"
 
 

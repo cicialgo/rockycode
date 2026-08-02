@@ -254,7 +254,8 @@ def parse_plan(text: str) -> list[str]:
         if _FENCE_RX.match(line):
             block = []
             while i < n and not _FENCE_RX.match(lines[i]):
-                block.append(lines[i]); i += 1
+                block.append(lines[i])
+                i += 1
             i += 1  # closing fence
             if out and block:
                 out[-1] = (out[-1] + "\n" + "\n".join(block)).strip()
@@ -267,9 +268,11 @@ def parse_plan(text: str) -> list[str]:
             # One milestone spans the whole here-doc, delimiter included.
             delim, body = hd.group(2), [line]
             while i < n and lines[i].strip() != delim:
-                body.append(lines[i]); i += 1
+                body.append(lines[i])
+                i += 1
             if i < n:
-                body.append(lines[i]); i += 1
+                body.append(lines[i])
+                i += 1
             out.append("\n".join(body).strip())
         else:
             out.append(s)

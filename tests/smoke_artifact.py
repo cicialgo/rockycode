@@ -24,7 +24,12 @@ from urllib.parse import quote, unquote, urlsplit
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from rockycode.engine import artifact as artifact_mod
-from rockycode.engine.artifact import ARTIFACT_DIR, ArtifactServer, _safe_filename, build_artifact_tools
+from rockycode.engine.artifact import (
+    ARTIFACT_DIR,
+    ArtifactServer,
+    _safe_filename,
+    build_artifact_tools,
+)
 
 CJK_TITLE = "测试报告"
 
@@ -150,6 +155,154 @@ async def test_token_gate(opened: list[str]):
             await server.stop()
 
 
+async def test_server_reuse_and_keepalive():
+    """Repeated starts reuse one listener; SSE stays open across keepalives."""
+    import aiohttp
+
+    old_keepalive = artifact_mod.SSE_KEEPALIVE_S
+    artifact_mod.SSE_KEEPALIVE_S = 0.05
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            server = ArtifactServer(Path(tmpdir))
+            await server.start()
+            runner, port = server._runner, server.port
+            await server.start()
+            assert server._runner is runner and server.port == port, \
+                "start() must be idempotent — repeated artifacts reuse one listener"
+            try:
+                async with aiohttp.ClientSession() as session:
+                    url = f"{server.base_url}/api/events?t={server.token}"
+                    async with session.get(url) as resp:
+                        assert b"connected" in await asyncio.wait_for(
+                            resp.content.readline(), timeout=1)
+                        # Wait through one keepalive, then prove the same stream
+                        # still receives a later reload event.
+                        for _ in range(8):
+                            line = await asyncio.wait_for(resp.content.readline(), timeout=1)
+                            if line.startswith(b": keepalive"):
+                                break
+                        else:
+                            raise AssertionError("SSE keepalive was not emitted")
+                        await server.broadcast("reload", {"name": "after-keepalive"})
+                        for _ in range(8):
+                            line = await asyncio.wait_for(resp.content.readline(), timeout=1)
+                            if b"reload" in line:
+                                break
+                        else:
+                            raise AssertionError("SSE stream closed after keepalive")
+            finally:
+                await server.stop()
+            assert server._runner is None and server.port == 0
+    finally:
+        artifact_mod.SSE_KEEPALIVE_S = old_keepalive
+
+
+async def test_session_registry_tracks_browser_clients():
+    """One session inventories artifacts and marks connected browser tabs."""
+    import aiohttp
+
+    old_keepalive = artifact_mod.SSE_KEEPALIVE_S
+    artifact_mod.SSE_KEEPALIVE_S = 0.05
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+            engine = SimpleNamespace()
+            tools = build_artifact_tools(workdir=workdir, engine=engine)
+            registry = engine.artifact_registry
+            actions = []
+            registry.subscribe(lambda action, record: actions.append(
+                (action, record.name, record.open_clients)))
+            server = ArtifactServer(workdir, registry=registry)
+
+            async def target():
+                await server.start()
+                return server
+
+            engine.artifact_target = target
+            out = await tools["create_artifact"].fn("Session report", "<p>tracked</p>")
+            assert "[ok]" in out
+            record = registry.get("Session_report")
+            assert registry.count == 1 and record is not None
+            assert record.live and record.open_clients == 0
+            assert actions[0][:2] == ("created", "Session_report"), actions
+
+            replacement = None
+            try:
+                url = (f"{server.base_url}/api/events?t={server.token}"
+                       "&artifact=Session_report")
+                async with aiohttp.ClientSession() as client:
+                    async with client.get(url) as response:
+                        assert b"connected" in await response.content.readline()
+                        assert record.open_clients == 1
+                await server.broadcast("reload", {"name": "Session_report"})
+                for _ in range(20):
+                    if record.open_clients == 0:
+                        break
+                    await asyncio.sleep(0.01)
+                assert record.open_clients == 0, "closed browser connection stayed marked open"
+                assert ("clients", "Session_report", 1) in actions
+                assert actions[-1] == ("clients", "Session_report", 0), actions
+
+                # A manual stop/restart may change both port and token. Older
+                # session entries and their EventSource script must be rebound.
+                await server.stop()
+                replacement = ArtifactServer(workdir, registry=registry)
+                await replacement.start()
+                assert replacement.token in record.url, record.url
+                saved = record.path.read_text()
+                assert replacement.token in saved and replacement.base_url in saved
+            finally:
+                await server.stop()
+                if replacement is not None:
+                    await replacement.stop()
+    finally:
+        artifact_mod.SSE_KEEPALIVE_S = old_keepalive
+
+
+async def test_serve_owns_artifact_lifecycle():
+    """The JSON-RPC serve adapter retains and closes its session server."""
+    from rockycode.engine import server as server_mod
+
+    class FakeEngine:
+        def __init__(self, *, model, workdir, **kwargs):
+            self.registry = {}
+            self.history = []
+
+        def finalize_outcome(self):
+            pass
+
+    original = server_mod.Engine
+    original_write = server_mod._write_line
+    notifications = []
+    server_mod.Engine = FakeEngine
+    server_mod._write_line = notifications.append
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = server_mod.SessionManager("fake", Path(tmpdir))
+            session = manager._new_session()
+            server = await session.engine.artifact_target()
+            first_runner = server._runner
+            assert await session.engine.artifact_target() is server
+            assert server._runner is first_runner, "serve must reuse its artifact listener"
+            out = await session.engine.registry["create_artifact"].fn(
+                "Serve report", "<p>structured</p>")
+            assert "[ok]" in out
+            status = manager.artifact_status(session.session_id)
+            assert status["server_running"] and len(status["artifacts"]) == 1
+            listed = manager.list_sessions()[0]
+            assert listed["artifact_count"] == 1
+            event = next(n for n in notifications
+                         if n.get("method") == "session/artifact_changed")
+            assert event["params"]["artifact"]["title"] == "Serve report", event
+            assert await manager.stop_artifacts(session.session_id) is True
+            assert manager.artifact_status(session.session_id)["server_running"] is False
+            await manager.shutdown()
+            assert server._runner is None, "serve shutdown must close the artifact listener"
+    finally:
+        server_mod.Engine = original
+        server_mod._write_line = original_write
+
+
 async def test_no_browser_env(opened: list[str]):
     """ROCKYCODE_ARTIFACT_NO_BROWSER=1 suppresses webbrowser.open on both paths.
 
@@ -200,6 +353,15 @@ async def main() -> None:
     opened.clear()
     await test_token_gate(opened)
     print("PASS test_token_gate")
+
+    await test_server_reuse_and_keepalive()
+    print("PASS test_server_reuse_and_keepalive")
+
+    await test_session_registry_tracks_browser_clients()
+    print("PASS test_session_registry_tracks_browser_clients")
+
+    await test_serve_owns_artifact_lifecycle()
+    print("PASS test_serve_owns_artifact_lifecycle")
 
     opened.clear()
     await test_no_browser_env(opened)

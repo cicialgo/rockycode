@@ -23,5 +23,8 @@ jobs:
       - name: Sync deps from the lockfile
         run: uv sync --frozen
 
+      - name: Ruff (conservative correctness gate)
+        run: uv run ruff check .
+
       - name: Smoke tests (the CORE gate)
         run: uv run python tests/run_all.py

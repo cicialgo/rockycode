@@ -66,12 +66,25 @@ def test_serve_jsonrpc_handshake():
             proc.stdin.write(_request("initialize"))
             proc.stdin.flush()
             resp = _read_line(proc)
-            assert resp.get("result", {}).get("version") == "0.1.0", \
+            assert resp.get("result", {}).get("version") == "0.1.1", \
                 f"unexpected init response: {resp}"
-            assert "session_id" in resp.get("result", {})
+            sid = resp.get("result", {}).get("session_id")
+            assert sid
+
+            # Session-scoped Artifact inventory exists before the first file,
+            # so the VS Code tree can show the active session immediately.
+            proc.stdin.write(_request("artifact/list", {"session_id": sid}, msg_id=2))
+            proc.stdin.flush()
+            artifacts = _read_line(proc).get("result", {})
+            assert artifacts == {
+                "session_id": sid,
+                "server_running": False,
+                "server_url": None,
+                "artifacts": [],
+            }, artifacts
 
             # Send shutdown
-            proc.stdin.write(_request("shutdown", msg_id=2))
+            proc.stdin.write(_request("shutdown", msg_id=3))
             proc.stdin.flush()
             resp = _read_line(proc)
             assert resp.get("result", {}).get("ok") is True
@@ -94,7 +107,7 @@ def test_serve_survives_malformed_messages():
             proc.stdin.write(_request("initialize"))
             proc.stdin.flush()
             resp = _read_line(proc)
-            assert resp.get("result", {}).get("version") == "0.1.0", \
+            assert resp.get("result", {}).get("version") == "0.1.1", \
                 f"server did not survive malformed input: {resp}"
             proc.stdin.write(_request("shutdown", msg_id=2))
             proc.stdin.flush()

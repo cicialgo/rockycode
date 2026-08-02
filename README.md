@@ -9,7 +9,8 @@ Built for the DeepSeek V4 series, with a unique research mode, bench-tested, and
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
-![SWE-bench Verified](https://img.shields.io/badge/SWE--bench_Verified-~80%25_100--task_slice-7d5cc6)
+![SWE-bench Verified](https://img.shields.io/badge/SWE--bench_Verified-79.8%25_V4--flash-7d5cc6)
+![V4-pro preview](https://img.shields.io/badge/V4--pro_preview-81.8%25_pass@3-8d6cd0)
 ![Python](https://img.shields.io/badge/Python-3.11%2B-9d7cd8)
 ![License](https://img.shields.io/badge/License-MIT-a9b1d6)
 
@@ -43,17 +44,30 @@ against it.
 
 ## Results — SWE-bench Verified
 
-On SWE-bench Verified, a **randomly-chosen 100-task slice** (resources are
-limited — no repeated runs averaged over the full 500):
+Full-set numbers: **independent full-500 runs** (three each for
+`deepseek-v4-pro` and `minimax-m3`, one so far for `deepseek-v4-flash`), same
+harness and config for all (100-step cap, 32,768 max output tokens, reasoning
+effort `max`, thinking on), scored with the official SWE-bench harness. No
+tuning against the tasks.
 
-**Result: ≈80% on a 100-task SWE-bench Verified slice** with `deepseek-v4-pro`,
-no tuning against those tasks — the mean of a four-arm configuration sweep.
+| run | `deepseek-v4-pro` | `deepseek-v4-flash` | `minimax-m3` |
+|---|---|---|---|
+| round 1 | 75.6% (378/500) | 79.8% (399/500) | 72.8% (364/500) |
+| round 2 | 74.8% (374/500) | — | 71.2% (356/500) |
+| round 3 | 74.4% (372/500) | — | 70.0% (350/500) |
+| **average** | **74.9%** | **79.8%** *(1 run)* | **71.3%** |
+| union of runs (pass@3) | 81.8% (409/500) | — | 83.6% (418/500) |
 
-Read it with its limits. It's a representative **random 100-task slice**, not
-the official 500-task Verified set: its harder 20-task core scored 60–70% while
-the other 80 scored >80%. Treat it as an honest internal measurement, not a
-leaderboard entry; for the full breakdown, follow our X
-([@rockycode_ai](https://x.com/rockycode_ai)).
+Read the two summary rows differently. The **average** is the
+leaderboard-comparable number — each round is an independent single-pass run
+over the full 500. The **union** is pass@3: tasks solved by at least one
+round. The gap between them (~7 points for DeepSeek, ~12 for MiniMax) is
+run-to-run variance, not capability — the models already reach these tasks
+under this harness, they just don't hold them every run. Closing that gap
+(verify-before-finish gating and run selection, not more prompting) is the
+current line of work. For reference, DeepSeek reports 80.6% with its own
+scaffold; the three-run union crosses that mark. Per-round breakdowns:
+[@rockycode_ai](https://x.com/rockycode_ai).
 
 We plan to add **DeepSWE-bench** support as well — currently in progress.
 
@@ -70,10 +84,31 @@ run offline in the sandbox by design, so a delegated or unattended task cannot
 touch your host or reach the network.
 
 ```bash
-uv pip install rockycode      # with uv  (or: uv tool install rockycode — isolated CLI on PATH)
-pip install rockycode         # or plain pip
+uv tool install rockycode     # recommended — puts the `rockycode` command on your PATH
 rockycode                     # the first run walks you through API-key setup
 ```
+
+Don't have uv yet? One command installs it:
+`curl -LsSf https://astral.sh/uv/install.sh | sh` — Windows and other options
+in the [uv install docs](https://docs.astral.sh/uv/getting-started/installation/).
+
+Three ways to install — they look similar but land in different places:
+
+- **`uv tool install rockycode`** (recommended) — gives the CLI its own
+  isolated environment and puts `rockycode` on your PATH; if your system
+  Python is older than 3.11, uv fetches a matching interpreter by itself.
+  The "install it like an app" path.
+- **`uv pip install rockycode`** — installs into the **currently active
+  virtual environment** only: the `rockycode` command exists inside that
+  venv, so a new shell won't find it unless the venv is active (or run it
+  as `uv run rockycode`).
+- **`pip install rockycode`** — same venv caveat as above, and it needs
+  Python 3.11+. On an older Python it fails with the misleading
+  `ERROR: No matching distribution found for rockycode`. Why: pip only
+  offers releases whose `requires-python` matches your interpreter, so on an
+  old Python it sees no installable version at all and reports that as a
+  missing package. If you hit this, don't fight it — use
+  `uv tool install rockycode` above; uv brings its own Python 3.11+.
 
 Or install from source:
 
@@ -131,7 +166,8 @@ clipboard" (or your terminal's equivalent) on the local end.
 | `/permission yolo\|ask\|careful` | Tool-approval strictness for the session |
 | `/sandbox on\|off\|status` | Isolate tool execution in a container |
 | `/lsp` | Language-server status; diagnostics ride along with `read_file` |
-| `/artifact live on\|off` | Auto-refresh HTML artifacts in the browser |
+| `/artifact` | Session artifacts: `list` · `open <n>` · `stop` · `live on\|off` |
+| `/paste` | Attach a clipboard image (or `ctrl+v`); no-vision models pick a route |
 | `/prompt` | Inspect the live system prompt |
 | `/mcp` | Connected MCP servers and their tools |
 | `/skills` | Installed skills |
@@ -165,7 +201,7 @@ OpenAI-compatible API.
 
 | Provider | Models |
 |---|---|
-| **deepseek** (default) | `deepseek-v4-pro`, `deepseek-v4-flash` |
+| **deepseek** (default) | `deepseek-v4-flash` (default), `deepseek-v4-pro` (preview) |
 | **minimax** | `minimax-m3` |
 | **kimi** | `kimi-k3` |
 | **glm** | `glm-5.2` |
@@ -173,8 +209,9 @@ OpenAI-compatible API.
 Regional endpoints are addressable as `<provider>-<region>` (e.g. `kimi-cn`),
 and custom providers — including local vLLM/SGLang servers — go in
 `~/.rockycode/providers.toml`. The `/model` picker only offers providers whose
-keys are actually configured. Only DeepSeek is verified on the harness; the
-others are [experimental](#experimental).
+keys are actually configured. DeepSeek and MiniMax both carry full-500 bench
+numbers (see [Results](#results--swe-bench-verified)); Kimi and GLM are
+[experimental](#experimental).
 
 The effort dial (`/effort off|high|xhigh|max`) is provider-neutral; each
 provider maps it to its own reasoning tiers at the wire (DeepSeek, for
@@ -268,8 +305,9 @@ change. Anything that could act on its own is **off by default**.
   mechanically-verified report; the search noise never enters your session. It
   also grounds goal mode's branch review and milestone verification.
 - **Providers beyond DeepSeek.** MiniMax, GLM / z.ai, and Kimi are wired as
-  OpenAI-compatible profiles (`/model`), but only DeepSeek is verified on the
-  harness — treat the others as untested until they carry a bench number.
+  OpenAI-compatible profiles (`/model`). DeepSeek and MiniMax carry full
+  bench numbers (see Results); treat GLM and Kimi as untested until they do
+  too.
 
 ## Works with your existing setup
 

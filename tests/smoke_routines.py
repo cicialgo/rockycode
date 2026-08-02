@@ -12,11 +12,10 @@ Contracts under test:
 import os
 import tempfile
 import time
-from pathlib import Path
 
 os.environ["ROCKYCODE_HOME"] = tempfile.mkdtemp(prefix="rockyhome-")
 
-from rockycode.routines import CADENCES, MAX_LEASE_DAYS, Routine, RoutineStore, routines_dir
+from rockycode.routines import MAX_LEASE_DAYS, Routine, RoutineStore, routines_dir
 
 DAY = 86_400.0
 

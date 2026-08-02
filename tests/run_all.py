@@ -4,12 +4,12 @@
 CORE tests are pure: fake DeepSeek streams, no network, no API key, no docker.
 They run on every commit and in CI, and a single failure exits non-zero.
 
-A couple of tests need a container runtime + the SWE-bench image (DOCKER set
-below); they are skipped by default and listed explicitly — nothing is silently
-omitted. Pass --all to include them locally.
+A test that genuinely needs a container runtime goes in the DOCKER set below
+(skipped by default, listed explicitly — nothing silently omitted; pass --all
+to include it locally).
 
     python tests/run_all.py          # CORE gate (what CI runs)
-    python tests/run_all.py --all     # + docker-dependent tests
+    python tests/run_all.py --all     # + docker-dependent sandbox lifecycle tests
 """
 from __future__ import annotations
 
@@ -21,8 +21,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 
-# Need a container runtime / a `python` binary inside the session — not pure.
-DOCKER = {"smoke_container.py", "smoke_tools.py"}
+# Tests that genuinely need a container runtime (docker exec). smoke_container.py
+# still drives LocalSession — plain local bash — so it remains in the CORE gate.
+DOCKER: set[str] = {"smoke_docker_sandbox_cancel.py"}
 
 # Isolate the global store (~/.rockycode) into a throwaway temp home so the
 # suite never writes trajectories into the real one.

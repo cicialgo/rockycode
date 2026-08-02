@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import time
 from pathlib import Path
 from typing import AsyncIterator, Awaitable, Callable, Optional
@@ -26,6 +25,7 @@ from openai import AsyncOpenAI
 from rockycode.onboarding import current_key_source, require_base_url, require_key
 
 from rockycode.engine import compaction
+from rockycode.engine import images as images_mod
 from rockycode.engine import planmode
 from rockycode.engine import tools as tools_mod
 from rockycode.engine.effort import build_extra_body
@@ -47,6 +47,7 @@ from rockycode.engine.events import (
 from rockycode.engine.outcome import SessionStats
 from rockycode.engine.trajectory import TrajectoryLogger
 from rockycode.prompts.rocky import ROCKY_SYSTEM
+from rockycode.session import repair_history
 
 MAX_STEPS = 50
 FINALIZE_STEPS = 3  # forced wrap-up window after the explore budget is spent
@@ -120,6 +121,12 @@ class Engine:
         self.reasoning_policy = "deepseek"
         self.provider_name = "deepseek"
         self.tools_enabled = True  # profile tools:off → drop tool schemas
+        # Does the active model take image input? False for DeepSeek (home
+        # model), so plain sessions send byte-identical requests; flipped by
+        # switch_provider for a vision profile (minimax / kimi / stepfun).
+        # Gates images.api_view at the API boundary: True inflates image_path
+        # parts to base64 data URLs, False collapses them to text placeholders.
+        self.vision_enabled = False
         self.max_tokens = max_tokens
         self.context_window = context_window
         self.compact_threshold = compact_threshold
@@ -270,7 +277,8 @@ class Engine:
         return build_extra_body(self.thinking, self.reasoning_effort, self.reasoning_policy)
 
     def switch_provider(self, client, model: str, *, provider_name: str,
-                        reasoning_policy: str, tools_enabled: bool = True) -> None:
+                        reasoning_policy: str, tools_enabled: bool = True,
+                        vision: bool = False) -> None:
         """Point the engine at a different OpenAI-compatible endpoint/model live
         (a /model switch). The caller builds the client with the provider's
         base_url + key; we swap model + reasoning policy. The prompt-cache prefix
@@ -281,7 +289,9 @@ class Engine:
         self.provider_name = provider_name
         self.reasoning_policy = reasoning_policy
         self.tools_enabled = tools_enabled
-        self.trajectory.note({"provider": provider_name, "model": model})
+        self.vision_enabled = vision
+        self.trajectory.note({"provider": provider_name, "model": model,
+                              "vision": vision})
 
     def _repair_history(self) -> None:
         """Inject synthetic tool responses for ANY orphaned tool_calls.
@@ -297,29 +307,12 @@ class Engine:
             land after a newly-appended user message and break ordering.
         Fixes every orphan, not just the most recent (a multi-orphan resume
         otherwise still 400s).
+
+        Shared with `session.repair_history` — the --resume path runs the same
+        fix on trajectory-reloaded history (a hard-killed process never reaches
+        this finally-block, so the load path must self-heal too).
         """
-        i = 0
-        while i < len(self.history):
-            msg = self.history[i]
-            if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                answered = {
-                    self.history[j].get("tool_call_id")
-                    for j in range(i + 1, len(self.history))
-                    if self.history[j].get("role") == "tool"
-                }
-                insert_at = i + 1
-                while insert_at < len(self.history) and self.history[insert_at].get("role") == "tool":
-                    insert_at += 1
-                for tc in msg["tool_calls"]:
-                    cid = tc.get("id", "")
-                    if cid and cid not in answered:
-                        self.history.insert(insert_at, {
-                            "role": "tool",
-                            "tool_call_id": cid,
-                            "content": "[error] tool execution was interrupted",
-                        })
-                        insert_at += 1
-            i += 1
+        repair_history(self.history)
 
     def _append(self, msg: dict) -> None:
         self.history.append(msg)
@@ -413,7 +406,11 @@ class Engine:
             strategy = "summarize"
             try:
                 summary, usage = await compaction.summarize(
-                    self.client, self.model, self.history,
+                    self.client, self.model,
+                    # Same view as the main call — the request prefix matches
+                    # what the provider has cached, and image_path parts never
+                    # reach the wire.
+                    images_mod.api_view(self.history, vision=self.vision_enabled),
                     tools=[t.schema for t in self.registry.values()],
                 )
                 if not summary:
@@ -454,15 +451,27 @@ class Engine:
             messages_after=len(self.history),
         )
 
-    async def run_turn(self, user_message: str) -> AsyncIterator[Event]:
-        """One full user turn: stream → maybe tools → stream → … → answer."""
+    async def run_turn(
+        self, user_message: str, *,
+        images: Optional[list] = None,
+    ) -> AsyncIterator[Event]:
+        """One full user turn: stream → maybe tools → stream → … → answer.
+
+        `images`: what the user attached — paths (str/Path), or ready-made
+        image_path part dicts when a vision route already annotated them with
+        a description (the TUI's no-vision flow). Stored in history as small
+        reference parts; the base64 only ever exists in the API request
+        (images.api_view).
+        """
         yield TurnStarted(user_message=user_message)  # UI sees the clean message
         self.stats.turns += 1
         # Plan mode rides the USER turn (never the system prompt/tools → the cached
         # prompt prefix stays byte-identical when the mode toggles).
         if self.plan_file is not None:
             user_message = planmode.marker(self.plan_file) + "\n\n" + user_message
-        self._append({"role": "user", "content": user_message})
+        parts = [p if isinstance(p, dict) else images_mod.image_part(p)
+                 for p in (images or [])]
+        self._append({"role": "user", "content": images_mod.make_content(user_message, parts)})
 
         usage_total: dict[str, int] = {}
         used_tools = False
@@ -516,7 +525,10 @@ class Engine:
                 _tools = [t.schema for t in self.registry.values()] if self.tools_enabled else None
                 stream = await self.client.chat.completions.create(
                     model=self.model,
-                    messages=self.history,
+                    # image_path parts inflate to base64 here (or collapse to a
+                    # placeholder on a no-vision model) — history itself keeps
+                    # only the small reference form.
+                    messages=images_mod.api_view(self.history, vision=self.vision_enabled),
                     tools=_tools,
                     max_tokens=eff_max_tokens,
                     stream=True,

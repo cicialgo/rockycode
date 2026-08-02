@@ -190,7 +190,10 @@ _GLOB_PY = (
 
 
 async def _glob(session, pattern: str) -> str:
-    out, code = await session.exec(f"python -c {shlex.quote(_GLOB_PY)} {shlex.quote(pattern)}")
+    # macOS commonly ships ``python3`` without a ``python`` alias. SWE-bench's
+    # activated Python environments expose python3 as well, so use the portable
+    # executable name for both DockerSession and the local test/session path.
+    out, code = await session.exec(f"python3 -c {shlex.quote(_GLOB_PY)} {shlex.quote(pattern)}")
     if code != 0:
         return f"[error] glob failed: {out.strip()[:200]}"
     return _truncate(out.rstrip("\n"))

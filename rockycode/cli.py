@@ -423,7 +423,6 @@ def chat(
 
     # LSP — config resolved here; connection is started async in the TUI
     # (same two-phase pattern as MCP: construct here, start in on_mount).
-    lsp_mgr = None
     engine.lsp_enabled = lsp
     engine.lsp_manager = None
     if lsp:
@@ -570,7 +569,7 @@ def _print_exit_card(engine) -> None:
         f"“{escape(s.display_title)}” · 📁 {folder} · {s.n_messages} msgs"
     )
     console.print(f"  resume it:  [cyan]rockycode --resume {sid}[/]")
-    console.print(f"  or browse:  [cyan]rockycode --resume[/]")
+    console.print("  or browse:  [cyan]rockycode --resume[/]")
 
 
 # exec's local error exit — mirrors headless.EXIT_ERROR without importing the
@@ -593,6 +592,12 @@ def exec_cmd(
         help="Extra directory write/edit may touch beyond the workdir (repeatable).",
     ),
     model: Optional[str] = typer.Option(None, help="Model ID. Defaults to ROCKYCODE_MODEL env."),
+    image: Optional[List[Path]] = typer.Option(
+        None, "--image",
+        help="Image file to attach to the task (repeatable). Requires a "
+             "vision-capable model/endpoint (stepfun · minimax-m3 · kimi-k3); "
+             "sent as a base64 data URL, the one form every provider accepts.",
+    ),
     max_steps: int = typer.Option(
         30, "--max-steps",
         help="Tool-step budget (must be > 0 — headless runs are never unbounded). "
@@ -680,6 +685,20 @@ def exec_cmd(
             roots.append(rp)
         allowed_roots = tuple(roots)
 
+    images: list[Path] = []
+    if image:
+        from rockycode.engine.images import IMAGE_EXTS
+        for ip in image:
+            p = ip.expanduser().resolve()
+            if not p.is_file():
+                fail(err, f"--image '{ip}' is not a file.")
+                raise typer.Exit(EXIT_CODE_ERROR)
+            if p.suffix.lower() not in IMAGE_EXTS:
+                fail(err, f"--image '{ip}': unsupported format. "
+                          f"use {' / '.join(sorted(IMAGE_EXTS))}.")
+                raise typer.Exit(EXIT_CODE_ERROR)
+            images.append(p)
+
     # Project identity: exec sessions land in the same global trajectory store
     # and resume picker as chat sessions — the receipt must be resumable.
     from rockycode.session import get_project
@@ -690,7 +709,8 @@ def exec_cmd(
     from rockycode.engine.headless import run_exec
 
     code = asyncio.run(run_exec(
-        prompt=prompt, model=model, workdir=wd, allowed_roots=allowed_roots,
+        prompt=prompt, model=model, workdir=wd, images=images or None,
+        allowed_roots=allowed_roots,
         max_steps=max_steps, originator=originator,
         include_thinking=include_thinking, output_last_message=output_last_message,
         sandbox=sandbox, network=network, err=err,
@@ -945,8 +965,13 @@ def memory_edit(name: str, workdir: Optional[Path] = _WORKDIR_OPT) -> None:
     subprocess.run([editor, str(mem.path)])
 
 
-@app.command()
+bench_app = typer.Typer()
+app.add_typer(bench_app, name="bench")
+
+
+@bench_app.callback(invoke_without_command=True)
 def bench(
+    ctx: typer.Context,
     runner: str = typer.Option("raw", help="'raw' (single-shot) or 'rockycode' (harness, v1+)."),
     tasks: str = typer.Option("dev10", help="'dev10', 'verified', or path to a JSON list of instance IDs."),
     model: Optional[str] = typer.Option(None, help="Model ID. Defaults to ROCKYCODE_MODEL env."),
@@ -992,6 +1017,8 @@ def bench(
     ),
 ) -> None:
     """Run rockycode against a SWE-bench task set and report the score."""
+    if ctx.invoked_subcommand:
+        return  # a subcommand (`bench score`) runs instead of a bench run
     show_banner(console)
 
     model = model or os.getenv("ROCKYCODE_MODEL")
@@ -1067,6 +1094,42 @@ def bench(
 
     from rockycode.score import score
     score(predictions_path=predictions_path, instance_ids=None, run_id=run_id, console=console)
+
+
+@bench_app.command("score")
+def bench_score(
+    predictions: Path = typer.Argument(
+        ..., help="Predictions JSONL from a bench run (results/predictions/…)."
+    ),
+    run_id: Optional[str] = typer.Option(
+        None,
+        help="Eval run id. Defaults to the predictions filename, so re-running "
+             "the SAME command resumes a crashed eval (already-scored instances "
+             "are skipped by the swebench harness).",
+    ),
+    max_workers: int = typer.Option(4, help="Parallel eval containers."),
+    timeout: int = typer.Option(1800, help="Per-instance eval timeout in seconds."),
+) -> None:
+    """Score an existing predictions file — or resume a crashed scoring run.
+
+    The agent phase and the scoring phase are separable: if scoring dies
+    (network, docker), the predictions file still holds the full run. This
+    re-runs ONLY the eval, with a run_id stable across retries by default.
+    """
+    show_banner(console)
+    if not predictions.exists():
+        fail(console, f"predictions file not found: {predictions}")
+        raise typer.Exit(1)
+    _docker_preflight()
+    from rockycode.score import score
+    score(
+        predictions_path=predictions,
+        run_id=run_id or predictions.stem,
+        instance_ids=None,
+        console=console,
+        max_workers=max_workers,
+        timeout=timeout,
+    )
 
 
 @app.command()
@@ -1208,9 +1271,13 @@ def goal(
         try:
             plan, requires = await driver.plan(plan_input)
         except Exception as e:  # noqa: BLE001
-            fail(console, f"planning failed — {e}"); ws.cleanup(keep=False); raise typer.Exit(1)
+            fail(console, f"planning failed — {e}")
+            ws.cleanup(keep=False)
+            raise typer.Exit(1)
         if not plan:
-            fail(console, "the planner produced no milestones."); ws.cleanup(keep=False); raise typer.Exit(1)
+            fail(console, "the planner produced no milestones.")
+            ws.cleanup(keep=False)
+            raise typer.Exit(1)
 
         # Confirm loop: show plan → derive permits → gate. 'e' opens a real
         # back-and-forth — rocky ANSWERS your question, then shows the (revised or
@@ -1225,7 +1292,8 @@ def goal(
             blocked = [v for v in flags if v.action == "block"]
             if blocked:
                 fail(console, f"plan names a blocked action: {blocked[0].reason}")
-                ws.cleanup(keep=False); raise typer.Exit(1)
+                ws.cleanup(keep=False)
+                raise typer.Exit(1)
             asks = [v for v in flags if v.action == "ask"]
             net_reason = network_intent(requires) or network_intent(scan_text)
             use_network = network if network is not None else bool(net_reason)

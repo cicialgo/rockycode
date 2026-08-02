@@ -19,14 +19,145 @@ import asyncio
 import os
 import re
 import secrets
+import time
 import webbrowser
+from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, Callable
 from urllib.parse import quote, unquote
+
+if TYPE_CHECKING:
+    from aiohttp import web
 
 from rockycode.engine.tools import Tool, _fn_schema
 
 ARTIFACT_DIR = ".rockycode/artifacts"
 MAX_ARTIFACT_CHARS = 500_000  # 500 KB — generous for inline-SVG/data-URI HTML
+SSE_KEEPALIVE_S = 30.0
+
+
+@dataclass
+class ArtifactRecord:
+    """One artifact created by the current engine session."""
+
+    name: str
+    title: str
+    path: Path
+    url: str
+    live: bool
+    created_at: float
+    updated_at: float
+    open_clients: int = 0
+
+    def as_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "title": self.title,
+            "path": str(self.path),
+            "url": self.url,
+            "live": self.live,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "open_clients": self.open_clients,
+        }
+
+
+class ArtifactRegistry:
+    """In-memory Artifact inventory scoped to one Rocky engine session.
+
+    Files deliberately remain in the project's existing artifact directory;
+    the registry is session-scoped visibility, not ownership of every file in
+    that shared directory. That distinction keeps a session-level "clean"
+    action from deleting another session's output.
+    """
+
+    def __init__(self) -> None:
+        self._records: dict[str, ArtifactRecord] = {}
+        self._listeners: list[Callable[[str, ArtifactRecord], None]] = []
+
+    def subscribe(self, listener: Callable[[str, ArtifactRecord], None]) -> None:
+        self._listeners.append(listener)
+
+    def _emit(self, action: str, record: ArtifactRecord) -> None:
+        for listener in list(self._listeners):
+            try:
+                listener(action, record)
+            except Exception:  # noqa: BLE001 — UI observers must not break the tool
+                pass
+
+    def upsert(self, *, name: str, title: str, path: Path,
+               url: str, live: bool) -> ArtifactRecord:
+        now = time.time()
+        path = path.resolve()
+        record = self._records.get(name)
+        action = "updated" if record is not None else "created"
+        if record is None:
+            record = ArtifactRecord(
+                name=name, title=title, path=path, url=url, live=live,
+                created_at=now, updated_at=now,
+            )
+            self._records[name] = record
+        else:
+            record.title = title
+            record.path = path
+            record.url = url
+            record.live = live
+            record.updated_at = now
+        self._emit(action, record)
+        return record
+
+    def set_client_connected(self, name: str, connected: bool) -> None:
+        record = self._records.get(name)
+        if record is None:
+            return
+        delta = 1 if connected else -1
+        record.open_clients = max(0, record.open_clients + delta)
+        self._emit("clients", record)
+
+    def get(self, name: str) -> ArtifactRecord | None:
+        return self._records.get(name)
+
+    def records(self) -> list[ArtifactRecord]:
+        return sorted(self._records.values(), key=lambda r: r.updated_at, reverse=True)
+
+    def snapshot(self) -> list[dict]:
+        return [record.as_dict() for record in self.records()]
+
+    def rebind_live(self, base_url: str, token: str) -> None:
+        """Point saved live artifacts at a restarted session server.
+
+        A manually stopped server may come back on another ephemeral port (and
+        a new TUI server has a new token). Refresh both the inventory URL and
+        the injected EventSource URL so older session entries remain usable.
+        """
+        for record in self._records.values():
+            if not record.live:
+                continue
+            events_url = f"{base_url}/api/events?t={token}&artifact={quote(record.name)}"
+            try:
+                doc = record.path.read_text(encoding="utf-8")
+                rebound = re.sub(
+                    r'const es = new EventSource\("[^"]*"\);',
+                    f'const es = new EventSource("{events_url}");',
+                    doc,
+                    count=1,
+                )
+                if rebound != doc:
+                    record.path.write_text(rebound, encoding="utf-8")
+            except OSError:
+                pass  # a manually removed file stays listed but cannot be rewritten
+            record.url = (
+                f"{base_url}/artifacts/{quote(record.name)}?t={token}"
+            )
+            self._emit("server", record)
+
+    @property
+    def count(self) -> int:
+        return len(self._records)
+
+    @property
+    def open_clients(self) -> int:
+        return sum(record.open_clients for record in self._records.values())
 
 
 def _open_browser(url: str) -> None:
@@ -140,6 +271,12 @@ def build_artifact_tools(*, workdir: Path, engine=None) -> dict[str, Tool]:
     to decide live vs static and obtain the running server.
     """
     artifact_dir = workdir / ARTIFACT_DIR
+    registry: ArtifactRegistry | None = None
+    if engine is not None:
+        registry = getattr(engine, "artifact_registry", None)
+        if registry is None:
+            registry = ArtifactRegistry()
+            engine.artifact_registry = registry
 
     async def create_artifact(title: str, html: str) -> str:
         """Save a self-contained HTML artifact and open it in the browser."""
@@ -162,12 +299,20 @@ def build_artifact_tools(*, workdir: Path, engine=None) -> dict[str, Tool]:
             # Live: stable name, overwrite in place, auto-reload the open tab.
             path = artifact_dir / f"{stem}.html"
             existed = path.exists()
-            doc = _inject_reload(doc, f"{server.base_url}/api/events?t={server.token}", stem)
+            events_url = (
+                f"{server.base_url}/api/events?t={server.token}"
+                f"&artifact={quote(stem)}"
+            )
+            doc = _inject_reload(doc, events_url, stem)
             path.write_text(doc, encoding="utf-8")
             # Percent-encode: CJK stems survive _safe_filename (isalnum), and a
             # raw non-ASCII URL gets mangled by webbrowser/terminal handlers.
             # ?t= is the per-session nonce every server endpoint requires.
             url = f"{server.base_url}/artifacts/{quote(stem)}?t={server.token}"
+            if registry is not None:
+                registry.upsert(
+                    name=stem, title=title, path=path, url=url, live=True,
+                )
             if existed:
                 await server.broadcast("reload", {"name": stem})  # open tab refreshes
                 return f"[ok] artifact '{title}' updated live — {len(doc):,} chars\n  url: {url}"
@@ -182,6 +327,10 @@ def build_artifact_tools(*, workdir: Path, engine=None) -> dict[str, Tool]:
             n += 1
         path.write_text(doc, encoding="utf-8")
         file_uri = path.resolve().as_uri()
+        if registry is not None:
+            registry.upsert(
+                name=path.stem, title=title, path=path, url=file_uri, live=False,
+            )
         _open_browser(file_uri)
         return (
             f"[ok] artifact saved — {len(doc):,} chars\n"
@@ -241,15 +390,17 @@ class ArtifactServer:
     exit.
     """
 
-    def __init__(self, workdir: Path) -> None:
+    def __init__(self, workdir: Path, *, registry: ArtifactRegistry | None = None) -> None:
         self.workdir = workdir
         self.artifact_dir = workdir / ARTIFACT_DIR
+        self.registry = registry
         self.port: int = 0
         # Unguessable per-session nonce gating every endpoint (see class doc).
         self.token: str = secrets.token_urlsafe(16)
         self._app: "web.Application | None" = None
         self._runner: "web.AppRunner | None" = None
         self._sse_queues: set["asyncio.Queue"] = set()
+        self._start_lock = asyncio.Lock()
 
     def _require_token(self, request: "web.Request") -> None:
         """401 unless the request carries the session token (?t=...)."""
@@ -271,27 +422,46 @@ class ArtifactServer:
     async def start(self) -> None:
         from aiohttp import web
 
-        self._app = web.Application()
-        self._app.router.add_get("/artifacts/{name}", self._serve_artifact)
-        self._app.router.add_get("/list", self._list_artifacts)
-        self._app.router.add_get("/api/events", self._handle_events)
+        async with self._start_lock:
+            if self._runner is not None:
+                return  # one server per session; repeated artifacts reuse it
 
-        self._runner = web.AppRunner(self._app)
-        await self._runner.setup()
-        # Host: loopback. Docker: 0.0.0.0 is required (the published port forwards
-        # to the container bridge, not its 127.0.0.1) — but compose binds the host
-        # side to 127.0.0.1, so the server is never LAN-exposed.
-        bind_host = "0.0.0.0" if os.environ.get("ROCKYCODE_IN_DOCKER") else "127.0.0.1"
-        fixed_port = int(os.environ["ROCKYCODE_ARTIFACT_PORT"]) if "ROCKYCODE_ARTIFACT_PORT" in os.environ else 0
-        site = web.TCPSite(self._runner, bind_host, fixed_port)
-        await site.start()
-        for sock in site._server.sockets:
-            self.port = sock.getsockname()[1]
-            break
+            app = web.Application()
+            app.router.add_get("/artifacts/{name}", self._serve_artifact)
+            app.router.add_get("/list", self._list_artifacts)
+            app.router.add_get("/api/events", self._handle_events)
+
+            runner = web.AppRunner(app)
+            await runner.setup()
+            try:
+                # Host: loopback. Docker: 0.0.0.0 is required (the published port
+                # forwards to the container bridge, not its 127.0.0.1) — compose
+                # binds the host side to 127.0.0.1, so it is never LAN-exposed.
+                bind_host = "0.0.0.0" if os.environ.get("ROCKYCODE_IN_DOCKER") else "127.0.0.1"
+                fixed_port = (
+                    int(os.environ["ROCKYCODE_ARTIFACT_PORT"])
+                    if "ROCKYCODE_ARTIFACT_PORT" in os.environ else 0
+                )
+                site = web.TCPSite(runner, bind_host, fixed_port)
+                await site.start()
+                for sock in site._server.sockets:
+                    self.port = sock.getsockname()[1]
+                    break
+            except BaseException:
+                await runner.cleanup()
+                raise
+            self._app = app
+            self._runner = runner
+            if self.registry is not None:
+                self.registry.rebind_live(self.base_url, self.token)
 
     @property
     def base_url(self) -> str:
         return f"http://localhost:{self.port}"
+
+    @property
+    def is_running(self) -> bool:
+        return self._runner is not None
 
     async def _serve_artifact(self, request: "web.Request") -> "web.Response":
         from aiohttp import web
@@ -344,24 +514,38 @@ class ArtifactServer:
         await resp.prepare(request)
         queue: "asyncio.Queue" = asyncio.Queue(maxsize=64)
         self._sse_queues.add(queue)
+        tracked_name = unquote(request.query.get("artifact", ""))
+        if (_safe_filename(tracked_name) != tracked_name
+                or self.registry is None
+                or self.registry.get(tracked_name) is None):
+            tracked_name = ""
+        if tracked_name:
+            self.registry.set_client_connected(tracked_name, True)
         try:
             await resp.write(b"event: connected\ndata: {}\n\n")
             while True:
-                chunk = await asyncio.wait_for(queue.get(), timeout=30)
+                try:
+                    chunk = await asyncio.wait_for(queue.get(), timeout=SSE_KEEPALIVE_S)
+                except asyncio.TimeoutError:
+                    # Keep the SAME EventSource connection alive. Returning here
+                    # made every browser reconnect every 30 seconds and left a
+                    # window where a rebuild notification could be missed.
+                    await resp.write(b": keepalive\n\n")
+                    continue
                 await resp.write(chunk.encode())
-        except asyncio.TimeoutError:
-            try:
-                await resp.write(b": keepalive\n\n")
-            except (ConnectionResetError, ConnectionError):
-                pass
         except (ConnectionResetError, ConnectionError):
             pass
         finally:
             self._sse_queues.discard(queue)
+            if tracked_name and self.registry is not None:
+                self.registry.set_client_connected(tracked_name, False)
         return resp
 
     async def stop(self) -> None:
-        if self._runner is not None:
-            await self._runner.cleanup()
+        async with self._start_lock:
+            runner = self._runner
             self._runner = None
             self._app = None
+            self.port = 0
+            if runner is not None:
+                await runner.cleanup()

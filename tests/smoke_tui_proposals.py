@@ -9,7 +9,6 @@ Paths driven through the real RockyCodeApp:
   4) /proposals with an empty inbox → one gentle line, no card.
 """
 import asyncio
-import json
 import os
 import sys
 import tempfile
@@ -24,7 +23,7 @@ os.chdir(tempfile.mkdtemp(prefix="rockytuiprop-"))
 
 from textual.widgets import Static
 
-from rockycode.dream.proposals import ARCHIVED, PENDING, Proposal, ProposalStore, skills_home
+from rockycode.dream.proposals import PENDING, Proposal, ProposalStore, skills_home
 from rockycode.engine.loop import Engine
 from rockycode.session import get_project
 from rockycode.tui.app import ChatInput, RockyCodeApp

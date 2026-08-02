@@ -747,6 +747,12 @@ window.addEventListener('message', (e) => {
   const msg = e.data;
   switch (msg.type) {
     case 'stateChanged':
+      if (msg.sessionId) {
+        sessionId = msg.sessionId;
+        state.sessionId = msg.sessionId;
+        vscode.setState(state);
+      }
+      if (msg.model) $('#model-name').textContent = msg.model;
       if (msg.state === 'thinking') {
         setStatus('thinking...', 'thinking');
         $('#cancel-status').textContent = '♪ thinking...';
@@ -813,6 +819,13 @@ window.addEventListener('message', (e) => {
 
     case 'clearChat':
       // Reset all state
+      if (msg.sessionId) {
+        sessionId = msg.sessionId;
+        state.sessionId = msg.sessionId;
+      }
+      state.messages = [];
+      vscode.setState(state);
+      if (msg.model) $('#model-name').textContent = msg.model;
       dismissPerm();
       $('#messages').innerHTML = '<div class="empty-state" id="empty-state"><div class="big">🪨</div><div class="title">Rocky Code</div><div class="hint">amaze!</div></div>';
       currentThinking = null;

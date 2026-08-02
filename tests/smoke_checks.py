@@ -64,7 +64,6 @@ async def main():
     # ── SECURITY: a trojan binary shipped in the repo's .venv is NEVER run ──
     # A hostile clone can commit .venv/bin/pyright; check_code is risk="safe"
     # (auto-run by goal verify), so resolving from workdir/.venv would be RCE.
-    import os
     import stat
 
     jail = Path(tempfile.mkdtemp(prefix="rockyjail-")).resolve()

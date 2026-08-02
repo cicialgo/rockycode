@@ -74,8 +74,14 @@ export class RockyChatViewProvider implements vscode.WebviewViewProvider {
             );
             break;
           case 'newSession':
-            await this.connection.request('initialize', {});
-            this._postMessage({ type: 'clearChat' });
+            {
+              const result = await this.connection.createSession();
+              this._postMessage({
+                type: 'clearChat',
+                sessionId: result.session_id,
+                model: result.model,
+              });
+            }
             break;
           case 'permissionResponse': {
             const cb = this._pendingPerms.get(msg.eventId);
