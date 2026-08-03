@@ -88,6 +88,10 @@ uv tool install rockycode     # recommended — puts the `rockycode` command on 
 rockycode                     # the first run walks you through API-key setup
 ```
 
+Already installed and a new release is out? **`uv tool upgrade rockycode`** —
+note that re-running `uv tool install` does NOT upgrade: it sees the existing
+install and quietly keeps the old version.
+
 Don't have uv yet? One command installs it:
 `curl -LsSf https://astral.sh/uv/install.sh | sh` — Windows and other options
 in the [uv install docs](https://docs.astral.sh/uv/getting-started/installation/).

@@ -62,6 +62,9 @@ uv tool install rockycode     # 推荐 —— `rockycode` 命令直接进 PATH
 rockycode                     # 首次运行会引导你完成 API key 设置
 ```
 
+已经装过、想升到新版本？用 **`uv tool upgrade rockycode`** ——
+注意重复执行 `uv tool install` 不会升级：它看到已有安装就静默保留旧版本。
+
 还没有 uv？一条命令安装：
 `curl -LsSf https://astral.sh/uv/install.sh | sh`（Windows 及其他方式见
 [uv 安装文档](https://docs.astral.sh/uv/getting-started/installation/)）。
