@@ -175,6 +175,17 @@ def test_event_to_notification():
         assert n["params"]["session_id"] == sid
 
 
+def test_cli_version_flag():
+    """`rockycode --version` prints the SAME version the serve handshake
+    reports — both derive from package metadata, and this literal is part of
+    the release bump ritual (matches the handshake asserts above)."""
+    from typer.testing import CliRunner
+
+    from rockycode.cli import app
+    result = CliRunner().invoke(app, ["--version"])
+    assert result.exit_code == 0 and "rockycode 0.1.1" in result.output, result.output
+
+
 if __name__ == "__main__":
     test_serve_jsonrpc_handshake()
     print("PASS test_serve_jsonrpc_handshake")
@@ -187,5 +198,8 @@ if __name__ == "__main__":
 
     test_event_to_notification()
     print("PASS test_event_to_notification")
+
+    test_cli_version_flag()
+    print("PASS test_cli_version_flag")
 
     print("\nOK — all serve smoke tests passed")

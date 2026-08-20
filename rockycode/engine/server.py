@@ -413,9 +413,10 @@ async def run_server(
                 # chain: env, .env files serve loaded, keychain) so the client's
                 # "setup required" card reflects reality instead of guessing
                 # from the editor's own environment.
+                import rockycode
                 from rockycode.onboarding import is_configured
                 _write_line(_response(msg_id, {
-                    "version": "0.1.1",
+                    "version": rockycode.__version__,
                     "session_id": sess.session_id,
                     "model": model,
                     "configured": is_configured(),

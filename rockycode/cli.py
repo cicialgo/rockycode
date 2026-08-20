@@ -29,7 +29,7 @@ bootstrap_credentials()
 # `rockycode` without args → `rockycode chat`; a leading flag (`rockycode
 # --resume …`, `rockycode --yolo`) reaches chat too — nobody should have to
 # remember to type "chat" first.
-_TOP_LEVEL_FLAGS = {"--help", "-h", "--version", "--install-completion", "--show-completion"}
+_TOP_LEVEL_FLAGS = {"--help", "-h", "--version", "-V", "--install-completion", "--show-completion"}
 if len(sys.argv) == 1:
     sys.argv.append("chat")
 elif sys.argv[1].startswith("-") and sys.argv[1] not in _TOP_LEVEL_FLAGS:
@@ -67,8 +67,19 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _version_flag(value: bool) -> None:
+    if value:
+        import rockycode
+        print(f"rockycode {rockycode.__version__}")  # plain print: script-friendly
+        raise typer.Exit()
+
+
 @app.callback()
-def _root() -> None:
+def _root(
+    version: bool = typer.Option(
+        False, "--version", "-V", callback=_version_flag, is_eager=True,
+        help="Print the version and exit."),
+) -> None:
     """Force Typer into multi-command mode."""
 
 

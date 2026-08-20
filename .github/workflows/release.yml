@@ -1,64 +1,18 @@
 name: Release
 
+# One job: build sdist+wheel on ubuntu, publish to PyPI via Trusted Publishing.
+# The old macos-13 matrix (built a cbor2 x86_64-mac wheel for the release page)
+# is gone: the runner label was retired, so it never actually ran — 0.1.0 and
+# 0.1.1 both sat in its queue until cancelled and shipped fine without it — and
+# cbor2 still publishes no x86_64-mac wheel to attach anyway (arm64 only; an
+# Intel-Mac install builds it from source via Rust, PyPI-side, as it always
+# has). GitHub releases are created by hand: gh release create --notes-file.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
 
 jobs:
-  release:
-    runs-on: macos-13  # x86_64 Mac — the only platform missing cbor2 wheels
-    strategy:
-      matrix:
-        python: ["3.11", "3.12", "3.13"]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-          python-version: ${{ matrix.python }}
-
-      - name: Install Rust (cbor2 needs it on macOS x86_64)
-        run: rustup update stable
-
-      - name: Build rockycode wheel (only once)
-        if: matrix.python == '3.11'
-        run: uv build
-
-      - name: Build cbor2 wheel
-        run: uv pip wheel cbor2==6.1.2 --no-deps -w dist/
-
-      - name: Upload wheels
-        uses: actions/upload-artifact@v4
-        with:
-          name: wheels-${{ matrix.python }}
-          path: dist/
-
-  publish:
-    needs: release
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download all wheels
-        uses: actions/download-artifact@v4
-        with:
-          path: dist/
-          pattern: wheels-*
-          merge-multiple: true
-
-      - name: Show artifacts
-        run: ls -la dist/
-
-      - name: Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*
-          generate_release_notes: true
-
-  # rockycode is pure-Python, so PyPI publishing builds on Ubuntu and does NOT
-  # depend on the macOS `release` job (which only exists for the cbor2 wheel on
-  # the GitHub-Release side). This keeps publishing off the slow macOS queue.
   pypi:
     runs-on: ubuntu-latest
     permissions:
