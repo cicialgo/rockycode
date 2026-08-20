@@ -2,7 +2,7 @@
   "name": "rockycode",
   "displayName": "rockycode",
   "description": "AI coding agent — chat, inline tools, diff previews, and in-panel Enter/arrow tool approvals. Powered by the rockycode CLI (DeepSeek).",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "rockycode",
   "license": "MIT",
   "icon": "media/icon.png",

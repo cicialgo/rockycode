@@ -66,7 +66,7 @@ def test_serve_jsonrpc_handshake():
             proc.stdin.write(_request("initialize"))
             proc.stdin.flush()
             resp = _read_line(proc)
-            assert resp.get("result", {}).get("version") == "0.1.1", \
+            assert resp.get("result", {}).get("version") == "0.1.2", \
                 f"unexpected init response: {resp}"
             sid = resp.get("result", {}).get("session_id")
             assert sid
@@ -107,7 +107,7 @@ def test_serve_survives_malformed_messages():
             proc.stdin.write(_request("initialize"))
             proc.stdin.flush()
             resp = _read_line(proc)
-            assert resp.get("result", {}).get("version") == "0.1.1", \
+            assert resp.get("result", {}).get("version") == "0.1.2", \
                 f"server did not survive malformed input: {resp}"
             proc.stdin.write(_request("shutdown", msg_id=2))
             proc.stdin.flush()
@@ -183,7 +183,7 @@ def test_cli_version_flag():
 
     from rockycode.cli import app
     result = CliRunner().invoke(app, ["--version"])
-    assert result.exit_code == 0 and "rockycode 0.1.1" in result.output, result.output
+    assert result.exit_code == 0 and "rockycode 0.1.2" in result.output, result.output
 
 
 if __name__ == "__main__":

@@ -9,6 +9,25 @@ change between minor versions.
 
 _Nothing yet._
 
+## [0.1.2] — `--version` flag, GA price tables
+
+### Added
+- `rockycode --version` / `-V` prints the installed version. One version
+  source: package metadata (pyproject) — the serve handshake reports the same
+  value instead of a hardcoded string.
+
+### Changed
+- DeepSeek price tables refreshed to the GA snapshots (V4-Flash-0731 /
+  V4-Pro-0813), both USD and CNY, verified 2026-08-20 at the source;
+  peak-valley billing confirmed live (2× in the published UTC windows).
+- README results updated: `deepseek-v4-flash` GA carries three clean full-500
+  SWE-bench Verified rounds (88.8% average, 95.4% pass@3); the
+  `deepseek-v4-pro` column is explicitly marked preview (pre-0813).
+
+### CI
+- Release workflow reduced to the single ubuntu PyPI Trusted-Publishing job;
+  the dead macos-13 matrix (retired runner, never ran) is gone.
+
 ## [0.1.1] — session artifacts, images in chat, real sandbox cancel
 
 ### Added
