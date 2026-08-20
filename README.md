@@ -9,8 +9,8 @@ Built for the DeepSeek V4 series, with a unique research mode, bench-tested, and
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
-![SWE-bench Verified](https://img.shields.io/badge/SWE--bench_Verified-79.8%25_V4--flash-7d5cc6)
-![V4-pro preview](https://img.shields.io/badge/V4--pro_preview-81.8%25_pass@3-8d6cd0)
+![SWE-bench Verified](https://img.shields.io/badge/SWE--bench_Verified-88.8%25_V4--flash_GA-7d5cc6)
+![V4-pro preview](https://img.shields.io/badge/V4--pro_preview-74.9%25-8d6cd0)
 ![Python](https://img.shields.io/badge/Python-3.11%2B-9d7cd8)
 ![License](https://img.shields.io/badge/License-MIT-a9b1d6)
 
@@ -44,30 +44,36 @@ against it.
 
 ## Results — SWE-bench Verified
 
-Full-set numbers: **independent full-500 runs** (three each for
-`deepseek-v4-pro` and `minimax-m3`, one so far for `deepseek-v4-flash`), same
+Full-set numbers: **independent full-500 runs**, three rounds per model, same
 harness and config for all (100-step cap, 32,768 max output tokens, reasoning
 effort `max`, thinking on), scored with the official SWE-bench harness. No
-tuning against the tasks.
+tuning against the tasks. Mind the versions: the `deepseek-v4-flash` column is
+the **GA release** (V4-Flash-0731), while the `deepseek-v4-pro` rounds ran
+before the GA V4-Pro-0813 shipped — that column is the **preview** pro, so the
+flash/pro gap reflects a version difference, not a same-vintage comparison.
 
-| run | `deepseek-v4-pro` | `deepseek-v4-flash` | `minimax-m3` |
+| run | `deepseek-v4-flash` (GA) | `deepseek-v4-pro` (preview) | `minimax-m3` |
 |---|---|---|---|
-| round 1 | 75.6% (378/500) | 79.8% (399/500) | 72.8% (364/500) |
-| round 2 | 74.8% (374/500) | — | 71.2% (356/500) |
-| round 3 | 74.4% (372/500) | — | 70.0% (350/500) |
-| **average** | **74.9%** | **79.8%** *(1 run)* | **71.3%** |
-| union of runs (pass@3) | 81.8% (409/500) | — | 83.6% (418/500) |
+| round 1 | 90.0% (450/500) | 75.6% (378/500) | 72.8% (364/500) |
+| round 2 | 88.6% (443/500) | 74.8% (374/500) | 71.2% (356/500) |
+| round 3 | 87.8% (439/500) | 74.4% (372/500) | 70.0% (350/500) |
+| **average** | **88.8%** | **74.9%** | **71.3%** |
+| union of runs (pass@3) | 95.4% (477/500) | 81.8% (409/500) | 83.6% (418/500) |
 
 Read the two summary rows differently. The **average** is the
 leaderboard-comparable number — each round is an independent single-pass run
 over the full 500. The **union** is pass@3: tasks solved by at least one
-round. The gap between them (~7 points for DeepSeek, ~12 for MiniMax) is
-run-to-run variance, not capability — the models already reach these tasks
-under this harness, they just don't hold them every run. Closing that gap
-(verify-before-finish gating and run selection, not more prompting) is the
-current line of work. For reference, DeepSeek reports 80.6% with its own
-scaffold; the three-run union crosses that mark. Per-round breakdowns:
+round. The gap between them (~7 points for both DeepSeek models, ~12 for
+MiniMax) is run-to-run variance, not capability — the models already reach
+these tasks under this harness, they just don't hold them every run. Closing
+that gap (verify-before-finish gating and run selection, not more prompting)
+is the current line of work. For reference, DeepSeek reported 80.6% for V4
+Pro (Preview) with its own scaffold. Per-round breakdowns:
 [@rockycode_ai](https://x.com/rockycode_ai).
+
+Two earlier flash rounds (79.8% — previously listed here — and 81.2%) hit
+local network outages mid-run, visible as contiguous blocks of empty-patch
+tasks; they were replaced by clean re-runs rather than averaged in.
 
 We plan to add **DeepSWE-bench** support as well — currently in progress.
 

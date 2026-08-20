@@ -9,8 +9,8 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
-![SWE-bench Verified](https://img.shields.io/badge/SWE--bench_Verified-79.8%25_V4--flash-7d5cc6)
-![V4-pro preview](https://img.shields.io/badge/V4--pro_preview-81.8%25_pass@3-8d6cd0)
+![SWE-bench Verified](https://img.shields.io/badge/SWE--bench_Verified-88.8%25_V4--flash_GA-7d5cc6)
+![V4-pro preview](https://img.shields.io/badge/V4--pro_preview-74.9%25-8d6cd0)
 ![Python](https://img.shields.io/badge/Python-3.11%2B-9d7cd8)
 ![License](https://img.shields.io/badge/License-MIT-a9b1d6)
 
@@ -37,17 +37,19 @@ rockycode 是一个编程智能体 harness，为 DeepSeek V4 系列适配，也�
 
 ## 能力量化：SWE bench
 
-完整 500 题的成绩：**独立的完整 500 题运行**（`deepseek-v4-pro` 与 `minimax-m3` 各 3 轮，`deepseek-v4-flash` 目前 1 轮），所有模型使用完全相同的 harness 与配置（步数上限 100、单次最大输出 32,768 token、推理力度 `max`、thinking 开启），由官方 SWE-bench harness 打分，未针对任务做任何调优。
+完整 500 题的成绩：**独立的完整 500 题运行**，每个模型各 3 轮，所有模型使用完全相同的 harness 与配置（步数上限 100、单次最大输出 32,768 token、推理力度 `max`、thinking 开启），由官方 SWE-bench harness 打分，未针对任务做任何调优。注意版本差异：`deepseek-v4-flash` 一列是**正式版（GA，V4-Flash-0731）**；而 `deepseek-v4-pro` 的三轮在 GA 版 V4-Pro-0813 发布之前运行，该列是 **preview 版**成绩 —— flash 与 pro 的差距里含有版本差，不是同代对比。
 
-| 轮次 | `deepseek-v4-pro` | `deepseek-v4-flash` | `minimax-m3` |
+| 轮次 | `deepseek-v4-flash`（GA） | `deepseek-v4-pro`（preview） | `minimax-m3` |
 |---|---|---|---|
-| 第 1 轮 | 75.6%（378/500） | 79.8%（399/500） | 72.8%（364/500） |
-| 第 2 轮 | 74.8%（374/500） | — | 71.2%（356/500） |
-| 第 3 轮 | 74.4%（372/500） | — | 70.0%（350/500） |
-| **平均** | **74.9%** | **79.8%**（1 轮） | **71.3%** |
-| 多轮并集（pass@3） | 81.8%（409/500） | — | 83.6%（418/500） |
+| 第 1 轮 | 90.0%（450/500） | 75.6%（378/500） | 72.8%（364/500） |
+| 第 2 轮 | 88.6%（443/500） | 74.8%（374/500） | 71.2%（356/500） |
+| 第 3 轮 | 87.8%（439/500） | 74.4%（372/500） | 70.0%（350/500） |
+| **平均** | **88.8%** | **74.9%** | **71.3%** |
+| 多轮并集（pass@3） | 95.4%（477/500） | 81.8%（409/500） | 83.6%（418/500） |
 
-两行汇总要分开读。**平均值**是可以与排行榜对比的数字 —— 每一轮都是独立的单次完整 500 题。**并集**是 pass@3：至少被某一轮解出的任务。两者之间的差距（DeepSeek 约 7 个点、MiniMax 约 12 个点）是轮次间方差，不是能力上限 —— 模型在这套 harness 下已经"够得着"这些任务，只是无法每一轮都稳住。当前的工作重心就是收掉这个差距：finish 前的验证门控与多轮选择，而不是继续改提示词。作为参照：DeepSeek 用自家 scaffold 报告 80.6%，三轮并集已越过这个数字。逐轮拆解请关注我们的X账号（@rockycode_ai）。
+两行汇总要分开读。**平均值**是可以与排行榜对比的数字 —— 每一轮都是独立的单次完整 500 题。**并集**是 pass@3：至少被某一轮解出的任务。两者之间的差距（DeepSeek 两个模型各约 7 个点、MiniMax 约 12 个点）是轮次间方差，不是能力上限 —— 模型在这套 harness 下已经"够得着"这些任务，只是无法每一轮都稳住。当前的工作重心就是收掉这个差距：finish 前的验证门控与多轮选择，而不是继续改提示词。作为参照：DeepSeek 用自家 scaffold 报告 V4 Pro (Preview) 为 80.6%。逐轮拆解请关注我们的X账号（@rockycode_ai）。
+
+另有两轮较早的 flash-preview 运行（79.8% —— 即此前列在这里的那一轮 —— 与 81.2%）在运行途中遭遇本地网络中断，表现为连续任务块返回空补丁；这两轮已用干净的重跑替换，未计入平均。
 
 我们计划支持DeepSWE bench，目前还在调试中。
 

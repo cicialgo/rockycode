@@ -9,7 +9,9 @@ DeepSeek changes them:
     https://api-docs.deepseek.com/quick_start/pricing        (USD table)
     https://api-docs.deepseek.com/zh-cn/quick_start/pricing   (CNY table)
 
-Verified: 2026-07-04 (per 1,000,000 tokens).
+Verified: 2026-08-20 (per 1,000,000 tokens). Tables list the GA snapshots
+DeepSeek-V4-Flash-0731 and DeepSeek-V4-Pro-0813; both are billed off-peak base
+with a 2x peak surcharge.
 
 To update WITHOUT editing the install (survives upgrades), drop a
 ~/.rockycode/pricing.toml that overrides any values below. It is a FILE on
@@ -24,18 +26,17 @@ from datetime import datetime, time as dtime, timezone
 from pathlib import Path
 
 PRICING_SOURCE_URL = "https://api-docs.deepseek.com/quick_start/pricing"
-PRICING_VERIFIED = "2026-07-04"
+PRICING_VERIFIED = "2026-08-20"
 OVERRIDE_PATH = Path.home() / ".rockycode" / "pricing.toml"
 
 # Official list prices, per 1M tokens, each currency from its OWN table.
 DEFAULT_PRICING: dict = {
     "peak": {
-        # DeepSeek peak-valley pricing (announced): peak-hour rate = 2x regular,
-        # for ALL billing items, during these UTC windows — 01:00–04:00 and
-        # 06:00–10:00. It starts MID-JULY 2026, so the logic is wired but gated
-        # behind effective_date: before that date nothing is surcharged even
-        # inside a window, and it auto-activates on the date with no code change.
-        # Confirm the exact start date and adjust here or in the override file.
+        # DeepSeek peak-valley pricing, LIVE and confirmed at the source
+        # 2026-08-20: peak-hour rate = 2x the off-peak base below, for ALL
+        # billing items, during these UTC windows — 01:00–04:00 and 06:00–10:00
+        # (Beijing 9:00–12:00 / 14:00–18:00). effective_date stays so usage
+        # from before the mid-July start keeps pricing at base.
         "enabled": True,
         "effective_date": "2026-07-15",  # UTC; peak surcharge does not apply before this
         "multiplier": 2.0,
@@ -45,13 +46,14 @@ DEFAULT_PRICING: dict = {
         ],
     },
     "models": {
-        "deepseek-v4-pro": {
-            "usd": {"in_hit": 0.003625, "in_miss": 0.435, "out": 0.87},
-            "cny": {"in_hit": 0.025, "in_miss": 3.0, "out": 6.0},
+        # Off-peak base rates; peak windows above bill at multiplier x base.
+        "deepseek-v4-pro": {  # GA snapshot V4-Pro-0813
+            "usd": {"in_hit": 0.022, "in_miss": 0.66, "out": 1.98},
+            "cny": {"in_hit": 0.15, "in_miss": 4.5, "out": 13.5},
         },
-        "deepseek-v4-flash": {
-            "usd": {"in_hit": 0.0028, "in_miss": 0.14, "out": 0.28},
-            "cny": {"in_hit": 0.02, "in_miss": 1.0, "out": 2.0},
+        "deepseek-v4-flash": {  # GA snapshot V4-Flash-0731
+            "usd": {"in_hit": 0.007, "in_miss": 0.22, "out": 0.66},
+            "cny": {"in_hit": 0.05, "in_miss": 1.5, "out": 4.5},
         },
     },
     "fallback_model": "deepseek-v4-pro",  # unknown model → price as pro (conservative)

@@ -18,10 +18,10 @@ def test_dual_currency():
     led = UsageLedger()  # peak disabled by default
     led.add("deepseek-v4-pro", _1M, at=OFFPEAK)
     led.add("deepseek-v4-flash", _1M, at=OFFPEAK)
-    # USD from the USD table: pro 0.435+0.87, flash 0.14+0.28
-    assert abs(led.cost("usd") - (0.435 + 0.87 + 0.14 + 0.28)) < 1e-9, led.cost("usd")
-    # CNY from the CNY table — independent numbers, NOT usd*ratio: pro 3+6, flash 1+2
-    assert abs(led.cost("cny") - (3.0 + 6.0 + 1.0 + 2.0)) < 1e-9, led.cost("cny")
+    # USD from the USD table: pro 0.66+1.98, flash 0.22+0.66
+    assert abs(led.cost("usd") - (0.66 + 1.98 + 0.22 + 0.66)) < 1e-9, led.cost("usd")
+    # CNY from the CNY table — independent numbers, NOT usd*ratio: pro 4.5+13.5, flash 1.5+4.5
+    assert abs(led.cost("cny") - (4.5 + 13.5 + 1.5 + 4.5)) < 1e-9, led.cost("cny")
     assert led.configured("usd") and led.configured("cny")
     print(f"dual-currency: ${led.cost('usd'):.3f} / ¥{led.cost('cny'):.1f} (independent tables)  ok")
 
@@ -29,13 +29,13 @@ def test_dual_currency():
 def test_peak():
     led = UsageLedger()  # ships peak enabled (2x, windows 01–04 & 06–10 UTC, from mid-July)
     led.add("deepseek-v4-flash", _1M, at=PEAK)
-    assert abs(led.cost("usd") - (0.14 + 0.28) * 2) < 1e-9, led.cost("usd")   # 2x in-window
+    assert abs(led.cost("usd") - (0.22 + 0.66) * 2) < 1e-9, led.cost("usd")   # 2x in-window
     off = UsageLedger()
     off.add("deepseek-v4-flash", _1M, at=OFFPEAK)
-    assert abs(off.cost("usd") - (0.14 + 0.28)) < 1e-9, off.cost("usd")       # off-peak base
+    assert abs(off.cost("usd") - (0.22 + 0.66)) < 1e-9, off.cost("usd")       # off-peak base
     pre = UsageLedger()
     pre.add("deepseek-v4-flash", _1M, at=PRE_EFFECT)
-    assert abs(pre.cost("usd") - (0.14 + 0.28)) < 1e-9, pre.cost("usd")       # in-window but before mid-July
+    assert abs(pre.cost("usd") - (0.22 + 0.66)) < 1e-9, pre.cost("usd")       # in-window but before mid-July
     print("peak-hour: 2x in-window after the mid-July start; base before it and off-peak  ok")
 
 
@@ -45,7 +45,7 @@ def test_override():
     p.write_text("[models.deepseek-v4-flash.usd]\nout = 9.99\n")
     pricing = load_pricing(override_path=p)
     assert pricing["models"]["deepseek-v4-flash"]["usd"]["out"] == 9.99      # overridden
-    assert pricing["models"]["deepseek-v4-flash"]["usd"]["in_miss"] == 0.14  # untouched keeps default
+    assert pricing["models"]["deepseek-v4-flash"]["usd"]["in_miss"] == 0.22  # untouched keeps default
     print("override: ~/.rockycode/pricing.toml merges over the built-in table  ok")
 
 
@@ -54,7 +54,7 @@ def test_cache_cheap():
     led.add("deepseek-v4-pro",
             {"prompt_tokens": 1_000_000, "prompt_cache_hit_tokens": 1_000_000, "completion_tokens": 0},
             at=OFFPEAK)
-    assert led.cost("usd") < 0.02, led.cost("usd")
+    assert led.cost("usd") < 0.03, led.cost("usd")  # 1M hit tokens at $0.022 vs $0.66 as misses
     print("cache hits cost far less than misses  ok")
 
 
