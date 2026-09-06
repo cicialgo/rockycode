@@ -471,9 +471,11 @@ async def run_exec(
             sandbox_meta=sandbox_meta, extra_meta=extra_meta,
         )
         if images:
-            # --image is the caller asserting the target endpoint takes image
-            # input — there is no provider profile in exec (base_url comes from
-            # env), so trust the flag; a text-only endpoint rejects the request
+            # A model the registry knows (deepseek-v4-flash-vision-exp, kimi-k3,
+            # …) already got the right vision flag from the Engine's launch
+            # resolution. For one it does NOT know — a custom endpoint served
+            # via env — --image is the caller asserting the endpoint takes image
+            # input, so trust the flag; a text-only endpoint rejects the request
             # with a clear API error in the JSONL stream.
             engine.vision_enabled = True
         return await drive(

@@ -98,6 +98,46 @@ assert eng._extra_body() == {"reasoning_effort": "high"}, eng._extra_body()
 assert eng.history == before, "a provider switch must not touch conversation history"
 print("engine: switch swaps client+model+policy, history untouched  ✓")
 
+# ── model-level vision: one deepseek provider, only vision-exp sees ──────────
+ds = P.discover()["deepseek"]
+assert "deepseek-v4-flash-vision-exp" in ds.models and not ds.vision
+by_model = {c.model: c for c in P.choices() if c.provider.name == "deepseek"}
+assert by_model["deepseek-v4-flash-vision-exp"].vision, "vision-exp sees images"
+assert not by_model["deepseek-v4-flash"].vision and not by_model["deepseek-v4-pro"].vision
+p, e, m = P.resolve("deepseek:flash")
+assert m == "deepseek-v4-flash", "base model wins its own substring vs -vision-exp"
+p, e, m = P.resolve("deepseek:vision")
+assert m == "deepseek-v4-flash-vision-exp", "the variant stays reachable by 'vision'"
+assert P.resolve("deepseek-v4-flash-vision-exp")[2] == "deepseek-v4-flash-vision-exp"
+print("vision: per-MODEL flag — vision-exp ❖, flash/pro text; resolve stays sharp  ✓")
+
+# ── config vision_models: "flash gained vision" is a config flip, not code ───
+from rockycode import config as C
+C.GLOBAL_PATH = Path(tempfile.mkdtemp()) / "config.toml"  # never the real ~/.rockycode
+C.set_value("vision_models", "deepseek-v4-flash, no-such-model")
+flip = {c.model: c for c in P.choices() if c.provider.name == "deepseek"}
+assert flip["deepseek-v4-flash"].vision, "config vision_models marks flash as seeing"
+assert "no-such-model" not in P.discover()["deepseek"].vision_models, "unknown ids ignored"
+C.set_value("vision_models", "")
+assert not [c for c in P.choices() if c.provider.name == "deepseek" and
+            c.model == "deepseek-v4-flash"][0].vision, "cleared → flash text-only again"
+print("config: vision_models flips a model's sight from any shell — no code change  ✓")
+
+# ── endpoints.toml: an own base URL becomes a first-class <provider>-custom ──
+eid, err = P.set_custom_url("kimi", "https://my-gateway.example/v1")
+assert err is None and eid == "kimi-custom"
+kimi = P.discover()["kimi"]
+custom = [e for e in kimi.endpoints if e.eid == "kimi-custom"]
+assert custom and custom[0].base_url == "https://my-gateway.example/v1"
+assert custom[0].key_env == kimi.endpoints[0].key_env, "custom URL rides the provider's key"
+p, e, m = P.resolve("kimi-custom:kimi-k3")
+assert e.eid == "kimi-custom" and m == "kimi-k3", "custom endpoint is /model-addressable"
+_eid, err = P.set_custom_url("kimi", "ftp://nope")
+assert err is not None, "non-http url refused"
+_eid, err = P.set_custom_url("kimi", "")  # empty removes the entry
+assert err is None and not [e for e in P.discover()["kimi"].endpoints if e.eid == "kimi-custom"]
+print("endpoints.toml: own gateway URL per provider — added, resolvable, removable  ✓")
+
 print("PROVIDERS SMOKE OK — providers are data, the SDK is the only glue. amaze!")
 
 

@@ -246,4 +246,40 @@ assert asyncio.run(_mk("minimax-cn:minimax-m3", "")) == ["provider", "provider_a
 assert asyncio.run(_mk("", "mmx")) == ["cli", "cli_always", "skip"]
 print("route picker: rows track available backends, skip always present  ✓")
 
+# ── view_image on a VISION model: attach the pixels, no describe middleman ───
+# The model decides what matters in the image itself — the tool returns the
+# attach marker, the engine rewrites the tool response and appends the real
+# image as the NEXT user message (images ride user messages only).
+flag = {"on": True}
+reg_v = T.build_registry(Path.cwd(), vision_active=lambda: flag["on"])
+out, ok = asyncio.run(T.execute(reg_v, "view_image", json.dumps({"path": str(img)})))
+assert ok and out.startswith(T.VIEW_ATTACH_PREFIX) and out.endswith(str(img)), out
+flag["on"] = False  # live flip — same registry, /model switch, no rebuild
+C.set_value("image_cli", "echo tool-eyes {path}")  # earlier sections changed it
+out, ok = asyncio.run(T.execute(reg_v, "view_image", json.dumps({"path": str(img)})))
+assert "tool-eyes" in out, "text model → back to the sidecar describe route"
+
+eng_v = Engine(model="fake", client=client, workdir=Path.cwd())
+pending: list = []
+tool_text = eng_v._attach_rewrite("view_image", f"{T.VIEW_ATTACH_PREFIX}{img}", pending)
+assert pending == [str(img)] and "attached" in tool_text
+assert T.VIEW_ATTACH_PREFIX not in tool_text, "marker must never reach history"
+assert eng_v._attach_rewrite("bash", "[image-attach] hi", []) == "[image-attach] hi", \
+    "only view_image's own output is rewritten"
+hist_len = len(eng_v.history)
+eng_v._attach_images(pending)
+attached = eng_v.history[-1]
+assert len(eng_v.history) == hist_len + 1 and attached["role"] == "user"
+assert I.count_images(attached["content"]) == 1, "the real image rides a user message"
+assert I.api_view(eng_v.history, vision=True)[-1]["content"][-1]["type"] == "image_url"
+eng_v._attach_images([])
+assert len(eng_v.history) == hist_len + 1, "no attachments → no empty user message"
+print("view_image(vision): raw pixels attached as the next user message  ✓")
+
+# ── downscale_for_api: tiny files untouched; failures degrade to the original ─
+assert I.downscale_for_api(img) == img, "small file → original path, no copy"
+assert I.downscale_for_api("/nope/gone.png") == Path("/nope/gone.png"), \
+    "missing file → original path, never a raise"
+print("downscale_for_api: best-effort — never blocks an attach  ✓")
+
 print("IMAGES SMOKE OK — native sees pixels; the rest ask another key, a CLI, or say so. amaze!")

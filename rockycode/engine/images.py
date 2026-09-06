@@ -101,6 +101,57 @@ def data_url(path: Union[str, Path]) -> str:
     return f"data:{media_type(path)};base64,{base64.b64encode(raw).decode()}"
 
 
+# Vision providers bill image tokens by DIMENSIONS (DeepSeek's vision guide),
+# and a Retina screenshot is ~6000px wide for no comprehension gain. 2048 keeps
+# text in screenshots readable while cutting the token bill severalfold.
+MAX_EDGE = 2048
+_SCALE_MIN_BYTES = 512 * 1024  # below this, scaling can't save anything real
+
+
+def downscale_for_api(path: Union[str, Path]) -> Path:
+    """A copy of *path* capped at MAX_EDGE px on its longest side, cached by
+    content hash under the trajectory assets. Best-effort by design: PIL when
+    installed, macOS `sips` otherwise, and on ANY failure — or a GIF, whose
+    animation a resize would drop — the ORIGINAL path comes back; attaching an
+    image must never break on an optimizer. Sync + blocking: call it via
+    asyncio.to_thread from async code."""
+    p = Path(path).expanduser()
+    try:
+        if p.suffix.lower() == ".gif" or p.stat().st_size < _SCALE_MIN_BYTES:
+            return p
+        import hashlib
+        digest = hashlib.sha1(p.read_bytes()).hexdigest()[:16]
+        dest = trajectory_dir() / "assets" / "scaled" / f"{digest}{p.suffix.lower()}"
+        if dest.is_file():
+            return dest
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            from PIL import Image
+            with Image.open(p) as img:
+                if max(img.size) <= MAX_EDGE:
+                    return p
+                img.thumbnail((MAX_EDGE, MAX_EDGE))
+                img.save(dest)
+            return dest
+        except ImportError:
+            import shutil
+            import subprocess
+            import sys
+            if sys.platform != "darwin" or shutil.which("sips") is None:
+                return p
+            r = subprocess.run(["sips", "-g", "pixelWidth", "-g", "pixelHeight", str(p)],
+                               capture_output=True, text=True, timeout=30)
+            dims = [int(w.split()[-1]) for w in r.stdout.splitlines()
+                    if w.strip().startswith("pixel")]
+            if r.returncode != 0 or not dims or max(dims) <= MAX_EDGE:
+                return p
+            r = subprocess.run(["sips", "-Z", str(MAX_EDGE), str(p), "--out", str(dest)],
+                               capture_output=True, timeout=60)
+            return dest if r.returncode == 0 and dest.is_file() else p
+    except Exception:  # noqa: BLE001 — optimizer only; the original always works
+        return p
+
+
 def _flatten(parts: list) -> str:
     """List content → one string for a NON-vision endpoint. An image part that
     a vision route already described (engine/vision.py stored `description` on
@@ -122,10 +173,11 @@ def _flatten(parts: list) -> str:
                 # so rocky can GUIDE the user instead of "I can't see images".
                 out.append(f'[image "{name}" attached — NOT seen: the current model '
                            "cannot see images and no description was attached. The "
-                           "user can enable image understanding with: /config "
-                           "image_cli mmx (a local vision CLI), or a keyed vision "
-                           "provider (kimi · minimax · stepfun), or /model to "
-                           "switch to a vision model.]")
+                           "user can enable image understanding with: /model "
+                           "deepseek-v4-flash-vision-exp (sees images on the "
+                           "existing DeepSeek key), /config image_cli mmx (a local "
+                           "vision CLI), or a keyed vision provider (kimi · "
+                           "minimax · stepfun).]")
         elif p.get("type") == "text":
             out.append(p.get("text", ""))
     return "\n".join(s for s in out if s)

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from pathlib import Path
 from typing import AsyncIterator, Awaitable, Callable, Optional
@@ -27,11 +28,13 @@ from rockycode.onboarding import current_key_source, require_base_url, require_k
 from rockycode.engine import compaction
 from rockycode.engine import images as images_mod
 from rockycode.engine import planmode
+from rockycode.engine import providers as providers_mod
 from rockycode.engine import tools as tools_mod
 from rockycode.engine.effort import build_extra_body
 from rockycode.engine.redact import redact
 from rockycode.engine.events import (
     AgentState,
+    CacheReset,
     Compacted,
     ContextReminder,
     EngineError,
@@ -151,6 +154,14 @@ class Engine:
         # up to history[_sent_until], estimates for anything appended after.
         self._last_prompt_tokens = 0
         self._sent_until = 0
+        # Cache observability (docs/vision-providers-design.md): the previous
+        # request's (prompt, hit) straight from the API's usage numbers, when
+        # it was sent, and — when rocky itself just forfeited the prefix
+        # (model switch / compaction / mode change) — why, so the eviction
+        # detector stays quiet about resets we caused ourselves.
+        self._cache_prev: Optional[tuple[int, int]] = None
+        self._cache_req_at: Optional[float] = None
+        self._cache_reset_reason: Optional[str] = None
         # Heuristic outcome counters (self-evolve phase 0), incremented at the
         # exact branch points below and flushed as ONE `outcome` record by
         # finalize_outcome() when the session ends.
@@ -158,13 +169,35 @@ class Engine:
         self._outcome_written = False
         self.workdir = workdir or Path.cwd()
         self.allowed_roots = allowed_roots
+        # Launch-model resolution: when the engine builds its OWN client, the
+        # launch model is looked up in the provider registry so reasoning
+        # policy / tools / vision are right from step one — previously
+        # `--model minimax-m3` started with deepseek params and vision off
+        # until a /model switch. A spec that doesn't resolve keeps today's
+        # env-only behavior; a resolved NON-deepseek endpoint supplies its own
+        # client only when its key is set (a keyless hit — e.g. someone
+        # serving kimi-k3 behind ROCKYCODE_BASE_URL — keeps the env transport
+        # and just gains the right capability flags). An INJECTED client is
+        # never second-guessed: the caller owns the transport.
+        launch = None if client is not None else providers_mod.resolve(self.model)
+        if launch is not None:
+            prov, ep, mdl = launch
+            self.model = mdl
+            self.provider_name = ep.eid
+            self.reasoning_policy = prov.reasoning
+            self.tools_enabled = prov.tools == "native"
+            self.vision_enabled = providers_mod.Choice(prov, ep, mdl).vision
+            if prov.name != "deepseek" and ep.key() is not None:
+                client = AsyncOpenAI(api_key=ep.key(), base_url=ep.base_url,
+                                     max_retries=5, timeout=300.0)
         # Explicit key AND endpoint (not the SDK's env fallbacks): an ambient
         # OPENAI_API_KEY/OPENAI_BASE_URL must never decide what gets sent where.
         self.client = client or AsyncOpenAI(api_key=require_key(), base_url=require_base_url(),
                                             max_retries=5, timeout=300.0)
         self.registry = (
             registry if registry is not None
-            else tools_mod.build_registry(self.workdir, allowed_roots, read_grants=self.read_grants)
+            else tools_mod.build_registry(self.workdir, allowed_roots, read_grants=self.read_grants,
+                                          vision_active=lambda: self.vision_enabled)
         )
         self.history: list[dict] = [{"role": "system", "content": system_prompt}]
         # Collaboration mode (host-owned, like plan_file — the model never
@@ -254,6 +287,7 @@ class Engine:
         one prefix-cache miss at the switch, which the user accepted; switching
         at launch (config `mode`) costs nothing. One mode at a time: setting a
         new one replaces the old."""
+        self._mark_cache_reset("mode change")
         self.history[0]["content"] = (
             f"{self._base_system}\n\n# Collaboration mode: {name}\n\n{contract.strip()}"
         )
@@ -265,6 +299,7 @@ class Engine:
         """Back to the plain rocky contract."""
         if self.mode_name is None:
             return
+        self._mark_cache_reset("mode change")
         self.history[0]["content"] = self._base_system
         self.mode_name = None
         self._mode_contract = None
@@ -290,6 +325,7 @@ class Engine:
         self.reasoning_policy = reasoning_policy
         self.tools_enabled = tools_enabled
         self.vision_enabled = vision
+        self._mark_cache_reset("model switch")
         self.trajectory.note({"provider": provider_name, "model": model,
                               "vision": vision})
 
@@ -317,6 +353,85 @@ class Engine:
     def _append(self, msg: dict) -> None:
         self.history.append(msg)
         self.trajectory.message(msg)
+
+    _TODAY_RE = re.compile(r"Today is \d{4}-\d{2}-\d{2} \(\w+\)\.")
+
+    def _mark_cache_reset(self, reason: str) -> None:
+        """Rocky is forfeiting the prompt-cache prefix anyway (model switch /
+        compaction / mode change). Record why — the eviction detector mutes
+        itself for the next request — and use the FREE window to re-stamp
+        prefix facts that drift in long sessions. Today that is only the
+        `with_today` date line (an overnight session otherwise reasons from
+        yesterday); a same-day re-stamp is byte-identical, i.e. a no-op, so
+        this never costs cache outside a real calendar flip."""
+        self._cache_reset_reason = reason
+        from datetime import datetime
+        now = datetime.now()
+        stamp = f"Today is {now:%Y-%m-%d} ({now:%A})."
+        base = self._TODAY_RE.sub(stamp, self._base_system)
+        if base != self._base_system:
+            self._base_system = base
+            self.history[0]["content"] = self._TODAY_RE.sub(
+                stamp, self.history[0]["content"])
+            self.trajectory.note({"prefix_refresh": {"today": f"{now:%Y-%m-%d}",
+                                                     "at": reason}})
+
+    def _observe_cache(self, u: dict) -> Optional[CacheReset]:
+        """Per-request cache accounting from the API's OWN numbers (never an
+        estimate). With an append-only history, this request's hit tokens
+        should be ≈ the previous request's whole prompt (floored to DeepSeek's
+        64-token cache blocks). A hit far below that with no rocky-caused
+        reset means the provider evicted the prefix — DeepSeek publishes no
+        TTL ("hours to days"), so these trajectory notes, with their idle
+        gaps, are the only way to learn the real rule empirically. Known
+        resets are logged too, just without the user-facing event."""
+        reason, self._cache_reset_reason = self._cache_reset_reason, None
+        if "prompt_cache_hit_tokens" not in u:
+            return None  # this provider doesn't report cache — nothing to observe
+        prompt = int(u.get("prompt_tokens") or 0)
+        hit = int(u.get("prompt_cache_hit_tokens") or 0)
+        now = time.monotonic()
+        prev, prev_at = self._cache_prev, self._cache_req_at
+        self._cache_prev, self._cache_req_at = (prompt, hit), now
+        if prompt <= 0 or prev is None:
+            return None
+        expected = (prev[0] // 64) * 64
+        idle = round(now - prev_at, 1) if prev_at is not None else 0.0
+        # 2048-token floor: a tiny session losing its cache costs pennies and
+        # would only produce alarm noise.
+        dropped = reason is None and expected >= 2048 and hit < expected // 2
+        if dropped or reason is not None:
+            self.trajectory.note({"cache": {
+                "reason": reason or "evicted", "hit": hit,
+                "expected": expected, "prompt": prompt, "idle_s": idle}})
+        if dropped:
+            return CacheReset(hit_tokens=hit, expected_tokens=expected, idle_s=idle)
+        return None
+
+    def _attach_rewrite(self, name: str, output: str, pending: list[str]) -> str:
+        """Consume view_image's direct-vision marker (tools.VIEW_ATTACH_PREFIX):
+        the tool response becomes a pointer, the path queues for _attach_images.
+        Runs BEFORE the output is appended/yielded, so the marker never reaches
+        history, the trajectory, or the screen."""
+        if name == "view_image" and output.startswith(tools_mod.VIEW_ATTACH_PREFIX):
+            path = output[len(tools_mod.VIEW_ATTACH_PREFIX):].strip()
+            pending.append(path)
+            return (f'[image "{Path(path).name}" attached — it is shown to you '
+                    "in the user message that follows]")
+        return output
+
+    def _attach_images(self, paths: list[str]) -> None:
+        """The images view_image fetched this batch, as ONE user message right
+        after the batch's tool responses — providers accept images on user
+        messages only, so a tool response can't carry them itself. Internal
+        image_path parts, same as a paste: api_view inflates them for a vision
+        model and collapses them to text if the session later switches away."""
+        if not paths:
+            return
+        names = ", ".join(Path(p).name for p in paths)
+        self._append({"role": "user", "content": images_mod.make_content(
+            f"[image attached by view_image: {names}]",
+            [images_mod.image_part(p) for p in paths])})
 
     def _is_read(self, name: str) -> bool:
         """A read-like tool — 'safe' risk tier, i.e. non-mutating (read_file /
@@ -431,6 +546,7 @@ class Engine:
 
         self._last_prompt_tokens = 0
         self._sent_until = 0
+        self._mark_cache_reset("compaction")  # prefix forfeited → free refresh window
         self.stats.compactions += 1
         tokens_after = compaction.estimate_tokens(self.history)
         self.trajectory.compaction(
@@ -565,6 +681,9 @@ class Engine:
                     _merge_usage(usage_total, u)
                     _merge_usage(self.stats.usage, u)
                     self.trajectory.usage(u)  # per-call: prompt/completion + cache hit/miss
+                    cache_ev = self._observe_cache(u)
+                    if cache_ev is not None:
+                        yield cache_ev
                     if isinstance(u.get("prompt_tokens"), int):
                         self._last_prompt_tokens = u["prompt_tokens"]
                 if not chunk.choices:
@@ -652,9 +771,11 @@ class Engine:
                     ))
                     dt = time.monotonic() - t0
                     out_by_id = {c["id"]: r for c, r in zip(runnable, results)}
+                    attach: list[str] = []
                     for c in calls:  # original order — required by the API
                         if c["id"] in out_by_id:
                             output, ok = out_by_id[c["id"]]
+                            output = self._attach_rewrite(c["name"], output, attach)
                             self.stats.observe_tool(c["name"], c["arguments"], output, ok)
                         else:
                             output, ok = "[denied] user rejected this tool call", False
@@ -662,7 +783,9 @@ class Engine:
                         yield ToolFinished(call_id=c["id"], tool=c["name"], output=output, ok=ok, duration_s=dt)
                         self._append({"role": "tool", "tool_call_id": c["id"], "content": output})
                         answered.add(c["id"])
+                    self._attach_images(attach)
                 else:
+                    attach = []
                     for c in calls:
                         yield ToolStarted(call_id=c["id"], tool=c["name"], args={"raw": c["arguments"]})
                         t0 = time.monotonic()
@@ -675,6 +798,7 @@ class Engine:
                             self.stats.plan_denials += 1
                         elif verdict.action == "allow" or await self._approve(c["name"], c["arguments"]):
                             output, ok = await tools_mod.execute(self.registry, c["name"], c["arguments"])
+                            output = self._attach_rewrite(c["name"], output, attach)
                             self.stats.observe_tool(c["name"], c["arguments"], output, ok)
                         else:
                             output, ok = "[denied] user rejected this tool call", False
@@ -688,6 +812,7 @@ class Engine:
                         )
                         self._append({"role": "tool", "tool_call_id": c["id"], "content": output})
                         answered.add(c["id"])
+                    self._attach_images(attach)
             finally:
                 # Invariant: every tool_call_id above MUST get a matching tool response
                 # or the next request (and --resume) 400s. On interrupt (a new submit or

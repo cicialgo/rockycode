@@ -209,18 +209,28 @@ DeepSeek is the home model, but providers are data, not code: each is a
 base URL, a model list, a key variable, and a reasoning shape over the
 OpenAI-compatible API.
 
-| Provider | Models |
+| Provider | Models (❖ = takes image input) |
 |---|---|
-| **deepseek** (default) | `deepseek-v4-flash` (default), `deepseek-v4-pro` (preview) |
-| **minimax** | `minimax-m3` |
-| **kimi** | `kimi-k3` |
+| **deepseek** (default) | `deepseek-v4-flash` (default), `deepseek-v4-pro` (preview), `deepseek-v4-flash-vision-exp` ❖ |
+| **minimax** | `minimax-m3` ❖ |
+| **kimi** | `kimi-k3` ❖ |
+| **stepfun** | `step-3.7-flash` ❖ |
 | **glm** | `glm-5.2` |
 
-Regional endpoints are addressable as `<provider>-<region>` (e.g. `kimi-cn`),
-and custom providers — including local vLLM/SGLang servers — go in
-`~/.rockycode/providers.toml`. The `/model` picker only offers providers whose
-keys are actually configured. DeepSeek and MiniMax both carry full-500 bench
-numbers (see [Results](#results--swe-bench-verified)); Kimi and GLM are
+The `/model` picker lists **models first**, one row each; picking a model with
+several endpoints then asks which URL serves it (`kimi-cn` / `kimi-en` / …),
+and its "custom base URL" row remembers your own gateway or proxy per
+provider (`~/.rockycode/endpoints.toml`, addressable as `<provider>-custom`).
+Typed specs skip all of that: `/model kimi-cn:kimi-k3`. Custom providers —
+including local vLLM/SGLang servers — go in `~/.rockycode/providers.toml`,
+and the picker only offers providers whose keys are actually configured.
+
+Vision is per-model, not per-provider: `deepseek-v4-flash-vision-exp` sees
+images on the same key flash uses. When a provider ships vision on an existing
+id, flip it from any shell — `rockycode config vision_models <model-id>` — no
+upgrade needed; `rockycode config model <spec>` makes any pick the sticky
+launch default. DeepSeek and MiniMax both carry full-500 bench numbers (see
+[Results](#results--swe-bench-verified)); Kimi, StepFun, and GLM are
 [experimental](#experimental).
 
 The effort dial (`/effort off|high|xhigh|max`) is provider-neutral; each
@@ -314,10 +324,11 @@ change. Anything that could act on its own is **off by default**.
   investigation from a fresh-context child that returns only a cited,
   mechanically-verified report; the search noise never enters your session. It
   also grounds goal mode's branch review and milestone verification.
-- **Providers beyond DeepSeek.** MiniMax, GLM / z.ai, and Kimi are wired as
-  OpenAI-compatible profiles (`/model`). DeepSeek and MiniMax carry full
-  bench numbers (see Results); treat GLM and Kimi as untested until they do
-  too.
+- **Providers beyond DeepSeek.** MiniMax, GLM / z.ai, Kimi, and StepFun are
+  wired as OpenAI-compatible profiles (`/model`). DeepSeek and MiniMax carry
+  full bench numbers (see Results); treat GLM, Kimi, and StepFun as untested
+  until they do too. `deepseek-v4-flash-vision-exp` is experimental on
+  DeepSeek's own side (released 2026-08-21).
 
 ## Works with your existing setup
 

@@ -1,9 +1,9 @@
 """Vision routes: how rocky understands an image when the ACTIVE model can't.
 
 A model with native vision just gets pixels (engine/images.py inflates them at
-the API boundary) — when DeepSeek ships image input, its provider entry flips
-`vision=True` and this module is never consulted. Until then, a text-only
-model has three ways to "see", all producing a DESCRIPTION that is stored on
+the API boundary) and decides for ITSELF what matters in them — this module is
+never consulted. It exists for the text-only case: such a model has three ways
+to "see", all producing a DESCRIPTION that is stored on
 the image part itself ({"type": "image_path", …, "description": …}) so it
 lands in history + trajectory once, survives resume, and is never re-billed:
 
@@ -66,8 +66,10 @@ def sidecar_choice(preferred: str = "") -> Optional[P.Choice]:
     an endpoint id (`minimax-cn`) or `endpoint:model` (`minimax-cn:minimax-m3`,
     substring ok) — so the user pins not just whose key but exactly WHICH
     model describes images. Unset/unmatched falls back to the first KEYED
-    vision endpoint (what the picker row then shows). None → no provider route."""
-    picks = [c for c in P.choices() if c.provider.vision and c.configured]
+    vision endpoint (what the picker row then shows) — deepseek rides the
+    default key, so since flash-vision-exp its vision model is the zero-setup
+    default describer. None → no provider route."""
+    picks = [c for c in P.choices() if c.vision and c.configured]
     if preferred:
         eid, _, model = preferred.replace(":", " ").partition(" ")
         eid, model = eid.strip(), model.strip().lower()
@@ -96,6 +98,11 @@ async def describe_provider(
         prompt += f"\n\nThe agent specifically wants to know: {question.strip()}"
     client = AsyncOpenAI(api_key=choice.endpoint.key(), base_url=choice.endpoint.base_url,
                          max_retries=2, timeout=PROVIDER_TIMEOUT)
+    # Thinking OFF for a deepseek-policy describer: max_tokens includes CoT on
+    # DeepSeek, so an enabled default would eat the 1024 budget before the
+    # description starts.
+    from rockycode.engine.effort import build_extra_body
+    extra = build_extra_body(False, "high", choice.provider.reasoning)
     try:
         resp = await client.chat.completions.create(
             model=choice.model,
@@ -107,6 +114,7 @@ async def describe_provider(
             ]}],
             max_tokens=1024,
             stream=False,
+            extra_body=extra,
         )
     except Exception as e:  # noqa: BLE001 — surfaced as a route failure
         raise VisionError(f"{choice.id}: {type(e).__name__}: {e}") from e

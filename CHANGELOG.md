@@ -7,7 +7,44 @@ change between minor versions.
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+- `deepseek-v4-flash-vision-exp` in the model registry (released 2026-08-21):
+  image input on the same DeepSeek key, same list price as flash (both
+  currency tables verified at the source on release day). It also becomes the
+  zero-setup default describer for text-only models — no extra provider key
+  needed for image understanding anymore.
+- Vision is now per-MODEL, not per-provider (`Provider.vision_models`,
+  choice-level `❖` badge). Config key `vision_models` marks additional ids as
+  image-capable from any shell (`rockycode config vision_models <id>`) — for
+  when a provider ships vision on an existing model before the registry
+  catches up.
+- Config key `model`: a sticky launch default (`rockycode config model
+  <spec>`), resolved against the registry; precedence `--model` flag →
+  `ROCKYCODE_MODEL` env → config. Global config only — a cloned repo can
+  never redirect requests.
+- The `/model` picker is now two-step, model first: one row per model, and a
+  model with several endpoints then asks which URL serves it — including a
+  "custom base URL" row that remembers your own gateway/proxy per provider
+  (`~/.rockycode/endpoints.toml`, addressable as `<provider>-custom`, riding
+  the provider's key).
+- Images are best-effort downscaled to 2048px before hitting the wire (PIL if
+  installed, macOS `sips` otherwise, original on any failure) — vision
+  providers bill image tokens by dimensions, and a Retina screenshot was
+  paying severalfold for nothing.
+
+### Changed
+- `view_image` on a vision-capable active model now attaches the real image
+  to the conversation (as the next user message) instead of a sidecar text
+  description — the model reads the pixels and decides what matters itself.
+  Text-only models keep the describe routes unchanged.
+- Launch honors the registry: starting with `--model minimax-m3` (or any
+  registry model) now gets the right reasoning params, tools flag, and vision
+  capability from step one instead of DeepSeek-shaped defaults until the
+  first `/model` switch. Unresolved specs and injected clients behave exactly
+  as before.
+- `/model` spec resolution prefers exact ids, and a base model wins its own
+  substring — `deepseek:flash` still means flash, not ambiguity with
+  `-vision-exp`; the variant stays reachable via `vision`.
 
 ## [0.1.2] — `--version` flag, GA price tables
 

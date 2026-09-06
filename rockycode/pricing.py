@@ -55,6 +55,13 @@ DEFAULT_PRICING: dict = {
             "usd": {"in_hit": 0.007, "in_miss": 0.22, "out": 0.66},
             "cny": {"in_hit": 0.05, "in_miss": 1.5, "out": 4.5},
         },
+        # Experimental vision variant of Flash-0731 — SAME list price as flash
+        # (USD and CNY tables both checked 2026-08-21, release day). Images are
+        # converted to input tokens by their dimensions and billed as input.
+        "deepseek-v4-flash-vision-exp": {
+            "usd": {"in_hit": 0.007, "in_miss": 0.22, "out": 0.66},
+            "cny": {"in_hit": 0.05, "in_miss": 1.5, "out": 4.5},
+        },
     },
     "fallback_model": "deepseek-v4-pro",  # unknown model → price as pro (conservative)
 }

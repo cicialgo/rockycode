@@ -39,6 +39,7 @@ from rockycode.engine import AgentState, Engine
 from rockycode.engine import tools as tools_mod
 from rockycode.engine.effort import EFFORT_LEVELS, to_deepseek
 from rockycode.engine.events import (
+    CacheReset,
     Compacted,
     ContextReminder,
     EngineError,
@@ -1741,7 +1742,7 @@ class RockyCodeApp(App):
     @work
     async def _model_picker_flow(self, picks: list, hidden: int) -> None:
         from rockycode.engine import providers as P
-        from rockycode.tui.modelpicker import ModelPicker
+        from rockycode.tui.modelpicker import EndpointPicker, ModelPicker
 
         current = f"{self.engine.provider_name}:{self.engine.model}"
         result = await self.push_screen_wait(
@@ -1749,6 +1750,24 @@ class RockyCodeApp(App):
         if result == "all":  # the "N more" row reopens over the full catalog
             result = await self.push_screen_wait(
                 ModelPicker(P.choices(), current=current, hidden=0))
+        if isinstance(result, list):  # a model group — model first, URL second
+            if len(result) == 1:  # one endpoint: nothing to ask, switch now
+                result = result[0]
+            else:
+                group = result
+                result = await self.push_screen_wait(
+                    EndpointPicker(group, current=current))
+                if isinstance(result, tuple) and result[0] == "custom":
+                    # persist the typed URL as <provider>-custom, then pick it
+                    eid, err = P.set_custom_url(group[0].provider.name, result[1])
+                    result = None
+                    if err:
+                        await self._add(Static(f"[{AMBER}]· {escape(err)}[/]",
+                                               classes="tool-line"))
+                    else:
+                        hit = P.resolve(f"{eid}:{group[0].model}")
+                        if hit is not None:
+                            result = P.Choice(*hit)
         if isinstance(result, P.Choice):
             await self._apply_model_choice(result.provider, result.endpoint, result.model)
         self.query_one(ChatInput).focus()
@@ -1763,18 +1782,20 @@ class RockyCodeApp(App):
             await self._add(Static(f"[{AMBER}]· {escape(str(e))}[/]", classes="tool-line"))
             return
         from openai import AsyncOpenAI
+        from rockycode.engine.providers import Choice
+        vision = Choice(prov, ep, model).vision  # model-level, not provider-level
         client = AsyncOpenAI(api_key=key, base_url=ep.base_url, max_retries=5, timeout=300.0)
         self.engine.switch_provider(
             client, model, provider_name=ep.eid,
             reasoning_policy=prov.reasoning, tools_enabled=(prov.tools == "native"),
-            vision=prov.vision,
+            vision=vision,
         )
         self._render_status()
         # The topbar title bakes the model name in at compose() time — repaint
         # it here or it shows the launch model forever.
         self.query_one("#title-block", Static).update(self._title_text())
         note = "" if prov.tools == "native" else " [dim](tools off — plain responder)[/]"
-        if prov.vision:
+        if vision:
             note += " [dim]· sees images — /paste or ctrl+v to attach[/]"
         await self._add(Static(
             f"[{VIOLET}]✦ model → {escape(ep.eid)}:{escape(model)}[/]{note} "
@@ -2001,6 +2022,10 @@ class RockyCodeApp(App):
                         # "restart to apply" here sends new users on a pointless
                         # restart right at the end of image setup.
                         note = "applied now — read at each use"
+                    elif parts[1] == "model":
+                        note = "applies at next launch — /model switches this session"
+                    elif parts[1] == "vision_models":
+                        note = "applies from the next /model switch or launch"
                     else:
                         note = "restart to apply"
                     await self._add(Static(
@@ -2386,6 +2411,9 @@ class RockyCodeApp(App):
         dest = images_mod.assets_dir(self.engine.trajectory.session_id)
         path = await asyncio.to_thread(clipboard.grab_image, dest)
         if path is not None:
+            # cap huge pastes (Retina screenshots) before they hit the wire —
+            # vision providers bill image tokens by dimensions
+            path = await asyncio.to_thread(images_mod.downscale_for_api, path)
             await self._attach_image(str(path))
             return
         if text_fallback:
@@ -2455,7 +2483,8 @@ class RockyCodeApp(App):
                 await self._add(Static(
                     f"[{AMBER}]· {escape(self.engine.model)} can't see images and no route is set up. "
                     f"three ways:[/]\n"
-                    f"  [dim]· key a vision provider →[/] [{LAVENDER}]/model[/] [dim](kimi · minimax · stepfun; "
+                    f"  [dim]· switch to a vision model →[/] [{LAVENDER}]/model deepseek-v4-flash-vision-exp[/] "
+                    f"[dim](your existing key; other vision providers: kimi · minimax · stepfun, "
                     f"pin one: /config image_provider minimax-cn:minimax-m3)[/]\n"
                     f"  [dim]· use a vision CLI →[/] [{LAVENDER}]/config image_cli mmx[/] "
                     f"[dim](or a full command template with {{path}})[/]\n"
@@ -2588,6 +2617,12 @@ class RockyCodeApp(App):
         on_worker_state_changed — run_turn's finally already keeps history valid."""
         from rockycode.tui.permission import CancelTurn
         try:
+            if images:
+                # dragged/typed files skip the paste worker's downscale — cap
+                # them here (cached by content hash; scaled pastes pass through)
+                from rockycode.engine import images as images_mod
+                images = [str(await asyncio.to_thread(images_mod.downscale_for_api, p))
+                          for p in images]
             if images and not self.engine.vision_enabled:
                 images = await self._route_images(text, images)
             plan_before = self._plan_digest()
@@ -2677,6 +2712,20 @@ class RockyCodeApp(App):
                     Static(
                         f"  [dim]♻ context squeezed: ~{ev.tokens_before:,} → "
                         f"~{ev.tokens_after:,} tokens ({ev.strategy})[/dim]",
+                        classes="tool-line",
+                    )
+                )
+
+            elif isinstance(ev, CacheReset):
+                # Upstream eviction, caught from the API's own hit numbers —
+                # rocky-caused resets (switch/compaction/mode) stay silent.
+                # One muted line: informative for long sessions, never a nag.
+                idle_m = ev.idle_s / 60
+                await self._add(
+                    Static(
+                        f"  [{MUTED}]↺ prompt cache evicted upstream after "
+                        f"{idle_m:.0f}m idle — this turn re-read the prefix "
+                        f"({ev.hit_tokens:,}/{ev.expected_tokens:,} tokens hit)[/]",
                         classes="tool-line",
                     )
                 )

@@ -104,3 +104,53 @@ async def main():
 
 
 asyncio.run(main())
+
+
+# ── cache observability: eviction caught from API numbers, own resets quiet ──
+_client = types.SimpleNamespace(chat=types.SimpleNamespace(completions=None))
+eng2 = Engine(model="fake", client=_client, workdir=Path.cwd())
+# request 1 seeds the baseline — never an event
+assert eng2._observe_cache({"prompt_tokens": 10_000, "prompt_cache_hit_tokens": 0}) is None
+# healthy follow-up: hit ≈ previous prompt (64-block floor) → quiet
+assert eng2._observe_cache({"prompt_tokens": 10_100, "prompt_cache_hit_tokens": 9_984}) is None
+# surprise drop → CacheReset with the API's numbers
+from rockycode.engine.events import CacheReset
+ev = eng2._observe_cache({"prompt_tokens": 10_200, "prompt_cache_hit_tokens": 128})
+assert isinstance(ev, CacheReset) and ev.expected_tokens == (10_100 // 64) * 64, ev
+assert ev.hit_tokens == 128
+# a reset rocky caused (model switch / compaction / mode) mutes the detector once
+eng2._mark_cache_reset("model switch")
+assert eng2._observe_cache({"prompt_tokens": 10_300, "prompt_cache_hit_tokens": 0}) is None
+ev = eng2._observe_cache({"prompt_tokens": 10_400, "prompt_cache_hit_tokens": 0})
+assert isinstance(ev, CacheReset), "mute lasts exactly one request"
+# a provider that reports no cache fields is never observed (kimi/glm today)
+assert eng2._observe_cache({"prompt_tokens": 99_999}) is None
+# tiny sessions never alarm (2048-token floor)
+eng3 = Engine(model="fake", client=_client, workdir=Path.cwd())
+assert eng3._observe_cache({"prompt_tokens": 500, "prompt_cache_hit_tokens": 0}) is None
+assert eng3._observe_cache({"prompt_tokens": 600, "prompt_cache_hit_tokens": 0}) is None
+# trajectory carries the notes for offline analysis (reason + idle gap)
+notes = [json.loads(l) for l in eng2.trajectory.path.read_text().splitlines()]
+cache_notes = [n["data"]["cache"] for n in notes
+               if n.get("kind") == "note" and "cache" in n.get("data", {})]
+reasons = [c["reason"] for c in cache_notes]
+assert "evicted" in reasons and "model switch" in reasons, reasons
+assert all("idle_s" in c and "hit" in c and "expected" in c for c in cache_notes)
+print("cache watch: eviction event from API numbers · own resets logged quiet  ✓")
+
+# ── free-window date refresh: only at reset moments, only on a calendar flip ──
+stale = "You are rocky.\n\nToday is 2020-01-01 (Wednesday)."
+eng4 = Engine(model="fake", client=_client, workdir=Path.cwd(), system_prompt=stale)
+eng4._mark_cache_reset("compaction")
+head = eng4.history[0]["content"]
+assert "2020-01-01" not in head and "Today is" in head, "stale date re-stamped"
+assert eng4._base_system == head, "base + live prompt stay in lockstep"
+before = eng4.history[0]["content"]
+eng4._mark_cache_reset("compaction")  # same day again → byte-identical no-op
+assert eng4.history[0]["content"] == before
+eng5 = Engine(model="fake", client=_client, workdir=Path.cwd(),
+              system_prompt="bench prompt — no date line")
+eng5._mark_cache_reset("model switch")
+assert eng5.history[0]["content"] == "bench prompt — no date line", \
+    "prompts without with_today (bench) are never touched"
+print("prefix refresh: date re-stamped in the free window; bench prompts untouched  ✓")

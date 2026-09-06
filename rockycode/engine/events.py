@@ -89,6 +89,19 @@ class ContextReminder(Event):
 
 
 @dataclass
+class CacheReset(Event):
+    """The provider's prompt cache stopped covering our prefix WITHOUT rocky
+    changing it — measured from the API's own per-request hit tokens, never
+    estimated. Emitted only for surprise drops (upstream eviction); resets
+    rocky causes itself (model switch / compaction / mode change) are logged
+    to the trajectory but stay silent."""
+
+    hit_tokens: int       # what this request actually hit (API-reported)
+    expected_tokens: int  # ≈ previous request's prompt, 64-token-block floor
+    idle_s: float         # gap since the previous request — the eviction clue
+
+
+@dataclass
 class TurnFinished(Event):
     """End of a full user turn (all tool round-trips done)."""
 

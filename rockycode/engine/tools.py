@@ -132,10 +132,12 @@ SCHEMAS: dict[str, dict] = {
     ),
     "view_image": _fn_schema(
         "view_image",
-        "Look at an image file (png/jpg/gif/webp) and get a detailed text "
-        "description from a vision model. Use it to understand a screenshot or "
-        "diagram the user mentioned, or to REVIEW an image you just generated "
-        "(e.g. a matplotlib/PIL output) with your own eyes before calling it done.",
+        "Look at an image file (png/jpg/gif/webp). If you can see images "
+        "yourself, the image is attached to the conversation for you to look "
+        "at directly; otherwise a vision route describes it in text. Use it to "
+        "understand a screenshot or diagram the user mentioned, or to REVIEW "
+        "an image you just generated (e.g. a matplotlib/PIL output) with your "
+        "own eyes before calling it done.",
         {
             "path": {"type": "string", "description": "Path to the image file."},
             "question": {
@@ -340,22 +342,38 @@ async def _edit_file(path: str, old_string: str, new_string: str, *, workdir: Pa
     return f"[ok] edited {p}"
 
 
+# A vision-capable ACTIVE model gets the image itself, not a description —
+# _view_image returns this marker + the resolved path, and the engine loop
+# rewrites the tool response and attaches the real image as the next user
+# message (images may only ride user messages), so the model reads the pixels
+# and decides for itself what matters. Never reaches history: the loop
+# consumes it before appending.
+VIEW_ATTACH_PREFIX = "[image-attach] "
+
+
 async def _view_image(path: str, question: str = "", *, workdir: Path,
-                      allowed_roots: tuple[Path, ...] = (), read_grants=None) -> str:
-    """Describe an image via the configured vision route (engine/vision.py):
-    the user's image CLI when set, else a keyed vision provider. Same READ
-    jail as read_file — the pixels leave the machine (a provider API or a
-    user command), which is also why this tool stays in the 'risky' approval
-    tier rather than the auto-allowed read tier."""
+                      allowed_roots: tuple[Path, ...] = (), read_grants=None,
+                      vision_active=None) -> str:
+    """Put an image in front of the model's eyes. With a vision-capable active
+    model (*vision_active* is a live callable set by the engine) the image is
+    ATTACHED raw — the model interprets it itself, no describe prompt in the
+    middle. Only a text-only model falls back to the sidecar describe route
+    (engine/vision.py): the user's image CLI when set, else a keyed vision
+    provider. Same READ jail as read_file — the pixels leave the machine
+    either way, which is why this tool stays in the 'risky' approval tier
+    rather than the auto-allowed read tier."""
     p, err = _jail(path, workdir, allowed_roots, grants=tuple(read_grants or ()))
     if err:
         return err
     if not p.is_file():
         return f"[error] file not found: {p}"
-    from rockycode.engine.images import IMAGE_EXTS
+    from rockycode.engine.images import IMAGE_EXTS, downscale_for_api
     if p.suffix.lower() not in IMAGE_EXTS:
         return f"[error] not an image file ({p.suffix or 'no extension'}) — supported: " \
                + " ".join(sorted(IMAGE_EXTS))
+    if vision_active is not None and vision_active():
+        scaled = await asyncio.to_thread(downscale_for_api, p)
+        return f"{VIEW_ATTACH_PREFIX}{scaled}"
     from rockycode.config import load as load_config
     from rockycode.engine import vision
     cfg = load_config(workdir)
@@ -455,7 +473,8 @@ RISK = {
 }
 
 
-def build_registry(workdir: Path, allowed_roots: tuple[Path, ...] = (), read_grants=None) -> dict[str, Tool]:
+def build_registry(workdir: Path, allowed_roots: tuple[Path, ...] = (), read_grants=None,
+                   vision_active=None) -> dict[str, Tool]:
     """Tools bound to a local working directory (the chat TUI's registry).
 
     *allowed_roots* are extra in-bounds directories the human declared at launch
@@ -463,6 +482,9 @@ def build_registry(workdir: Path, allowed_roots: tuple[Path, ...] = (), read_gra
     *read_grants* is a live-mutable set of resolved paths a session approval
     widened the READ jail to (read_file only; never writes) — the read_file
     closure holds the set by reference, so approvals take effect immediately.
+    *vision_active* is a zero-arg callable — "can the ACTIVE model see images
+    right now?" — held live by the view_image closure so a /model switch flips
+    its behavior (attach raw vs sidecar describe) with no registry rebuild.
     """
     fns = {
         "bash": lambda command: _bash(command, workdir=workdir),
@@ -479,7 +501,7 @@ def build_registry(workdir: Path, allowed_roots: tuple[Path, ...] = (), read_gra
         "glob": lambda pattern: _glob(pattern, workdir=workdir),
         "view_image": lambda path, question="": _view_image(
             path, question, workdir=workdir, allowed_roots=allowed_roots,
-            read_grants=read_grants),
+            read_grants=read_grants, vision_active=vision_active),
     }
     reg = {
         name: Tool(name=name, schema=SCHEMAS[name], fn=fn, risk=RISK.get(name, "risky"))

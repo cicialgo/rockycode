@@ -164,17 +164,27 @@ SSH 远程会话下剪贴板走 OSC 52 —— 在本地端开启「允许应用�
 DeepSeek 是主场模型，但提供商是数据而非代码：每个提供商就是一个 base URL、
 一份模型列表、一个 key 环境变量，和 OpenAI 兼容 API 之上的推理参数形状。
 
-| 提供商 | 模型 |
+| 提供商 | 模型（❖ = 支持图片输入） |
 |---|---|
-| **deepseek**（默认） | `deepseek-v4-flash`（默认）、`deepseek-v4-pro`（preview） |
-| **minimax** | `minimax-m3` |
-| **kimi** | `kimi-k3` |
+| **deepseek**（默认） | `deepseek-v4-flash`（默认）、`deepseek-v4-pro`（preview）、`deepseek-v4-flash-vision-exp` ❖ |
+| **minimax** | `minimax-m3` ❖ |
+| **kimi** | `kimi-k3` ❖ |
+| **stepfun** | `step-3.7-flash` ❖ |
 | **glm** | `glm-5.2` |
 
-区域端点写作 `<提供商>-<区域>`（如 `kimi-cn`）；自定义提供商 —— 包括本地
-vLLM/SGLang 服务 —— 写进 `~/.rockycode/providers.toml`。`/model` 选择器
-只展示已配置好 key 的提供商。DeepSeek 与 MiniMax 都有完整 500 题的 bench
-成绩（见上方「能力量化」）；Kimi 与 GLM 属于[实验性功能](#实验性功能)。
+`/model` 选择器**先选模型**（每个模型一行）；选中的模型如果有多个端点，再问
+由哪个 URL 提供服务（`kimi-cn` / `kimi-en` / …），其中「custom base URL」一行
+可以填你自己的网关或代理，按提供商记住（`~/.rockycode/endpoints.toml`，
+以 `<提供商>-custom` 寻址）。直接输入 spec 可以跳过这一切：
+`/model kimi-cn:kimi-k3`。自定义提供商 —— 包括本地 vLLM/SGLang 服务 ——
+写进 `~/.rockycode/providers.toml`；选择器只展示已配置好 key 的提供商。
+
+视觉能力按「模型」而非「提供商」区分：`deepseek-v4-flash-vision-exp` 用
+flash 同一个 key 就能识图。以后哪个已有型号补上了视觉，在任何 shell 里一行
+翻开即可 —— `rockycode config vision_models <模型 id>` —— 无需升级；
+`rockycode config model <spec>` 则把任意选择固化为启动默认。DeepSeek 与
+MiniMax 都有完整 500 题的 bench 成绩（见上方「能力量化」）；Kimi、StepFun
+与 GLM 属于[实验性功能](#实验性功能)。
 
 推理深度旋钮（`/effort off|high|xhigh|max`）与提供商无关；各提供商在请求层
 把它映射到自己的档位（例如 DeepSeek 只区分 `high|max`，`xhigh` 会收敛为
@@ -257,9 +267,11 @@ sqlite-vec + FTS5 索引；没有 Ollama 则平滑退化为关键词检索。删
 - **`explore` —— 只读委派。** chat 可以向一个全新上下文的子进程「购买」一次
   有界的只读调查，只拿回带引用、经机械校验的报告；搜索噪声绝不进入你的会话。
   它同样为 goal 模式的分支评审与里程碑验证提供依据。
-- **DeepSeek 以外的提供商。** MiniMax、GLM / z.ai、Kimi 都以 OpenAI 兼容的
-  profile 接入（`/model`）。DeepSeek 与 MiniMax 已有完整 bench 成绩（见
-  「能力量化」）；GLM 与 Kimi 在拿到 bench 分数前，请当作未验证。
+- **DeepSeek 以外的提供商。** MiniMax、GLM / z.ai、Kimi、StepFun 都以
+  OpenAI 兼容的 profile 接入（`/model`）。DeepSeek 与 MiniMax 已有完整
+  bench 成绩（见「能力量化」）；GLM、Kimi 与 StepFun 在拿到 bench 分数前，
+  请当作未验证。`deepseek-v4-flash-vision-exp` 在 DeepSeek 官方也是
+  实验性型号（2026-08-21 发布）。
 
 ## 复用你已有的配置
 

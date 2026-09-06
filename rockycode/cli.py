@@ -57,6 +57,16 @@ def _env_bool(name: str, default: bool) -> bool:
     return v.strip().lower() in {"1", "true", "yes", "on", "y"}
 
 
+def _config_model() -> Optional[str]:
+    """Config key `model` — the sticky default when neither --model nor
+    ROCKYCODE_MODEL is set. GLOBAL config only, by design: a cloned repo's
+    project config must never pick which endpoint requests go to. Scriptable:
+    `rockycode config model <spec>` (a /model-style spec; the engine resolves
+    it against the provider registry at launch)."""
+    from rockycode.config import load as _load_cfg
+    return str(_load_cfg().get("model") or "").strip() or None
+
+
 def _env_int(name: str, default: int) -> int:
     v = os.getenv(name)
     if v is None:
@@ -251,9 +261,10 @@ def chat(
     """Talk to rocky: the interactive agent TUI. amaze!"""
     from rockycode.onboarding import run_setup
     run_setup(console)  # first run: paste-your-key, then continue
-    model = model or os.getenv("ROCKYCODE_MODEL")
+    model = model or os.getenv("ROCKYCODE_MODEL") or _config_model()
     if not model:
-        fail(console, "no model. pass --model or set ROCKYCODE_MODEL in .env.")
+        fail(console, "no model. pass --model, set ROCKYCODE_MODEL in .env, or "
+             "`rockycode config model <spec>`.")
         raise typer.Exit(1)
     if reasoning_effort not in {"high", "xhigh", "max"}:
         fail(console, f"invalid --reasoning-effort '{reasoning_effort}'. use high, xhigh, or max.")
@@ -664,9 +675,10 @@ def exec_cmd(
     except Exception as e:  # noqa: BLE001 — one friendly line, no traceback
         fail(err, str(e))
         raise typer.Exit(EXIT_CODE_ERROR)
-    model = model or os.getenv("ROCKYCODE_MODEL")
+    model = model or os.getenv("ROCKYCODE_MODEL") or _config_model()
     if not model:
-        fail(err, "no model. pass --model or set ROCKYCODE_MODEL in .env.")
+        fail(err, "no model. pass --model, set ROCKYCODE_MODEL in .env, or "
+             "`rockycode config model <spec>`.")
         raise typer.Exit(EXIT_CODE_ERROR)
     if max_steps <= 0:
         fail(err, "--max-steps must be > 0: headless runs are never unbounded.")
@@ -1032,9 +1044,10 @@ def bench(
         return  # a subcommand (`bench score`) runs instead of a bench run
     show_banner(console)
 
-    model = model or os.getenv("ROCKYCODE_MODEL")
+    model = model or os.getenv("ROCKYCODE_MODEL") or _config_model()
     if not model:
-        fail(console, "no model. pass --model or set ROCKYCODE_MODEL in .env.")
+        fail(console, "no model. pass --model, set ROCKYCODE_MODEL in .env, or "
+             "`rockycode config model <spec>`.")
         raise typer.Exit(1)
 
     if reasoning_effort not in {"high", "xhigh", "max"}:
@@ -1220,9 +1233,10 @@ def goal(
             pass
 
     run_setup(console)  # first run: paste-your-key, then continue
-    model = model or os.getenv("ROCKYCODE_MODEL")
+    model = model or os.getenv("ROCKYCODE_MODEL") or _config_model()
     if not model:
-        fail(console, "no model. pass --model or set ROCKYCODE_MODEL in .env.")
+        fail(console, "no model. pass --model, set ROCKYCODE_MODEL in .env, or "
+             "`rockycode config model <spec>`.")
         raise typer.Exit(1)
     reviewer_model = reviewer_model or model
     currency = load_config(workdir)["currency"]
@@ -1439,11 +1453,12 @@ def serve(
 
     from rockycode.engine.server import run_server
 
-    model = model or os.getenv("ROCKYCODE_MODEL")
+    model = model or os.getenv("ROCKYCODE_MODEL") or _config_model()
     if not model:
         # stdout is the JSON-RPC channel — a Rich error there corrupts the very
         # first bytes the client reads. Startup errors go to stderr.
-        fail(Console(stderr=True), "no model. pass --model or set ROCKYCODE_MODEL in .env.")
+        fail(Console(stderr=True), "no model. pass --model, set ROCKYCODE_MODEL in .env, or "
+             "`rockycode config model <spec>`.")
         raise typer.Exit(1)
 
     workdir = (workdir or Path.cwd()).resolve()

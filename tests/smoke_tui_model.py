@@ -37,26 +37,39 @@ async def main():
             if v.startswith("ROCKYCODE_") and v.endswith("_API_KEY") and v != "ROCKYCODE_API_KEY":
                 os.environ.pop(v, None)
         from textual.widgets import OptionList
-        from rockycode.tui.modelpicker import ModelPicker
+        from rockycode.tui.modelpicker import EndpointPicker, ModelPicker
         await app._handle_model("/model")
         await pilot.pause()
         assert isinstance(app.screen, ModelPicker), "bare /model must open the picker"
         ol = app.screen.query_one(OptionList)
         joined = "\n".join(str(ol.get_option_at_index(i).prompt) for i in range(ol.option_count))
-        assert "deepseek:deepseek-v4-flash" in joined, "deepseek always listed (flash default)"
-        assert "minimax-en:minimax-m3" not in joined, "unkeyed minimax must be hidden from short list"
+        assert "deepseek-v4-flash" in joined, "deepseek always listed (flash default)"
+        assert "❖ sees images" in joined, "flash-vision-exp rides the deepseek key — badge shows"
+        assert "minimax-m3" not in joined, "unkeyed minimax must be hidden from short list"
         assert "more (no key yet)" in joined, "the 'N more' row must point at the hidden catalog"
-        # the "N more" row reopens over the full EN/CN catalog incl. regions
+        # the "N more" row reopens over the full catalog — MODEL first: one row
+        # per model, regions folded behind it ("N URLs"), never eid:model rows
         app.screen.dismiss("all")
         await pilot.pause()
         assert isinstance(app.screen, ModelPicker), "'all' must reopen the picker on the catalog"
         ol = app.screen.query_one(OptionList)
         allj = "\n".join(str(ol.get_option_at_index(i).prompt) for i in range(ol.option_count))
-        assert "minimax-en:minimax-m3" in allj and "kimi-cn:" in allj and "zai:" in allj, "catalog shows regions"
+        assert "minimax-m3" in allj and "kimi-k3" in allj and "glm-5.2" in allj, "catalog shows all models"
+        assert allj.count("kimi-k3") == 1, "one row per MODEL — cn/en fold into step 2"
+        assert "2 URLs" in allj, "a multi-endpoint model advertises its URL step"
+        # picking a multi-endpoint model opens step 2: which URL serves it
+        kimi = [g for g in app.screen.groups if g[0].model == "kimi-k3"][0]
+        app.screen.dismiss(kimi)
+        await pilot.pause()
+        assert isinstance(app.screen, EndpointPicker), "multi-URL model → endpoint step"
+        ol = app.screen.query_one(OptionList)
+        epj = "\n".join(str(ol.get_option_at_index(i).prompt) for i in range(ol.option_count))
+        assert "kimi-cn" in epj and "kimi-en" in epj, "endpoint step lists the regions"
+        assert "custom base URL" in epj, "own gateway/proxy row is always offered"
         app.screen.dismiss(None)  # esc path — no switch
         await pilot.pause()
         assert app.engine.provider_name == "deepseek", "cancel must not switch"
-        print("model: picker (keyed only, ↑↓/click) + 'N more' → full EN/CN catalog  ✓")
+        print("model: model-first picker + endpoint step (regions + custom URL)  ✓")
 
         # switching to a provider whose rocky-key is missing → actionable note, no switch
         os.environ.pop("ROCKYCODE_MINIMAX_EN_API_KEY", None)
@@ -75,6 +88,17 @@ async def main():
         assert app.engine.history == before, "switch must not touch history"
         os.environ.pop("ROCKYCODE_MINIMAX_EN_API_KEY", None)
         print("model: /model minimax:m3 switches provider+model+policy live  ✓")
+
+        # model-level vision: vision-exp flips the engine's vision flag ON,
+        # plain flash flips it back OFF — same provider, same key, per-model
+        os.environ.setdefault("ROCKYCODE_API_KEY", "sk-rocky-test")
+        await app._handle_model("/model deepseek-v4-flash-vision-exp")
+        assert app.engine.model == "deepseek-v4-flash-vision-exp"
+        assert app.engine.vision_enabled, "vision-exp must enable image input"
+        await app._handle_model("/model deepseek:flash")
+        assert app.engine.model == "deepseek-v4-flash", "base model wins the 'flash' substring"
+        assert not app.engine.vision_enabled, "plain flash is text-only"
+        print("model: vision is per-MODEL — vision-exp on, flash off, one deepseek key  ✓")
 
 
 asyncio.run(main())

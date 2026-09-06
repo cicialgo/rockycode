@@ -37,6 +37,18 @@ DEFAULTS: dict[str, Any] = {
     # not auto-inject a project-local mode file into the prompt (trust rule,
     # same spirit as permission never loosening).
     "mode": "",
+    # Launch model: a /model-style spec (model id, endpoint, or endpoint:model)
+    # resolved against the provider registry at startup. "" = the old chain
+    # (--model flag / ROCKYCODE_MODEL env). Scriptable — `rockycode config
+    # model deepseek-v4-flash-vision-exp` lets another rocky switch the default.
+    # SECURITY: consumers read this (and vision_models) from the GLOBAL config
+    # only — a cloned repo's project config must never redirect requests.
+    "model": "",
+    # Extra model ids to treat as image-capable (comma/space separated), merged
+    # into the provider registry at load — for when a provider ships vision on
+    # an EXISTING id (e.g. flash itself gains vision) before rocky's builtin
+    # registry catches up. Unknown ids are ignored harmlessly.
+    "vision_models": "",
     # Model limits — set these for a non-DeepSeek model (env ROCKYCODE_CONTEXT_WINDOW
     # / ROCKYCODE_MAX_TOKENS and the CLI flags override at runtime).
     "context_window": 1_048_576,  # DeepSeek V4 = 1M; compaction acts at 50%
