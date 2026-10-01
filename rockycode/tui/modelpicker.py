@@ -1,13 +1,13 @@
 """The model picker: bare /model opens this — MODEL first, URL second.
 
-Step 1 lists one row per model (kimi-k3, not kimi-cn:kimi-k3 AND
-kimi-en:kimi-k3 — an EN/CN catalog stays short). Picking a model with a
-single endpoint switches straight away; with several (regional cn/en, or an
-own-URL entry from ~/.rockycode/endpoints.toml) the EndpointPicker follows:
-pick which base URL serves it, or take the "custom base URL" row and type
-your own — that URL is remembered as `<provider>-custom`. Heavy users
-graduate to `/model <spec>`; the guide line teaches that at the moment of
-use — same teach-at-use pattern as the mode picker.
+Step 1 lists one row per model (qwen3.8-max, not qwen:… AND qwen-plan:… —
+the catalog stays short). Picking a model with a single endpoint switches
+straight away; with several (the official URL, a subscription-plan URL, or
+an own-URL entry from ~/.rockycode/endpoints.toml) the EndpointPicker
+follows: pick which base URL serves it, or take the "custom base URL" row
+and type your own — that URL is remembered as `<provider>-custom`. Heavy
+users graduate to `/model <spec>`; the guide line teaches that at the moment
+of use — same teach-at-use pattern as the mode picker.
 
 ModelPicker dismiss() value: a list[Choice] (the picked model's endpoints —
 the app applies a single choice directly and opens EndpointPicker for more),
@@ -25,7 +25,7 @@ from textual.widgets.option_list import Option
 
 from rich.markup import escape
 
-from rockycode.engine.providers import Choice
+from rockycode.engine.providers import Choice, fmt_tokens
 from rockycode.palette import LAVENDER, MUTED
 
 _PICKER_CSS = """
@@ -45,6 +45,18 @@ _PICKER_CSS = """
     {name} #model-guide {{ height: 1; margin-top: 1; color: $text-muted; }}
     {name} #custom-url {{ display: none; margin-top: 1; }}
 """
+
+
+def _key_note(c: Choice) -> str:
+    """The key column for an endpoint row — a keyless LOCAL endpoint says so
+    instead of pretending a key was set."""
+    if c.endpoint.keyless:
+        return "✓ local · no key needed"
+    if c.configured:
+        src = c.endpoint.key_source()
+        # an older `_CN_`/`_EN_` name still works — say so, and name the new one
+        return "✓ key set" if src == c.endpoint.key_env else f"✓ key set ({src} → rename to {c.endpoint.key_env})"
+    return f"✗ {c.endpoint.key_env}"
 
 
 def group_choices(choices: list[Choice]) -> list[list[Choice]]:
@@ -70,11 +82,16 @@ class ModelPicker(ModalScreen):
 
     DEFAULT_CSS = _PICKER_CSS.format(name="ModelPicker")
 
-    def __init__(self, choices: list[Choice], *, current: str, hidden: int = 0) -> None:
+    def __init__(self, choices: list[Choice], *, current: str, hidden: int = 0,
+                 hints: list[str] | None = None) -> None:
         super().__init__()
         self.groups = group_choices(choices)
         self.current = current  # the live engine's "eid:model"
-        self.hidden = hidden    # keyless choices not shown (short view); 0 = full catalog
+        self.hidden = hidden    # unkeyed choices not shown (short view); 0 = full catalog
+        # Local providers with nothing to offer right now ("ollama — not
+        # running · start it: ollama serve") — dimmed, unpickable rows, so a
+        # local option is discoverable even when its server is down.
+        self.hints = hints or []
 
     def compose(self):
         with Vertical(id="picker") as box:
@@ -101,6 +118,9 @@ class ModelPicker(ModalScreen):
             ol.add_option(Option(
                 f"{marker}{g[0].model:<30} — {escape(g[0].provider.label)}{eye}{tag}{urls}",
                 id=str(i)))
+        for j, hint in enumerate(self.hints):
+            # disabled = unpickable and auto-dimmed; the row is a signpost
+            ol.add_option(Option(f"  ◌ {hint}", id=f"hint-{j}", disabled=True))
         if self.hidden > 0:
             ol.add_option(Option(
                 f"  … {self.hidden} more (no key yet) — show the full catalog", id="all"))
@@ -112,14 +132,16 @@ class ModelPicker(ModalScreen):
         pv = self.query_one("#model-preview", Static)
         if idx is None or not (0 <= idx < len(self.groups)):
             pv.update(f"[{MUTED}]the full catalog — keys live in ~/.rockycode/.env as "
-                      f"ROCKYCODE_<PROVIDER>[_CN]_API_KEY[/]")
+                      f"ROCKYCODE_<PROVIDER>_API_KEY (plan rows: ROCKYCODE_<PROVIDER>_PLAN_API_KEY)[/]")
             return
         g = self.groups[idx]
+        spec = g[0].spec
         vision = " · ❖ sees images" if g[0].vision else ""
-        head = (f"[{MUTED}]reasoning {g[0].provider.reasoning} · tools "
-                f"{g[0].provider.tools}{vision}")
-        lines = [f"{escape(c.prov_id)}  {escape(c.endpoint.base_url)}  "
-                 f"{'✓ key set' if c.configured else '✗ ' + c.endpoint.key_env}"
+        head = (f"[{MUTED}]ctx {fmt_tokens(spec.context)} · out {fmt_tokens(spec.max_output)} · "
+                f"reasoning {g[0].provider.reasoning} · tools {g[0].provider.tools}{vision}")
+        if spec.label:
+            head += f"\n{escape(spec.label)}"
+        lines = [f"{escape(c.prov_id)}  {escape(c.endpoint.base_url)}  {_key_note(c)}"
                  for c in g]
         pv.update(head + "\n" + "\n".join(lines) + "[/]")
 
@@ -147,9 +169,10 @@ class ModelPicker(ModalScreen):
 
 
 class EndpointPicker(ModalScreen):
-    """Step 2: WHICH base URL serves the picked model — the provider's
-    regional endpoints plus a "custom base URL" row (type your own; it is
-    remembered in ~/.rockycode/endpoints.toml as `<provider>-custom`)."""
+    """Step 2: WHICH base URL serves the picked model — the official
+    endpoint, a subscription-plan endpoint when the provider has one, an
+    own-URL row already saved, plus a "custom base URL" row (type your own;
+    it is remembered in ~/.rockycode/endpoints.toml as `<provider>-custom`)."""
 
     BINDINGS = [
         ("escape", "cancel", "cancel"),
@@ -185,9 +208,9 @@ class EndpointPicker(ModalScreen):
             if cur:
                 start = i
             marker = "▸ " if cur else "  "
-            key = "✓ key set" if c.configured else f"✗ {c.endpoint.key_env}"
+            what = f" ({escape(c.endpoint.label)})" if c.endpoint.label else ""
             ol.add_option(Option(
-                f"{marker}{c.prov_id:<16} {escape(c.endpoint.base_url):<40}  ·  {key}",
+                f"{marker}{c.prov_id:<14}{what:<22} {escape(c.endpoint.base_url):<44}  ·  {_key_note(c)}",
                 id=str(i)))
         ol.add_option(Option("  ✎ custom base URL — your own gateway/proxy for "
                              f"{self.group[0].provider.name}", id="custom"))

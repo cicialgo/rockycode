@@ -167,21 +167,33 @@ def truncate_oversized(history: list[dict], max_chars: int = MAX_MSG_CHARS) -> i
     return n
 
 
-async def summarize(client, model: str, history: list[dict], tools: list[dict]) -> tuple[str, dict]:
+async def summarize(client, model: str, history: list[dict], tools: list[dict],
+                    reasoning: str = "thinking", *, efforts=None,
+                    thinking_off: bool = True) -> tuple[str, dict]:
     """One non-streaming call: history + instruction → state document.
 
     `tools` is passed through (with tool_choice="none") so the request body
     matches the main loop's shape and the prefix cache can hit; thinking is
-    off — a summary needs no chain of thought.
+    off — a summary needs no chain of thought. Callers pass tools=[] for a
+    LOCAL provider (its compat layer ignores tool_choice, and a model handed
+    schemas may answer with a tool call instead of a summary) — then neither
+    param is sent at all. `reasoning` shapes the thinking-off field per the
+    provider's policy (effort.build_extra_body), keeping the body clean for
+    strict endpoints instead of always sending one provider's knob.
     """
+    from rockycode.engine.effort import build_extra_body
+    kwargs: dict = {}
+    if tools:
+        kwargs.update(tools=tools, tool_choice="none")
+    extra = build_extra_body(False, "high", reasoning, efforts=efforts, thinking_off=thinking_off)
+    if extra:
+        kwargs["extra_body"] = extra
     resp = await client.chat.completions.create(
         model=model,
         messages=history + [{"role": "user", "content": SUMMARIZE_INSTRUCTION}],
-        tools=tools,
-        tool_choice="none",
         max_tokens=SUMMARY_MAX_TOKENS,
         stream=False,
-        extra_body={"thinking": {"type": "disabled"}},
+        **kwargs,
     )
     summary = (resp.choices[0].message.content or "").strip()
     usage: dict = {}

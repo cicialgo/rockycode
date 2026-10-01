@@ -23,6 +23,22 @@ from rockycode.engine.safety import classify_command
 MODES = ("yolo", "ask", "careful")
 RISKS = ("safe", "moderate", "risky")
 
+# The order the TUI's shift+tab walks: tightest → loosest, then wrap. One step
+# always LOOSENS, which is the only direction a shortcut can be predictable in;
+# the wrap lands on `careful`, so a run of keypresses never parks you in yolo by
+# accident. Lives here (not in the TUI) so the policy layer owns the ordering
+# and tests can assert it without a terminal.
+CYCLE = ("careful", "ask", "yolo")
+
+
+def next_mode(mode: str, step: int = 1) -> str:
+    """The mode `step` notches along CYCLE, wrapping. Unknown mode → CYCLE[0]."""
+    try:
+        i = CYCLE.index(mode)
+    except ValueError:
+        return CYCLE[0]
+    return CYCLE[(i + step) % len(CYCLE)]
+
 
 READ_TOOLS = ("read_file", "grep", "glob")
 

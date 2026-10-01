@@ -227,7 +227,7 @@ async def main():
         assert await wait_until(pilot, lambda: app._turn_worker is not None and not app._turn_worker.is_running), \
             "esc binding did not cancel the running turn (key swallowed?)"
         # the persistent permission chip is always visible in the status bar
-        assert "yolo" in str(app.query_one("#cwd", Static).render()), "persistent yolo chip missing"
+        assert "yolo" in str(app.query_one("#permchip", Static).render()), "persistent yolo chip missing"
     assert_history_api_valid(engine.history)
     assert any("interrupted" in r for r in tool_results(engine)), engine.history
 

@@ -321,3 +321,50 @@ asyncio.run(check_sandbox_no_python3_fallback())
 print("sandbox: no-python3 image falls back to plain bash -c  ✓")
 
 print("smoke_exec: OK")
+
+
+# 6. profiles: read/write run on the HOST with no shell and no Docker ---------
+from rockycode.engine.headless import PROFILE_TOOLS, host_profile_registry, run_exec
+
+reg_r = host_profile_registry(Path.cwd(), (), "read")
+assert set(reg_r) == PROFILE_TOOLS["read"] == {"read_file", "grep", "glob", "view_image"}, set(reg_r)
+reg_w = host_profile_registry(Path.cwd(), (), "write")
+assert set(reg_w) == PROFILE_TOOLS["write"] and "bash" not in reg_w and "check_code" not in reg_w
+print("profiles: read = look only · write = + jailed edits · never a shell  ✓")
+
+(Path.cwd() / "note.txt").write_text("hello from the repo\n")
+client_r = types.SimpleNamespace(chat=types.SimpleNamespace(completions=FakeCompletions([
+    [chunk(tool_calls=[tc(0, "c1", "read_file", '{"path":"note.txt"}')]), chunk(usage=FakeUsage())],
+    FINAL,
+])))
+lines_r: list[dict] = []
+code = asyncio.run(run_exec(prompt="what does note.txt say?", model="fake", workdir=Path.cwd(),
+                            client=client_r, profile="read", sandbox=True, write=lines_r.append))
+assert code == EXIT_DONE, (code, lines_r[-1])
+meta_r = lines_r[0]
+assert meta_r["profile"]["name"] == "read" and meta_r["profile"]["mode"] == "read-only"
+assert meta_r["profile"]["sandbox"] is False, "a read profile never starts Docker (sandbox=True ignored)"
+assert "bash" not in meta_r["profile"]["tools"] and "read_file" in meta_r["profile"]["tools"]
+# summary-only stream: meta → text → result, no tool.*/turn.* lines by default
+assert [l["type"] for l in lines_r] == ["meta", "text", "result"], [l["type"] for l in lines_r]
+assert lines_r[-1]["summary"] == "all done."
+print("exec --profile read: host tools, no Docker, summary-only stream  ✓")
+
+client_e = types.SimpleNamespace(chat=types.SimpleNamespace(completions=FakeCompletions([
+    [chunk(tool_calls=[tc(0, "c1", "read_file", '{"path":"note.txt"}')]), chunk(usage=FakeUsage())],
+    FINAL,
+])))
+lines_e: list[dict] = []
+asyncio.run(run_exec(prompt="again", model="fake", workdir=Path.cwd(), client=client_e,
+                     profile="write", events=True, write=lines_e.append))
+types_e = [l["type"] for l in lines_e]
+assert "tool.started" in types_e and "tool.finished" in types_e and "turn.finished" in types_e, types_e
+assert lines_e[0]["profile"]["name"] == "write" and "edit_file" in lines_e[0]["profile"]["tools"]
+print("exec --profile write --events: full event receipt on request  ✓")
+
+try:
+    asyncio.run(run_exec(prompt="x", model="fake", workdir=Path.cwd(), client=client_e, profile="nope"))
+    raise AssertionError("unknown profile must be refused")
+except ValueError:
+    pass
+print("EXEC SMOKE OK — profiles + stream contract. amaze!")

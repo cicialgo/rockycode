@@ -40,7 +40,7 @@ DEFAULTS: dict[str, Any] = {
     # Launch model: a /model-style spec (model id, endpoint, or endpoint:model)
     # resolved against the provider registry at startup. "" = the old chain
     # (--model flag / ROCKYCODE_MODEL env). Scriptable — `rockycode config
-    # model deepseek-v4-flash-vision-exp` lets another rocky switch the default.
+    # model glm:flash` lets another rocky switch the default.
     # SECURITY: consumers read this (and vision_models) from the GLOBAL config
     # only — a cloned repo's project config must never redirect requests.
     "model": "",
@@ -49,16 +49,24 @@ DEFAULTS: dict[str, Any] = {
     # an EXISTING id (e.g. flash itself gains vision) before rocky's builtin
     # registry catches up. Unknown ids are ignored harmlessly.
     "vision_models": "",
-    # Model limits — set these for a non-DeepSeek model (env ROCKYCODE_CONTEXT_WINDOW
-    # / ROCKYCODE_MAX_TOKENS and the CLI flags override at runtime).
-    "context_window": 1_048_576,  # DeepSeek V4 = 1M; compaction acts at 50%
-    "max_tokens": 384_000,        # per-call output cap incl. CoT (DeepSeek V4 max = 384K)
-    # Image understanding on a NO-vision model (engine/vision.py). `ask` shows
-    # a picker at paste time (its "always" buttons write image_route here);
-    # provider/cli skip the picker; off = honest placeholder only.
-    "image_route": "ask",   # ask | provider | cli | off
-    # Which vision model describes: endpoint (minimax-cn) or endpoint:model
-    # (minimax-cn:minimax-m3), same spec shape as /model. "" = first keyed.
+    # Model limits. 0 = follow the active model's registry entry
+    # (rockycode/models.toml → ~/.rockycode/models.toml override): context
+    # window and per-call output cap come from the model, and change with a
+    # /model switch. A positive value is YOUR ceiling and sticks across
+    # switches (env ROCKYCODE_CONTEXT_WINDOW / ROCKYCODE_MAX_TOKENS and the
+    # CLI flags override at runtime).
+    "context_window": 0,
+    "max_tokens": 0,
+    # Image understanding on a NO-vision model (engine/vision.py). `auto`
+    # (default) describes silently via the registry's sidecar model when one
+    # is keyed (deepseek-flash rides the home key), else your image CLI, else
+    # an honest placeholder — no picker in the way. `ask` shows the route
+    # picker at paste time (its "always" buttons write image_route here);
+    # provider/cli pin a route; off = placeholder only.
+    "image_route": "auto",  # auto | ask | provider | cli | off
+    # Which vision model describes: endpoint (kimi) or endpoint:model
+    # (kimi:kimi-k3), same spec shape as /model. "" = the registry's keyed
+    # sidecar (deepseek-flash on the home key), else the first keyed one.
     "image_provider": "",
     # The cli route: a bare known tool name ("mmx") — rocky knows its real
     # describe invocation (vision.KNOWN_CLIS) — or a full command template
@@ -75,8 +83,10 @@ _ALLOWED = {
     "permission": {"yolo", "ask", "careful"},
     "exit_sheet": {"auto", "on", "off"},
     "dream": {"auto", "manual"},
-    "image_route": {"ask", "provider", "cli", "off"},
+    "image_route": {"auto", "ask", "provider", "cli", "off"},
 }
+# Integer keys where 0 is meaningful ("follow the model"), not a bad value.
+_ZERO_OK = {"context_window", "max_tokens"}
 
 
 def _read(path: Path) -> dict:
@@ -111,7 +121,7 @@ def _sanitize(raw: dict, base: dict) -> dict:
                 v = int(v) if isinstance(default, int) else float(v)
             except (TypeError, ValueError):
                 continue
-            if v <= 0:  # window / output must be positive
+            if v < 0 or (v == 0 and k not in _ZERO_OK):  # window / output: positive, or 0 = auto
                 continue
         if k in _ALLOWED and v not in _ALLOWED[k]:
             continue
@@ -142,7 +152,7 @@ def _coerce(key: str, raw: str) -> Any:
             v = int(raw) if isinstance(default, int) else float(raw)
         except ValueError:
             return default
-        return v if v > 0 else default
+        return v if v > 0 or (v == 0 and key in _ZERO_OK) else default
     raw = raw.strip()
     # Users quote values out of shell habit (/config image_cli "mmx …") — the
     # quotes are not part of the value, and stored literally they would both
@@ -177,7 +187,7 @@ def set_value(key: str, raw: str) -> tuple[Any, Optional[str]]:
             value = int(raw)
         except ValueError:
             return None, f"{key} must be a positive integer (got {raw!r})"
-        if value <= 0:
+        if value < 0 or (value == 0 and key not in _ZERO_OK):
             return None, f"{key} must be positive (got {value})"
         GLOBAL_PATH.parent.mkdir(parents=True, exist_ok=True)
         current = _read(GLOBAL_PATH)

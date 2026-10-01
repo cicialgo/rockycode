@@ -7,7 +7,13 @@ serve, and goal mode.
 
   stdout   — JSONL only, one event per line. First line = `meta` (schema,
              session rk_ id, effective profile), last line = the `result`
-             envelope. Anything human-shaped goes to stderr.
+             envelope. Anything human-shaped goes to stderr. By default only
+             meta → text → result cross stdout (the caller's context is the
+             scarce resource); `events=True` adds tool.*/turn.* lines.
+  profile  — read: read_file/grep/glob/view_image only, no shell, no writes,
+             no Docker · write: + write_file/edit_file jailed to the workdir,
+             still no shell, no Docker · full: + bash, Docker-sandboxed by
+             default. Most agent-to-agent delegation is read or write.
   approver — the caller can't answer prompts, so goal mode's command
              classifier decides: safe/moderate runs; an ask-tier action stops
              the run with a `blocked_on` grant token the caller can re-invoke
@@ -46,6 +52,21 @@ from rockycode.engine.loop import Engine
 from rockycode.engine.safety import classify_command
 
 SCHEMA = "rockyexec/1"
+
+PROFILES = ("read", "write", "full")
+# Host tools a non-full profile may use. No bash → nothing executes → no
+# sandbox needed: the file tools are jailed to the workdir (+ --allow-dir)
+# by build_registry, and check_code (runs the project's own linters) is
+# execution too, so it stays out of both.
+PROFILE_TOOLS = {
+    "read": {"read_file", "grep", "glob", "view_image"},
+    "write": {"read_file", "grep", "glob", "view_image", "write_file", "edit_file"},
+}
+PROFILE_MODE = {"read": "read-only", "write": "workspace-write (no shell)",
+                "full": "workspace-write"}
+# Stream lines that only a caller asking for the full receipt wants.
+_EVENT_TYPES = {"turn.started", "turn.finished", "tool.started", "tool.finished",
+                "compacted", "thinking"}
 
 EXIT_DONE = 0
 EXIT_ERROR = 1
@@ -237,6 +258,14 @@ def _final_text(history: list[dict]) -> str:
     return ""
 
 
+def host_profile_registry(workdir: Path, allowed_roots: tuple[Path, ...] = (),
+                          profile: str = "read") -> dict:
+    """The host registry trimmed to a read/write profile's tool set."""
+    from rockycode.engine.tools import build_registry
+    keep = PROFILE_TOOLS[profile]
+    return {n: t for n, t in build_registry(workdir, allowed_roots).items() if n in keep}
+
+
 def build_exec_engine(
     *,
     model: str,
@@ -249,6 +278,7 @@ def build_exec_engine(
     registry=None,
     sandbox_meta: Optional[dict] = None,
     extra_meta: Optional[dict] = None,
+    profile: str = "full",
 ) -> tuple[Engine, HeadlessApprover]:
     """An Engine wired for headless exec: capped steps, headless approver,
     attribution in the trajectory meta. client/registry injection is for tests
@@ -266,6 +296,7 @@ def build_exec_engine(
                          **_caller_attribution(originator), **(extra_meta or {})},
     )
     engine._exec_sandbox_meta = sandbox_meta or {"sandbox": False, "network": False}
+    engine._exec_profile = profile
     approver = HeadlessApprover(engine.registry, grants)
     engine.approver = approver
     return engine, approver
@@ -280,11 +311,15 @@ async def drive(
     write: Optional[Callable[[dict], None]] = None,
     include_thinking: bool = False,
     output_last_message: Optional[Path] = None,
+    events: bool = True,
 ) -> int:
-    """Run one exec turn: meta line, event stream, result envelope, exit code."""
+    """Run one exec turn: meta line, event stream, result envelope, exit code.
+    `events=False` keeps stdout to meta → text → result (no tool.*/turn.*
+    lines) — the receipt still lands in the trajectory."""
     from rockycode.session import public_id
     write = write or _stdout_line
     rk = public_id(engine.trajectory.session_id)
+    profile = getattr(engine, "_exec_profile", "full")
 
     write({
         "type": "meta",
@@ -295,7 +330,9 @@ async def drive(
         # False warns the caller: overwrites here have no git safety net.
         "git": (engine.workdir / ".git").exists(),
         "profile": {
-            "mode": "workspace-write",
+            "mode": PROFILE_MODE.get(profile, "workspace-write"),
+            "name": profile,
+            "tools": sorted(engine.registry),
             "grants": sorted(approver.grants),
             "max_steps": engine.max_steps,
             **getattr(engine, "_exec_sandbox_meta", {"sandbox": False, "network": False}),
@@ -354,7 +391,7 @@ async def drive(
                 else:
                     error_msg = ev.message
             line = event_to_line(ev, include_thinking=include_thinking)
-            if line:
+            if line and (events or line["type"] not in _EVENT_TYPES):
                 write(line)
             if approver.blocked:
                 break  # fail fast: the caller decides, then resumes with a grant
@@ -431,8 +468,11 @@ async def run_exec(
     network: bool = False,
     err=None,
     extra_meta: Optional[dict] = None,
+    profile: str = "full",
+    events: bool = False,
 ) -> int:
-    """Provision the sandbox (default), build the engine, drive one task.
+    """Provision the sandbox (full profile, default), build the engine, drive
+    one task.
 
     The task can originate from an untrusted source (an issue, a page a
     delegating agent read), so by default every tool runs inside a Docker
@@ -440,10 +480,26 @@ async def run_exec(
     secrets aren't mounted, and there's no egress to exfiltrate over. The
     command classifier stays on top as defense-in-depth, its real designed
     role. --no-sandbox is the explicit, loud host escape hatch.
+
+    `events=False` (the default, and the CLI's) keeps stdout to meta → text →
+    result; drive() itself defaults to the full receipt for library callers.
+
+    A read/write profile has no shell at all — nothing executes, the file
+    tools are jailed to the workdir — so it runs on the host with no Docker
+    and starts instantly. That is the profile a calling agent wants for
+    "look at this repo and tell me" or "write this small function".
     """
+    if profile not in PROFILES:
+        raise ValueError(f"profile must be one of {PROFILES}, got {profile!r}")
     sb = None
     sandbox_meta = {"sandbox": False, "network": False}
-    if sandbox and registry is None:  # registry injected → tests, already wired
+    if profile != "full":
+        if registry is None:
+            registry = host_profile_registry(workdir, allowed_roots, profile)
+        if err is not None:
+            err.print(f"[dim]· profile {profile}: {PROFILE_MODE[profile]} · no shell, "
+                      f"host file tools jailed to the workdir · no Docker needed[/]")
+    elif sandbox and registry is None:  # registry injected → tests, already wired
         try:
             from rockycode.engine.sandbox import ChatSandbox, build_sandbox_registry
             sb = await ChatSandbox.start(workdir, network=network)
@@ -468,12 +524,11 @@ async def run_exec(
         engine, approver = build_exec_engine(
             model=model, workdir=workdir, allowed_roots=allowed_roots, grants=grants,
             max_steps=max_steps, originator=originator, client=client, registry=registry,
-            sandbox_meta=sandbox_meta, extra_meta=extra_meta,
+            sandbox_meta=sandbox_meta, extra_meta=extra_meta, profile=profile,
         )
         if images:
-            # A model the registry knows (deepseek-v4-flash-vision-exp, kimi-k3,
-            # …) already got the right vision flag from the Engine's launch
-            # resolution. For one it does NOT know — a custom endpoint served
+            # A model the registry knows (deepseek-flash, kimi-k3, …) already
+            # got the right vision flag from the Engine's launch resolution. For one it does NOT know — a custom endpoint served
             # via env — --image is the caller asserting the endpoint takes image
             # input, so trust the flag; a text-only endpoint rejects the request
             # with a clear API error in the JSONL stream.
@@ -481,7 +536,7 @@ async def run_exec(
         return await drive(
             engine, approver, prompt, images=images,
             write=write, include_thinking=include_thinking,
-            output_last_message=output_last_message,
+            output_last_message=output_last_message, events=events,
         )
     finally:
         if sb is not None:

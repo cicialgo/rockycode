@@ -81,8 +81,8 @@ class Compacted(Event):
 @dataclass
 class ContextReminder(Event):
     """Soft, non-blocking nudge: context passed the 'model degrades past here'
-    mark (DeepSeek V4 ~50%). The user decides whether to /clear; auto-compaction
-    only kicks in near the window ceiling."""
+    mark (~50% of the window). The user decides whether to /clear;
+    auto-compaction only kicks in near the window ceiling."""
 
     pct: float   # fraction of the window currently used
     window: int

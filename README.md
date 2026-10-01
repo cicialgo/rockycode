@@ -172,8 +172,8 @@ clipboard" (or your terminal's equivalent) on the local end.
 | `/research` | Research modes: deep-research · paper-reading · whiteboard · prove |
 | `/learn` | Tutor mode — your understanding is the goal, not the diff |
 | `/model` | Switch provider and model (see below) |
-| `/effort off\|high\|xhigh\|max` | Reasoning depth, adjustable live per session |
-| `/permission yolo\|ask\|careful` | Tool-approval strictness for the session |
+| `/effort off\|low\|high\|max` | Reasoning depth, adjustable live per session (clamped onto each provider's own tiers) |
+| `/permission yolo\|ask\|careful` | Tool-approval strictness for the session — bare opens a picker; `shift+tab` cycles it, or click the 🔒 chip in the status bar |
 | `/sandbox on\|off\|status` | Isolate tool execution in a container |
 | `/lsp` | Language-server status; diagnostics ride along with `read_file` |
 | `/artifact` | Session artifacts: `list` · `open <n>` · `stop` · `live on\|off` |
@@ -205,37 +205,79 @@ clipboard" (or your terminal's equivalent) on the local end.
 
 ### Models and providers
 
-DeepSeek is the home model, but providers are data, not code: each is a
-base URL, a model list, a key variable, and a reasoning shape over the
-OpenAI-compatible API.
+DeepSeek is the home model, but **models are data, not code**: the whole
+catalog lives in `rockycode/models.toml` — per provider a China base URL, a
+key name and a reasoning wire shape; per model its context window, output
+cap, vision flag, price and roles. The engine reads that spec and carries no
+model-specific numbers of its own, so a new model is a data edit. Your own
+`~/.rockycode/models.toml` (same shape) is deep-merged on top: add a model,
+correct a limit, add a price, hide a row.
 
-| Provider | Models (❖ = takes image input) |
-|---|---|
-| **deepseek** (default) | `deepseek-v4-flash` (default), `deepseek-v4-pro` (preview), `deepseek-v4-flash-vision-exp` ❖ |
-| **minimax** | `minimax-m3` ❖ |
-| **kimi** | `kimi-k3` ❖ |
-| **stepfun** | `step-3.7-flash` ❖ |
-| **glm** | `glm-5.2` |
+| Provider | Models (❖ = takes image input) | ctx / max out |
+|---|---|---|
+| **deepseek** (default) | `deepseek-flash` (V4.1 Flash, default) ❖, `deepseek-v4-pro` | 1M / 384K |
+| **glm** | `glm-5.3`, `glm-5.3-flash` ❖ | 1M / 128K |
+| **kimi** | `kimi-k3` ❖ | 1M / 128K |
+| **minimax** | `minimax-m3` ❖ | 1M / 128K |
+| **stepfun** | `step-5-preview` ❖ | 1M / 64K |
+| **qwen** | `qwen3.8-max` ❖, `qwen3.8-flash` ❖ | 1M / 64K |
+| **mimo** | `mimo-v2.6-pro` ❖ | 1M / 128K |
+| **ollama** (local, $0) | whatever you've pulled — discovered live from the running server | server-verified |
 
-The `/model` picker lists **models first**, one row each; picking a model with
-several endpoints then asks which URL serves it (`kimi-cn` / `kimi-en` / …),
-and its "custom base URL" row remembers your own gateway or proxy per
-provider (`~/.rockycode/endpoints.toml`, addressable as `<provider>-custom`).
-Typed specs skip all of that: `/model kimi-cn:kimi-k3`. Custom providers —
-including local vLLM/SGLang servers — go in `~/.rockycode/providers.toml`,
-and the picker only offers providers whose keys are actually configured.
+One China endpoint per provider (`ROCKYCODE_<PROVIDER>_API_KEY`; the older
+`_CN_`/`_EN_` names are still read). Subscription plans with their own URL
+and key are their own rows — `qwen-plan` (Bailian Token Plan), `mimo-plan`,
+`stepfun-plan` — keyed as `ROCKYCODE_<PROVIDER>_PLAN_API_KEY`. The `/model`
+picker lists **models first**, one row each; a model with several endpoints
+then asks which URL serves it (official · plan · your own), and the "custom
+base URL" row remembers a gateway or proxy per provider
+(`~/.rockycode/endpoints.toml`, addressable as `<provider>-custom`). Typed
+specs skip all of that: `/model glm:flash`, `/model qwen-plan:qwen3.8-max`.
+The retired `deepseek-v4-flash` / `-vision-exp` ids still resolve (to
+`deepseek-flash`, exactly as DeepSeek serves them). The picker only offers
+providers whose keys are actually configured.
 
-Vision is per-model, not per-provider: `deepseek-v4-flash-vision-exp` sees
-images on the same key flash uses. When a provider ships vision on an existing
-id, flip it from any shell — `rockycode config vision_models <model-id>` — no
-upgrade needed; `rockycode config model <spec>` makes any pick the sticky
-launch default. DeepSeek and MiniMax both carry full-500 bench numbers (see
-[Results](#results--swe-bench-verified)); Kimi, StepFun, and GLM are
-[experimental](#experimental).
+Vision is per-model: `deepseek-flash` sees images on the home key, so the
+default session just takes a paste. A text-only model (`deepseek-v4-pro`,
+`glm-5.3`) gets pasted images described by `deepseek-flash` silently
+(`image_route auto`), or by your own CLI. `rockycode config model <spec>`
+makes any pick the sticky launch default. Context window and output cap
+follow the active model (config `context_window` / `max_tokens` = `0`); a
+number pins your own ceiling across switches. DeepSeek and MiniMax carry
+full-500 bench numbers (see [Results](#results--swe-bench-verified)); the
+other providers are [experimental](#experimental).
 
-The effort dial (`/effort off|high|xhigh|max`) is provider-neutral; each
-provider maps it to its own reasoning tiers at the wire (DeepSeek, for
-example, only distinguishes `high|max`, so `xhigh` clamps to `max`).
+The effort dial (`/effort off|low|high|max`) is provider-neutral; each
+provider's own tiers come from the registry and the dial is clamped onto
+them by position at the wire (StepFun's `low|medium|high` gets `medium` for
+rocky's `high`; GLM and Kimi can't switch thinking off, so `off` sends their
+lowest tier). `xhigh` is still accepted and means `max`.
+
+Rocky can also configure itself: ask it to "use my proxy", "add my vLLM
+server", or "switch the default model" and the built-in `rocky-setup` skill
+plus the ask-tier `rocky_config` tool make the change under `~/.rockycode`.
+Keys are the one thing it never touches — it names the variable and you
+paste the value.
+
+#### Local models (Ollama)
+
+Rocky integrates the OpenAI-compatible *protocol*, never a runtime — and
+recommends [Ollama](https://ollama.com) (its MLX engine covers Apple Silicon
+since 0.19). No key, no config: run `ollama serve`, pull a tool-capable model
+(`ollama pull qwen3.8:27b-mlx` is the tested recommendation), and it appears
+in `/model` with what's actually pulled, priced `$0 · local`.
+
+Switching to a local model runs a **readiness preflight** first — server up,
+model pulled, tool-calling support, serving context — and refuses the switch
+with the exact fix (`ollama pull …`, `export OLLAMA_CONTEXT_LENGTH=65536`)
+when something would break mid-session. The one to respect: Ollama's default
+context is small and it **truncates silently**, which kills agent sessions in
+confusing ways — serve with `OLLAMA_CONTEXT_LENGTH=65536`. Rocky paces its own
+`context_window` to the server's verified value on every switch.
+
+Other local servers (LM Studio, llama.cpp, vLLM) work as data too: add a
+provider with `local = true` in `~/.rockycode/providers.toml` and its
+endpoints need no key.
 
 ## Autonomous use
 
@@ -265,11 +307,26 @@ rockycode goal "add a docstring to <fn> and run the linter" --max-usd 0.50 --max
 ### Headless delegation: `exec`
 
 `rockycode exec "<task>"` is the single-shot, non-interactive entry point,
-designed to be called by *other* agents and scripts. Events stream as JSONL on
-stdout; the Docker sandbox is **on by default** (the command classifier is
-defense-in-depth, not the boundary); budgets are always enforced; and exit
-codes distinguish success, failure, needs-approval, and budget-stop — so a
-calling agent can grant an approval and resume instead of guessing.
+designed to be called by *other* agents and scripts. stdout is JSONL: a
+`meta` line, the model's `text`, and a `result` envelope with evidence
+(files changed, commands run, refusals) — never verdicts, the caller
+verifies; `--events` adds the per-tool receipt lines. Budgets are always
+enforced, and exit codes distinguish success, failure, needs-approval, and
+budget-stop — so a calling agent can grant an approval and resume instead
+of guessing.
+
+Pick how much rocky may do with `--profile`: `read` (read_file / grep /
+glob / view_image — no shell, no writes) and `write` (+ write_file /
+edit_file jailed to `--workdir`) run on the host with **no Docker** and
+start instantly — what Claude Code or Codex wants for "look at this repo and
+tell me" or a small edit on a cheap, fast model. `full` adds bash, in the
+Docker sandbox **by default** (the command classifier is defense-in-depth,
+not the boundary).
+
+```bash
+rockycode exec --profile read "which module owns retry logic, and where is it called?"
+rockycode exec --profile write "add a docstring to every public function in utils.py"
+```
 
 ### Editor integration: `serve` and the VS Code extension
 
@@ -324,11 +381,13 @@ change. Anything that could act on its own is **off by default**.
   investigation from a fresh-context child that returns only a cited,
   mechanically-verified report; the search noise never enters your session. It
   also grounds goal mode's branch review and milestone verification.
-- **Providers beyond DeepSeek.** MiniMax, GLM / z.ai, Kimi, and StepFun are
-  wired as OpenAI-compatible profiles (`/model`). DeepSeek and MiniMax carry
-  full bench numbers (see Results); treat GLM, Kimi, and StepFun as untested
-  until they do too. `deepseek-v4-flash-vision-exp` is experimental on
-  DeepSeek's own side (released 2026-08-21).
+- **Providers beyond DeepSeek.** GLM, Kimi, MiniMax, StepFun, Qwen, and MiMo
+  are wired as OpenAI-compatible registry entries (`/model`). DeepSeek and
+  MiniMax carry full bench numbers (see Results); treat the rest as untested
+  until they do too. Registry entries marked `note = "… verify …"` in
+  `models.toml` (MiniMax's endpoint host, MiMo's auth header, the plan URLs)
+  were taken from each provider's docs on 2026-09-29 and not yet exercised
+  live — a wrong one is a one-line data fix.
 
 ## Works with your existing setup
 

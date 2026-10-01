@@ -14,7 +14,26 @@ _MAX_CHARS = 60
 
 
 def _title_model() -> str:
-    return os.getenv("ROCKYCODE_TITLE_MODEL", "deepseek-v4-flash")
+    explicit = os.getenv("ROCKYCODE_TITLE_MODEL")
+    if explicit:
+        return explicit
+    from rockycode.engine import providers as P
+    return P.role_model("sidecar") or "deepseek-flash"
+
+
+def _sidecar(client, model):
+    """(client, model) for the title call: the registry's keyed sidecar (the
+    cheap flash on the home key) when there is one — a session on kimi or
+    glm must not send a deepseek model id down its own client — else the
+    session's own client + model."""
+    from rockycode.engine import providers as P
+    try:
+        sc = P.sidecar_client()
+    except Exception:  # noqa: BLE001 — decoration only
+        sc = None
+    if sc is not None and not os.getenv("ROCKYCODE_TITLE_MODEL"):
+        return sc
+    return client, (model or _title_model())
 
 
 def _clean(raw: str) -> str | None:
@@ -25,11 +44,14 @@ def _clean(raw: str) -> str | None:
     return t[:_MAX_CHARS]
 
 
-async def generate_title(client, first_user: str, first_reply: str) -> str | None:
-    """3-8 word session title from the opening exchange, or None."""
+async def generate_title(client, first_user: str, first_reply: str, *,
+                         model: str | None = None) -> str | None:
+    """3-8 word session title from the opening exchange, or None. `model` is
+    the session's own model, used only when no sidecar is keyed."""
     try:
+        client, mdl = _sidecar(client, model)
         r = await client.chat.completions.create(
-            model=_title_model(),
+            model=mdl,
             max_tokens=24,
             messages=[
                 {"role": "system", "content": (

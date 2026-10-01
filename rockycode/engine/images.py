@@ -174,10 +174,11 @@ def _flatten(parts: list) -> str:
                 out.append(f'[image "{name}" attached — NOT seen: the current model '
                            "cannot see images and no description was attached. The "
                            "user can enable image understanding with: /model "
-                           "deepseek-v4-flash-vision-exp (sees images on the "
-                           "existing DeepSeek key), /config image_cli mmx (a local "
+                           "deepseek-flash (sees images on the existing DeepSeek "
+                           "key; with image_route auto it also describes images "
+                           "for text-only models), /config image_cli mmx (a local "
                            "vision CLI), or a keyed vision provider (kimi · "
-                           "minimax · stepfun).]")
+                           "minimax · glm · qwen · mimo · stepfun).]")
         elif p.get("type") == "text":
             out.append(p.get("text", ""))
     return "\n".join(s for s in out if s)

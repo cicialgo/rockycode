@@ -73,15 +73,18 @@ print("extract_image_paths: quoted, bare, file:// URL; missing + non-image skipp
 
 # ── provider registry: vision is DATA like tools/reasoning ───────────────────
 provs = P.discover()
-assert provs["minimax"].vision and provs["kimi"].vision and provs["stepfun"].vision
-assert not provs["deepseek"].vision and not provs["glm"].vision
+by = {c.model: c for c in P.choices()}
+assert by["minimax-m3"].vision and by["kimi-k3"].vision and by["step-5-preview"].vision
+assert by["deepseek-flash"].vision and by["glm-5.3-flash"].vision and by["qwen3.8-max"].vision
+assert not by["deepseek-v4-pro"].vision and not by["glm-5.3"].vision
+assert not provs["deepseek"].vision and not provs["glm"].vision, "vision is per MODEL"
 assert provs["stepfun"].endpoints[0].key_env == "ROCKYCODE_STEPFUN_API_KEY"
 toml = Path(tempfile.mkdtemp()) / "providers.toml"
 toml.write_text('[providers.myvlm]\nmodel = "vlm-1"\nbase_url = "https://x/v1"\nvision = true\n'
                 '[providers.mytext]\nmodel = "t-1"\nbase_url = "https://y/v1"\n')
 custom = P._parse_toml(toml)
 assert custom["myvlm"].vision and not custom["mytext"].vision, "toml vision flag parses"
-print("providers: builtin vision flags (minimax/kimi/stepfun) + toml `vision = true`  ✓")
+print("providers: per-model vision flags from the registry + toml `vision = true`  ✓")
 
 # ── compaction: image parts are estimated as pixels, text parts still bounded ─
 est = estimate_msg_tokens({"role": "user", "content": c})
@@ -166,12 +169,17 @@ try:
 except vision.VisionError:
     pass
 os.environ["ROCKYCODE_STEPFUN_API_KEY"] = "sk-rocky-step"
-os.environ["ROCKYCODE_KIMI_CN_API_KEY"] = "sk-rocky-kimi"
-assert vision.sidecar_choice() is not None and vision.sidecar_choice().provider.vision
-assert vision.sidecar_choice("kimi-cn").prov_id == "kimi-cn", "config image_provider honored"
-picked = vision.sidecar_choice("kimi-cn:k3")  # endpoint:model spec, substring ok
-assert picked.prov_id == "kimi-cn" and picked.model == "kimi-k3", "image model pinnable"
-assert vision.sidecar_choice("kimi-cn:nope") is not None, "unmatched model → keyed fallback"
+os.environ["ROCKYCODE_KIMI_CN_API_KEY"] = "sk-rocky-kimi"  # the old regional name — an alias
+assert vision.sidecar_choice() is not None and vision.sidecar_choice().vision
+assert vision.sidecar_choice("kimi").prov_id == "kimi", "config image_provider honored"
+picked = vision.sidecar_choice("kimi:k3")  # endpoint:model spec, substring ok
+assert picked.prov_id == "kimi" and picked.model == "kimi-k3", "image model pinnable"
+assert vision.sidecar_choice("kimi:nope") is not None, "unmatched model → keyed fallback"
+# the home key alone makes deepseek-flash the zero-setup describer, and it
+# outranks other keyed vision endpoints (registry role `sidecar`)
+os.environ["ROCKYCODE_API_KEY"] = "sk-rocky-home"
+assert vision.sidecar_choice().id == "deepseek:deepseek-flash", vision.sidecar_choice().id
+os.environ.pop("ROCKYCODE_API_KEY")
 os.environ.pop("ROCKYCODE_STEPFUN_API_KEY")
 os.environ.pop("ROCKYCODE_KIMI_CN_API_KEY")
 print("vision: shell-free cli template · auto-prefers-cli · keyed sidecar pick  ✓")
@@ -191,7 +199,7 @@ from rockycode import config as C  # noqa: E402
 from rockycode.engine import tools as T  # noqa: E402
 
 C.GLOBAL_PATH = Path(tempfile.mkdtemp()) / "config.toml"  # never the real ~/.rockycode
-assert C.DEFAULTS["image_route"] == "ask"
+assert C.DEFAULTS["image_route"] == "auto"
 _v, cerr = C.set_value("image_route", "nope")
 assert cerr and "allowed" in cerr
 _v, cerr = C.set_value("image_cli", "echo tool-eyes {path}")

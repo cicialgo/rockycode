@@ -152,3 +152,111 @@ class InlineApproval(Vertical):
         Removal is left to the awaiter's finally so there's no double-remove."""
         if not self._future.done():
             self._future.set_result(value)
+
+
+# One row per approval mode, tightest first — the same order shift+tab walks
+# (engine.permission.CYCLE). The blurbs say what the mode DOES, not what it is
+# called, so the picker teaches the modes instead of assuming you know them.
+MODE_ROWS = (
+    ("careful", "🔒  careful", "every write & command asks first"),
+    ("ask", "🔒  ask", "risky actions (bash · web · mcp) ask first"),
+    ("yolo", "🔓  yolo", "no prompts — installs, network and git push run for real"),
+)
+
+
+class _ModeRow(Static):
+    """One clickable mode row. Clicking picks it — the picker exists so the
+    approval mode is never reachable by keystroke alone."""
+
+    def __init__(self, value: str, idx: int, picker: "PermissionPicker") -> None:
+        super().__init__("", id=f"perm-mode-{idx}", classes="perm-mode")
+        self._value = value
+        self._picker = picker
+
+    def on_click(self) -> None:
+        self._picker.pick(self._value)
+
+
+class PermissionPicker(Vertical):
+    """Switch the session's approval mode — the visible, clickable twin of the
+    shift+tab cycle (opened by clicking the status-bar chip, or bare
+    /permission). Resolves `future` with the chosen mode, or "" to keep the
+    current one.
+
+    Inline above the input like InlineApproval rather than a modal screen: the
+    transcript stays readable while you decide, and the card sits right next to
+    the chip that opened it. ↑↓ + Enter, click a row, Esc keeps what you have.
+    """
+
+    can_focus = True
+
+    BINDINGS = [
+        ("up", "move(-1)", "up"),
+        ("down", "move(1)", "down"),
+        ("enter", "confirm", "select"),
+        ("escape", "keep", "keep"),
+    ]
+
+    DEFAULT_CSS = """
+    PermissionPicker {
+        height: auto;
+        margin: 0 1 1 1;
+        padding: 1 2;
+        background: $surface;
+        border: round $primary;
+        border-title-color: $text-muted;
+        border-subtitle-color: $text-muted;
+    }
+    PermissionPicker:focus { border: round $primary; }
+    PermissionPicker .perm-mode { height: 1; }
+    PermissionPicker #perm-mode-keys { color: $text-muted; margin-top: 1; }
+    """
+
+    def __init__(self, current: str, future: "asyncio.Future[str]") -> None:
+        super().__init__()
+        self._current = current
+        self._future = future
+        self._idx = next((i for i, r in enumerate(MODE_ROWS) if r[0] == current), 1)
+
+    def compose(self):
+        for i, (value, _label, _blurb) in enumerate(MODE_ROWS):
+            yield _ModeRow(value, i, self)
+        yield Static(
+            f"[{LAVENDER}]↑↓[/] choose   [{LAVENDER}]↵[/] switch   "
+            f"[{LAVENDER}]esc[/] keep   [{LAVENDER}]click[/] a row   "
+            f"[dim]shift+tab cycles without opening this[/]",
+            id="perm-mode-keys",
+        )
+
+    def on_mount(self) -> None:
+        self.border_title = "❖ approval mode"
+        self.border_subtitle = "this session · /config permission persists"
+        self._render_choices()
+        self.focus()
+
+    def _render_choices(self) -> None:
+        for i, (value, label, blurb) in enumerate(MODE_ROWS):
+            row = self.query_one(f"#perm-mode-{i}", Static)
+            now = f"   [{MUTED}](now)[/]" if value == self._current else ""
+            text = escape(f"{label} — {blurb}")
+            if i == self._idx:
+                row.update(f"[b {LAVENDER}]▸ {text}[/]{now}")
+            else:
+                row.update(f"[{MUTED}]  {text}[/]{now}")
+
+    def action_move(self, delta: int) -> None:
+        self._idx = (self._idx + delta) % len(MODE_ROWS)
+        self._render_choices()
+
+    def action_confirm(self) -> None:
+        self.pick(MODE_ROWS[self._idx][0])
+
+    def action_keep(self) -> None:
+        self.pick("")
+
+    def pick(self, value: str) -> None:
+        """Deliver the choice. Idempotent — a stray second key or click after
+        the pick must not crash on an already-set Future; the awaiter's finally
+        owns removal, so there's no double-remove either."""
+        if not self._future.done():
+            self._future.set_result(value)

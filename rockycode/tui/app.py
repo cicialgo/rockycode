@@ -18,6 +18,7 @@ import asyncio
 import hashlib
 import json
 import os
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 from urllib.request import url2pathname
@@ -32,12 +33,14 @@ from textual.message import Message
 from textual.screen import ModalScreen
 from textual.theme import Theme
 from textual.widgets import Button, Collapsible, Markdown, Static, TextArea
-from textual.worker import Worker, WorkerState
+from textual.worker import Worker, WorkerState, get_current_worker
 
 from rockycode.banner import ROCKY_TAGLINE
 from rockycode.engine import AgentState, Engine
+from rockycode.engine import cron as cron_mod
 from rockycode.engine import tools as tools_mod
-from rockycode.engine.effort import EFFORT_LEVELS, to_deepseek
+from rockycode.engine.effort import EFFORT_LEVELS, wire_tier
+from rockycode.engine.providers import fmt_tokens
 from rockycode.engine.events import (
     CacheReset,
     Compacted,
@@ -113,10 +116,11 @@ HELP_TEXT = f"""\
   [{LAVENDER}]/help[/]    show this
   [{LAVENDER}]/plan [topic|off][/]  plan first — read-only explore + brainstorm into a plan file you approve
   [{LAVENDER}]/goal [objective][/]  go autonomous — plan → confirm → work, in its own view (needs Docker)
+  [{LAVENDER}]/loop 5m <prompt>[/]  check back every 5 minutes, in this chat — /loop lists · stop · pause · allow (also /cron)
   [{LAVENDER}]/research[/]  research mode — pick how we work: deep-research · paper-reading · whiteboard
   [{LAVENDER}]/learn[/]   learn mode — rocky tutors you through a paper, a codebase, or a concept
-  [{LAVENDER}]/model[/]   switch provider + model (deepseek · minimax · glm · kimi · stepfun)
-  [{LAVENDER}]/paste[/]   attach a clipboard image (or ctrl+v in the input). vision models see it raw; others pick a route — another provider key or your own CLI (/config image_cli)
+  [{LAVENDER}]/model[/]   switch provider + model (deepseek · glm · kimi · minimax · stepfun · qwen · mimo · ollama = local, $0)
+  [{LAVENDER}]/paste[/]   attach a clipboard image (or ctrl+v in the input). a vision model sees it raw (deepseek-flash does); a text-only model gets it described by deepseek-flash or your own CLI (/config image_cli)
   [{LAVENDER}]/sandbox[/]  sandbox on | off | status — isolate tools in a container
   [{LAVENDER}]/lsp[/]     language-server status (diagnostics ride along read_file)
   [{LAVENDER}]/artifact[/]  list | open | stop | live on/off — manage this session's artifacts
@@ -128,11 +132,36 @@ HELP_TEXT = f"""\
   [{LAVENDER}]/routines[/]  run or lease due routines (recurring, sandboxed, budgeted)
   [{LAVENDER}]/remember <note>[/]  save a note to memory (feedback)
   [{LAVENDER}]/config [key] [value][/]  show or set preferences — language auto|en|zh · theme · currency (restart to apply)
-  [{LAVENDER}]/effort [off|high|xhigh|max][/]  how hard i think — applies from the next reply
-  [{LAVENDER}]/permission [yolo|ask|careful][/]  show or switch approval mode (this session)
+  [{LAVENDER}]/effort [off|low|high|max][/]  how hard i think — applies from the next reply
+  [{LAVENDER}]/permission [yolo|ask|careful][/]  approval mode — bare opens the picker
+     [dim](or press shift+tab to cycle it · or click the 🔒 chip in the status bar)[/]
   [{LAVENDER}]! <cmd>[/]  run a shell command; output goes into rocky's context
   [{LAVENDER}]/clear[/]   clear the transcript
   [{LAVENDER}]/exit[/]    quit (also /quit or ctrl+q)"""
+
+LOOP_HELP = (
+    f"[bold {VIOLET}]loops[/] [dim]— rocky checks back on something, in this chat, on an interval "
+    f"(also /cron)[/]\n"
+    f"  [{LAVENDER}]/loop 5m <prompt>[/]           every 5 minutes, until you stop it\n"
+    f"  [{LAVENDER}]/loop 10m for 3h <prompt>[/]   … with a duration · [{LAVENDER}]x12[/] a tick count · "
+    f"[{LAVENDER}]max $2[/] a spend ceiling (only enforced when you set one)\n"
+    f"  [{LAVENDER}]/loop[/] list · [{LAVENDER}]/loop stop|pause|resume|allow [id][/]\n"
+    f"  [dim]e.g. /loop 5m check whether results/run3 has a summary.json; if so give me the "
+    f"headline numbers. LOOP DONE when reported.[/]\n"
+    f"  [dim]ticks never prompt — anything needing approval pauses the loop. "
+    f"/permission yolo (or shift+tab) resumes it · /loop allow decides one call · "
+    f"overnight on a copy → /goal · every launch → /routines[/]"
+)
+
+
+def _last_reply(history: list[dict], start: int) -> str:
+    """The final plain assistant message of the turn that began at history[start]."""
+    from rockycode.engine import images as images_mod
+    for m in reversed(history[start:]):
+        if m.get("role") == "assistant" and m.get("content") and not m.get("tool_calls"):
+            return images_mod.content_text(m["content"])
+    return ""
+
 
 WELCOME = (
     f"[bold {PURPLE}]♪♫ rocky ▸[/]\n"
@@ -249,7 +278,7 @@ class ChatInput(TextArea):
     MAX_LINES = 8
 
     SLASH_COMMANDS = [
-        "/help", "/plan", "/goal", "/research", "/learn", "/sandbox", "/lsp", "/artifact",
+        "/help", "/plan", "/goal", "/loop", "/cron", "/research", "/learn", "/sandbox", "/lsp", "/artifact",
         "/artifacts",
         "/paste",
         "/prompt", "/config", "/model", "/effort", "/permission", "/mcp", "/skills", "/memory",
@@ -522,6 +551,18 @@ class ImageRouteChoice(Vertical):
             self._future.set_result(value)
 
 
+class PermChip(Static):
+    """The status-bar approval badge — and the clickable way to change it.
+
+    rockycode never ships an action reachable only by a keystroke, so this chip
+    does three jobs at once: it says which mode is live, it spells out the
+    shift+tab shortcut so the key is discoverable from the screen itself, and
+    clicking it opens the full picker."""
+
+    def on_click(self) -> None:
+        self.app.open_permission_picker()
+
+
 class RockyCodeApp(App):
     TITLE = "rockycode"
 
@@ -578,6 +619,7 @@ class RockyCodeApp(App):
     #statusbar { height: 1; padding: 0 2; }
     #cwd { width: 1fr; color: $text-muted; }
     #modechip { width: auto; margin-right: 2; }
+    #permchip { width: auto; margin-right: 2; }
     #total { width: auto; color: $text-muted; content-align: right middle; }
     #hints { height: 1; padding: 0 2; color: $text-muted; }
 
@@ -600,6 +642,12 @@ class RockyCodeApp(App):
         Binding("pagedown", "transcript_down", "scroll down", priority=True),
         Binding("shift+up", "transcript_line_up", "scroll up", priority=True),
         Binding("shift+down", "transcript_line_down", "scroll down", priority=True),
+        # shift+tab steps the approval mode one notch looser (careful → ask →
+        # yolo → careful). priority: the focused input and the approval card
+        # would otherwise eat it, and Textual's own screen binding would move
+        # focus instead. It is never the ONLY way in — the status-bar chip
+        # spells the key out and opens the picker on click.
+        Binding("shift+tab", "cycle_permission", "approval mode", priority=True),
     ]
 
     def __init__(
@@ -622,8 +670,25 @@ class RockyCodeApp(App):
         self._auto_approve: set[str] = set()    # non-bash tools OK'd this session
         self._auto_approve_bins: set[str] = set()  # bash BINARIES OK'd this session
         self._turn_worker: Worker | None = None  # captured so Esc can cancel it
+        # Loops (/loop — engine/cron.py). The CLI creates the book when it
+        # registers loop_start/loop_stop (before the app exists); a bare Engine
+        # (tests, serve) gets one here. Session state only — nothing persists.
+        from rockycode.engine.cron import LoopBook
+        self._loops: LoopBook = getattr(engine, "loop_book", None) or LoopBook(currency=currency)
+        engine.loop_book = self._loops
+        self._tick_loop = None                 # the Loop whose tick runs right now
+        self._tick_blocked: dict | None = None  # first ask-tier denial in that tick
+        self._cancelled_tick = None            # (loop, tick_no) for _after_cancel's line
+        self._tick_once: set[tuple[str, str]] = set()  # (tool, detail) one-shot grants from /loop allow
+        self._quiet_lines: dict[int, Static] = {}      # loop id → its in-place quiet-streak line
+        self._loop_hinted = False              # the one-time "want a ceiling?" hint
         from rockycode.pricing import UsageLedger
         self._ledger = getattr(engine, "ledger", None) or UsageLedger()
+        if getattr(engine, "provider_local", False):  # launched straight onto
+            self._ledger.mark_free(engine.model)      # a local model → $0
+        # context_window before the first LOCAL switch, restored when switching
+        # back to a cloud provider (a /config context_window set clears it —
+        # an explicit value is the user's own).
         self.sandbox = sandbox  # ChatSandbox | None — created on /sandbox on
         self._local_registry: dict | None = None  # saved so we can swap back
         self._sandbox_starting = False  # guard concurrent /sandbox on
@@ -697,7 +762,14 @@ class RockyCodeApp(App):
     async def _after_cancel(self) -> None:
         await self._flush_buffers()
         await self._finalize_reply()
-        await self._add(Static(f"[{MUTED}]· turn cancelled[/]", classes="tool-line"))
+        ct, self._cancelled_tick = self._cancelled_tick, None
+        if ct is not None:  # Esc landed on a loop tick — the loop itself lives on
+            loop, tick_no = ct
+            await self._add(Static(
+                f"[{MUTED}]· loop #{loop.id} tick {tick_no} cancelled — it fires again in "
+                f"{cron_mod.fmt_duration(loop.interval_s)} (/loop stop to end it)[/]", classes="tool-line"))
+        else:
+            await self._add(Static(f"[{MUTED}]· turn cancelled[/]", classes="tool-line"))
         try:
             self.query_one(ChatInput).focus()
         except Exception:  # noqa: BLE001 — focus is best-effort during teardown
@@ -737,6 +809,27 @@ class RockyCodeApp(App):
             elif name in self._auto_approve:
                 self._grant_read_if_escaping(name, args)
                 return True
+        if self._tick_loop is not None:
+            # A loop tick NEVER prompts — the user may be away. Yolo does not
+            # reach this deny: decide() already allowed ask-tier (block-tier
+            # returned above), so a loop that yolo just resumed is not paused
+            # again by the same call. The loop tools answer for themselves
+            # (they refuse inside a tick with a teaching message); a one-shot
+            # grant from /loop allow covers exactly this call once; anything
+            # else is denied, the FIRST such call is recorded, and the loop
+            # pauses after the tick — unless the session is yolo by the time
+            # the tick settles (see _run_tick).
+            if name in ("loop_start", "loop_stop"):
+                return True
+            key = (name, self._tool_detail(name, args))
+            if key in self._tick_once:
+                self._tick_once.discard(key)
+                self._grant_read_if_escaping(name, args)
+                return True
+            if self._tick_blocked is None:
+                self._tick_blocked = {"tool": name, "args": args, "detail": key[1],
+                                      "risk": risk, "warning": sniff_danger(name, args)}
+            return False
         # A dangerous bash command may NEVER be session-granted → no "allow"
         # option is offered (session_label=None); only run-once or deny.
         session_label = None
@@ -953,6 +1046,14 @@ class RockyCodeApp(App):
             return f"{name} → {args.get('path', '?')}"
         if name == "remember":
             return f"remember: {str(args.get('name') or args.get('content', ''))[:140]}"
+        if name == "loop_start":
+            budget = " · ".join(p for p in (
+                f"for {args['for']}" if args.get("for") else "",
+                f"x{args['count']}" if args.get("count") else "",
+                f"max {args['max_spend']}" if args.get("max_spend") else "") if p) or "no budget"
+            return f"every {args.get('interval', '?')} — {str(args.get('prompt', ''))[:200]} · {budget}"
+        if name == "loop_stop":
+            return f"stop loop #{args.get('id', '?')}"
         try:
             return json.dumps(args)[:400]
         except (TypeError, ValueError):
@@ -973,14 +1074,27 @@ class RockyCodeApp(App):
         return f"[{MUTED}]🔒 ask[/]"
 
     def _effort_note(self) -> str:
-        """Current effort-dial reading, wire-honest: names what DeepSeek is sent
-        when the dial value and the provider tier differ (xhigh → max)."""
-        if not self.engine.thinking:
-            return (f"[{LAVENDER}]off[/] [dim](thinking disabled — "
-                    f"{self.engine.reasoning_effort} kept for when it's back on)[/]")
-        eff = self.engine.reasoning_effort
-        sent = to_deepseek(eff)
-        wire = f" [dim](sends {sent} to deepseek)[/]" if sent != eff else ""
+        """Current effort-dial reading, wire-honest: names what the provider is
+        actually sent when the dial value and its tier differ (high → medium
+        on an OpenAI-style provider; off → the lowest tier on a model that
+        can't switch thinking off; nothing on a provider without tiers)."""
+        eng = self.engine
+        prov = eng.provider_name
+        if not eng.thinking:
+            if eng.thinking_off:
+                return (f"[{LAVENDER}]off[/] [dim](thinking disabled — "
+                        f"{eng.reasoning_effort} kept for when it's back on)[/]")
+            low = wire_tier("low", eng.reasoning_policy, eng.efforts)
+            return (f"[{LAVENDER}]off[/] [dim]({prov} can't switch thinking off — "
+                    f"sends its lowest tier{f', {low}' if low else ''})[/]")
+        eff = eng.reasoning_effort
+        sent = wire_tier(eff, eng.reasoning_policy, eng.efforts)
+        if sent is None:
+            wire = f" [dim]({prov} has no effort tiers — thinking on, dial not sent)[/]"
+        elif sent != eff:
+            wire = f" [dim](sends {sent} to {prov})[/]"
+        else:
+            wire = ""
         return f"[{LAVENDER}]{eff}[/]{wire}"
 
     def _render_cwd(self) -> None:
@@ -992,12 +1106,36 @@ class RockyCodeApp(App):
             open_note = f" · {opened} open" if opened else ""
             plural = "" if registry.count == 1 else "s"
             artifacts = f"   [{VIOLET}]▣ {registry.count} artifact{plural}{open_note}[/]"
+        # Loops: always visible while any is live — a loop spends while you're
+        # away (same reasoning as the yolo chip). A clock while a tick runs.
+        loops = ""
+        live = self._loops.live()
+        if self._tick_loop is not None:
+            loops = (f"   [{VIOLET}]{cron_mod.clock_face(datetime.now())} loop "
+                     f"#{self._tick_loop.id} ticking…[/]")
+        elif live:
+            nxt = self._loops.next_due()
+            when = f" · next {datetime.fromtimestamp(nxt.next_due):%H:%M}" if nxt else " · paused"
+            loops = (f"   [{VIOLET}]⏱ {len(live)} loop{'s' if len(live) != 1 else ''} · "
+                     f"{self._sym()}{sum(lp.spend for lp in live):.2f}{when}[/]")
         try:
             self.query_one("#cwd", Static).update(
-                f"[{MUTED}]📁 {self.engine.workdir.name}[/]{plan}{artifacts}   {self._perm_chip()}"
+                f"[{MUTED}]📁 {self.engine.workdir.name}[/]{plan}{artifacts}{loops}"
             )
         except NoMatches:
             pass  # a screen is on top of chat — the badge isn't visible now
+        self._render_perm_chip()
+
+    def _render_perm_chip(self) -> None:
+        """Repaint the approval badge. It carries its own key hint (shift+tab)
+        and a hover tooltip, so neither the mode nor the way to change it is
+        ever something you have to remember."""
+        try:
+            chip = self.query_one("#permchip", PermChip)
+        except NoMatches:
+            return  # a screen is on top of chat
+        chip.update(f"{self._perm_chip()} [dim]· shift+tab[/]")
+        chip.tooltip = "click to switch approval mode — shift+tab cycles it"
 
     def _set_permission_mode(self, mode: str) -> None:
         """Flip the approval mode for this session (does NOT persist — use /config
@@ -1009,6 +1147,86 @@ class RockyCodeApp(App):
             self._auto_approve_bins.clear()  # tightening revokes bash binary grants too
         self._permission_mode = mode
         self._render_cwd()
+
+    def _resume_paused_loops(self) -> int:
+        """Loops paused FOR AN APPROVAL back to running, due now — yolo means
+        there is nothing left to approve. A manual /loop pause is the user's
+        own decision and stays paused (LoopBook.resume_blocked)."""
+        return len(self._loops.resume_blocked())
+
+    async def _apply_permission_switch(self, mode: str) -> None:
+        """Flip the mode, say so in the transcript, re-run the yolo-on-host
+        nudge. Shared by shift+tab, the chip picker and /permission, so the
+        three routes can't drift apart — whichever one you take, the transcript
+        records the switch and names the other two.
+
+        Landing on yolo resumes every loop paused for an approval. Leaving
+        them paused would stick the next check: yolo allows ask-tier, so there
+        is nothing left to approve. A manual /loop pause stays. The receipt
+        says how many came back."""
+        self._set_permission_mode(mode)
+        await self._add(Static(
+            f"[{VIOLET}]✦ permission → {self._permission_note()}[/] "
+            f"[dim](shift+tab · or click the chip)[/]",
+            classes="tool-line"))
+        if mode == "yolo":
+            n = self._resume_paused_loops()
+            if n:
+                noun = "loop" if n == 1 else "loops"
+                await self._add(Static(
+                    f"[{VIOLET}]▶ resumed {n} {noun} paused for approval[/] [dim]— next tick "
+                    f"as soon as the chat is idle (a /loop pause stays paused)[/]",
+                    classes="tool-line"))
+                self._loop_pump()
+        await self._maybe_nudge_yolo_host()
+
+    async def action_cycle_permission(self) -> None:
+        """shift+tab: step the approval mode one notch looser (careful → ask →
+        yolo, then back to careful) for this session — the same switch
+        /permission makes, minus the typing.
+
+        No-ops while an approval prompt or the picker is waiting (changing the
+        rules under a question you're mid-answer to is nonsense) and while a
+        screen sits on top of chat, where the transcript isn't even mounted."""
+        from rockycode.engine.permission import next_mode
+        from rockycode.tui.permission import InlineApproval, PermissionPicker
+
+        if len(self.query(InlineApproval)) or len(self.query(PermissionPicker)):
+            return
+        try:
+            self._transcript()
+        except NoMatches:
+            return
+        await self._apply_permission_switch(next_mode(self._permission_mode))
+
+    @work
+    async def open_permission_picker(self) -> None:
+        """The clickable route to the same switch: an inline card listing all
+        three modes and what each one actually allows. Opened by clicking the
+        status-bar chip or by a bare /permission. Runs as a worker so a click
+        handler can start it without blocking the message pump."""
+        from rockycode.tui.permission import InlineApproval, PermissionPicker
+
+        if len(self.query(PermissionPicker)) or len(self.query(InlineApproval)):
+            return
+        try:
+            self._transcript()
+        except NoMatches:
+            return
+        fut: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        widget = PermissionPicker(self._permission_mode, fut)
+        await self.mount(widget, before=self.query_one("#prompt"))
+        try:
+            choice = await fut
+        finally:
+            if widget.is_mounted:
+                await widget.remove()
+            try:  # give focus back to the input so typing just works again
+                self.query_one(ChatInput).focus()
+            except Exception:  # noqa: BLE001 — app may be tearing down
+                pass
+        if choice and choice != self._permission_mode:
+            await self._apply_permission_switch(choice)
 
     def _in_sandbox(self) -> bool:
         return self.sandbox is not None and self.sandbox.is_running
@@ -1097,8 +1315,9 @@ class RockyCodeApp(App):
         with Horizontal(id="statusbar"):
             yield Static(f"[{MUTED}]📁 {self.engine.workdir.name}[/]", id="cwd")
             yield Static("", id="modechip")
+            yield PermChip("", id="permchip")
             yield Static("", id="total")
-        yield Static(f"[{MUTED}]drag text = copy · /help · /research · /learn · /model · /effort · /paste · /sandbox · /artifact · /permission · /config · /mcp · /skills · /memory · /proposals · !cmd · /clear · /exit[/]", id="hints")
+        yield Static(f"[{MUTED}]drag text = copy · /help · /research · /learn · /model · /effort · /paste · /sandbox · /artifact · /loop · /permission · /config · /mcp · /skills · /memory · /proposals · !cmd · /clear · /exit[/]", id="hints")
 
     async def on_mount(self) -> None:
         self.register_theme(ROCKY_THEME)
@@ -1122,6 +1341,10 @@ class RockyCodeApp(App):
         self._note_i = 0
         self.set_interval(1 / FLUSH_HZ, self._flush_buffers)
         self.set_interval(0.4, self._animate_status)
+        # Loops: rocky's loop_start/loop_stop render through the same receipt
+        # path as /loop; the pump starts a due tick only when the chat is idle.
+        self._loops.notify = self._on_loop_event
+        self.set_interval(1.0, self._loop_pump)
         self._transcript().border_title = "♪ chat"
         # Persistent permission reminder in the bottom bar — always visible, so a
         # no-prompt (yolo) session can't be forgotten mid-research.
@@ -1186,7 +1409,10 @@ class RockyCodeApp(App):
 
     async def _greet(self) -> None:
         await self._add(Static(WELCOME, classes="rocky-label"))
-        await self._add(Static(f"[dim]· permission: {self._permission_note()}[/]", classes="tool-line"))
+        await self._add(Static(
+            f"[dim]· permission: {self._permission_note()}[/]\n"
+            f"[dim]  switch it any time: shift+tab cycles, or click the 🔒 chip in the "
+            f"status bar (also /permission)[/]", classes="tool-line"))
         for fname in getattr(self.engine, "project_notes", []) or []:
             await self._add(Static(f"[dim]· loaded {fname} (project instructions)[/]", classes="tool-line"))
         n_skills = len(getattr(self.engine, "skills", []) or [])
@@ -1368,7 +1594,7 @@ class RockyCodeApp(App):
     async def _title_worker(self, first_user: str, first_reply: str) -> None:
         from rockycode.engine.titler import generate_title
 
-        t = await generate_title(self.engine.client, first_user, first_reply)
+        t = await generate_title(self.engine.client, first_user, first_reply, model=self.engine.model)
         if t:
             self.engine.trajectory.title(t)
 
@@ -1655,6 +1881,323 @@ class RockyCodeApp(App):
             except Exception:  # noqa: BLE001
                 pass
 
+    # ---- loops (/loop · /cron — engine/cron.py) ------------------------------
+
+    def _sym(self) -> str:
+        return "¥" if self._currency == "cny" else "$"
+
+    def _idle_for_tick(self) -> bool:
+        """A tick may start only when nobody — human or engine — is mid-anything:
+        no turn running, no screen over the chat (goal, picker, modal), no inline
+        card awaiting a human (approval, plan gate, routine/proposal/loop card,
+        image route, exit sheet), no sandbox start in flight."""
+        w = self._turn_worker
+        if w is not None and w.is_running:
+            return False
+        if len(self.screen_stack) > 1 or self._exit_sheet_open or self._sandbox_starting:
+            return False
+        from rockycode.tui.loopcard import LoopCard
+        from rockycode.tui.permission import InlineApproval, PermissionPicker
+        from rockycode.tui.plangate import InlinePlanGate
+        from rockycode.tui.proposalcard import ProposalCard
+        from rockycode.tui.routinecard import RoutineCard
+        for cls in (InlineApproval, InlinePlanGate, RoutineCard, ProposalCard, LoopCard,
+                    ImageRouteChoice, PermissionPicker):
+            if len(self.query(cls)):
+                return False
+        return True
+
+    def _loop_pump(self) -> None:
+        """1 Hz timer: start the oldest due loop's tick when the session is idle.
+        Sync and cheap. The tick is a worker in the SAME group as user turns —
+        a submit cancels it — and because the pump only starts one when idle, a
+        tick can never cancel a user turn. Missed ticks never stack: due() hands
+        a loop over once however long the session was busy."""
+        if self._tick_loop is not None:
+            return
+        due = self._loops.due()
+        if not due or not self._idle_for_tick():
+            return
+        self._turn_worker = self._run_tick(due[0])
+
+    @work(group="turn", exclusive=True)
+    async def _run_tick(self, loop) -> None:
+        """One tick = one ordinary turn on the session engine, with three twists:
+        the marker rides the user turn (cron.tick_marker), the approver never
+        prompts (_approve_tool), and a QUIET tick is folded away — its widgets
+        replaced by one streak line and its messages rolled back out of live
+        context (the trajectory keeps them). NOTE stays; DONE ends the loop; a
+        denied ask pauses it unless the session is yolo by the time the tick
+        settles (ask-tier then runs, so pausing would stick a resumed loop);
+        a user-set budget stops it; otherwise maybe one muted running-cost
+        reminder."""
+        book = self._loops
+        now = datetime.now()
+        tick_no = book.begin_tick(loop)
+        self._tick_loop, self._tick_blocked = loop, None
+        n_hist = len(self.engine.history)
+        n_widgets = len(self._transcript().children)
+        cost_before = self._ledger.cost(self._currency)
+        header = Static(
+            f"[{MUTED}]{cron_mod.clock_face(now)} loop #{loop.id} · tick {tick_no} · {now:%H:%M}[/]",
+            classes="tool-line")
+        await self._add(header)
+        self._render_cwd()
+        completed = cancelled = False
+        try:
+            await self._drive_turn(cron_mod.tick_marker(loop, tick_no, now))
+            completed = True
+        except asyncio.CancelledError:
+            cancelled = True  # a submit (worker replaced) or Esc (same worker)
+            raise
+        except Exception as e:  # noqa: BLE001 — one tick must never take the app down
+            try:
+                await self._flush_buffers()
+                await self._finalize_reply()
+            except Exception:  # noqa: BLE001
+                pass
+            self._set_status(AgentState.IDLE)
+            await self._add(Static(
+                f"✗ loop #{loop.id} tick {tick_no}: {escape(f'{type(e).__name__}: {e}')}",
+                classes="error-msg"))
+        finally:
+            self._tick_loop = None
+            if not completed:
+                # Settle so the loop stays alive and fires again; nothing to fold.
+                book.end_tick(loop, "cancelled" if cancelled else "error",
+                              cost=max(0.0, self._ledger.cost(self._currency) - cost_before))
+                if cancelled and get_current_worker() is self._turn_worker:
+                    self._cancelled_tick = (loop, tick_no)  # Esc: _after_cancel says so
+                self._render_cwd()
+        if not completed:
+            return
+
+        cost = max(0.0, self._ledger.cost(self._currency) - cost_before)
+        verdict, msg = cron_mod.parse_tick_reply(_last_reply(self.engine.history, n_hist))
+        blocked, self._tick_blocked = self._tick_blocked, None
+        reason = book.end_tick(loop, verdict, cost=cost, message=msg)
+        at = datetime.now()
+        face = cron_mod.clock_face(at)
+        sym = self._sym()
+        if verdict == cron_mod.QUIET and not blocked:
+            # Fold: the widgets go, the messages leave LIVE context (trajectory
+            # keeps every record), one streak line updates in place.
+            for w in list(self._transcript().children)[n_widgets:]:
+                await w.remove()
+            self.engine.rollback(n_hist, reason=f"loop #{loop.id} quiet tick {tick_no}")
+            text = f"[{MUTED}]{face} loop #{loop.id} · quiet ×{loop.quiet_streak} · last {at:%H:%M}[/]"
+            line = self._quiet_lines.get(loop.id)
+            if line is not None and line.is_mounted:
+                line.update(text)
+            else:
+                line = Static(text, classes="tool-line")
+                self._quiet_lines[loop.id] = line
+                await self._add(line)
+        else:
+            self._quiet_lines.pop(loop.id, None)  # the next quiet starts a fresh streak line
+            header.update(
+                f"[{VIOLET}]{face} loop #{loop.id} · tick {tick_no} · {at:%H:%M} · {verdict}[/]")
+        # A denial recorded before a mid-tick switch to yolo must not pause:
+        # yolo allows ask-tier, so the loop stays on its schedule. Block-tier
+        # never sets `blocked` — that refusal already printed on its own.
+        if blocked and loop.status == "running" and self._permission_mode != "yolo":
+            book.pause(loop, blocked_on=blocked)
+            await self._add(Static(
+                f"[{AMBER}]{face} loop #{loop.id} paused[/] [dim]— tick {tick_no} needed approval "
+                f"for[/] {escape(str(blocked['detail'])[:160])}\n"
+                f"  [{LAVENDER}]/permission yolo[/] [dim](or shift+tab until yolo) resumes it and runs "
+                f"unattended · [/][{LAVENDER}]/loop allow {loop.id}[/] [dim]decides this call · "
+                f"[/][{LAVENDER}]/loop resume {loop.id}[/] [dim]retries without a grant[/]",
+                classes="tool-line"))
+        elif verdict == cron_mod.DONE:
+            await self._add(Static(
+                f"[{VIOLET}]{face} ✓ loop #{loop.id} done · {at:%H:%M}[/]"
+                + (f" [dim]— {escape(msg)}[/]" if msg else "")
+                + f" [dim]· {loop.ticks} tick(s) · {sym}{loop.spend:.2f}[/]", classes="tool-line"))
+        elif reason:
+            await self._add(Static(
+                f"[{VIOLET}]{face} ✓ loop #{loop.id} stopped[/] [dim]— {escape(reason)} · "
+                f"{loop.ticks} tick(s) · {sym}{loop.spend:.2f}[/]", classes="tool-line"))
+        else:
+            r = book.reminder_due(loop)
+            if r is not None:
+                iv = cron_mod.fmt_duration(loop.interval_s)
+                await self._add(Static(
+                    f"[{MUTED}]{face} loop #{loop.id} · {cron_mod.fmt_duration(r['hours'] * 3600)} · "
+                    f"{r['ticks']} ticks · {sym}{r['spend']:.2f} so far · /loop stop to end · "
+                    f"/loop {iv} max {sym}2 … to cap[/]", classes="tool-line"))
+        self._render_cwd()
+
+    async def _handle_loop(self, text: str) -> None:
+        """/loop [<interval> [for <dur>] [x<N>] [max $<amt>] <prompt>] — or /loop
+        (list) · /loop stop|pause|resume|allow [id]. /cron is the same command."""
+        parts = text.split(maxsplit=1)
+        rest = parts[1].strip() if len(parts) > 1 else ""
+        book = self._loops
+        if not rest or rest.lower() in ("list", "ls"):
+            if book.live():
+                self._review_loops()
+            else:
+                await self._add(Static(LOOP_HELP, classes="tool-line"))
+            return
+        verb, _, arg = rest.partition(" ")
+        verb = verb.lower()
+        if verb in ("stop", "pause", "resume", "allow"):
+            loop, err = book.resolve(arg.strip() or None)
+            if loop is None:
+                await self._add(Static(f"[{AMBER}]? {escape(err)}[/]", classes="tool-line"))
+                return
+            if verb == "allow":
+                # awaits a human (the inline approval) → a worker, never the pump
+                self.run_worker(self._loop_verb(loop, "allow"), group="loops", exclusive=True)
+            else:
+                await self._loop_verb(loop, verb)
+            return
+        spec, err = cron_mod.parse_loop_args(rest)
+        if spec is None:
+            await self._add(Static(f"[{AMBER}]? {escape(err)}[/]\n{LOOP_HELP}", classes="tool-line"))
+            return
+        loop = book.add(spec["prompt"], spec["interval_s"], for_s=spec["for_s"],
+                        count=spec["count"], max_spend=spec["max_spend"])
+        await self._on_loop_event("start", loop)
+
+    async def _on_loop_event(self, kind: str, loop) -> None:
+        """The receipt (a loop started — by /loop, or by rocky via loop_start) or
+        the stop line (loop_stop). The book calls this for the tools; /loop calls
+        it directly, so both paths read the same."""
+        sym = self._sym()
+        if kind == "start":
+            tokens = self.engine._projected_prompt_tokens()
+            est = cron_mod.tick_cost_estimate(
+                tokens, self._ledger.rate(self.engine.model, self._currency))
+            iv = cron_mod.fmt_duration(loop.interval_s)
+            budget = loop.budget_note(sym)
+            until = ("no budget — runs until /loop stop or the session ends"
+                     if budget == "no budget" else budget)
+            who = (f" [dim](rocky set it up — “{escape(loop.prompt[:100])}”)[/]"
+                   if loop.origin == "model" else "")
+            perm = ("" if self._permission_mode == "yolo" else
+                    f"\n  [dim]ticks never prompt — anything needing approval pauses the loop. "
+                    f"[/][{LAVENDER}]/permission yolo[/][dim] (or shift+tab) resumes it · "
+                    f"[/][{LAVENDER}]/loop allow[/][dim] decides one call · running under "
+                    f"{self._permission_mode}[/]")
+            await self._add(Static(
+                f"[{VIOLET}]{cron_mod.clock_face(datetime.now())} loop #{loop.id}[/]{who} "
+                f"[dim]· every {iv} · {until} · ~{sym}{est:.4f} per tick right now "
+                f"(prefix ≈ {tokens:,} tokens, cache-hit) · first tick in {iv}[/]{perm}",
+                classes="tool-line"))
+            if budget == "no budget" and not self._loop_hinted:
+                self._loop_hinted = True
+                await self._add(Static(
+                    f"  [{MUTED}]want a ceiling? /loop {iv} for 3h … · /loop {iv} max {sym}2 … · "
+                    f"/loop {iv} x12 …  (only enforced when you set one)[/]", classes="tool-line"))
+            await self._maybe_nudge_yolo_host()
+        elif kind == "stop":
+            await self._add(Static(
+                f"[{MUTED}]✓ loop #{loop.id} stopped by rocky · {loop.ticks} tick(s) · "
+                f"{sym}{loop.spend:.2f}[/]", classes="tool-line"))
+        self._render_cwd()
+
+    @work(group="loops", exclusive=True, exit_on_error=False)
+    async def _review_loops(self) -> None:
+        """/loop with loops live: one inline card per loop — pause/resume · stop ·
+        decide a pending approval · leave it. Esc stops the walk."""
+        from rockycode.tui.loopcard import LoopCard
+
+        for loop in list(self._loops.live()):
+            fut: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+            card = LoopCard(loop, self._sym(), fut)
+            await self.mount(card, before=self.query_one("#prompt"))
+            try:
+                choice = await fut
+            finally:
+                if card.is_mounted:
+                    await card.remove()
+            if choice == "close":
+                break
+            await self._loop_verb(loop, choice)
+        self._render_cwd()
+        try:
+            self.query_one(ChatInput).focus()
+        except Exception:  # noqa: BLE001 — focus is best-effort
+            pass
+
+    async def _loop_verb(self, loop, verb: str) -> None:
+        """stop · pause · resume · allow on one loop — shared by /loop <verb> and
+        the card. `allow` awaits a human, so callers run it in a worker."""
+        book, sym = self._loops, self._sym()
+        if verb == "stop":
+            book.stop(loop, "stopped by you")
+            await self._add(Static(
+                f"[{MUTED}]✓ loop #{loop.id} stopped · {loop.ticks} tick(s) · {sym}{loop.spend:.2f}[/]",
+                classes="tool-line"))
+        elif verb == "pause":
+            if loop.status == "running":
+                book.pause(loop)
+                await self._add(Static(
+                    f"[{MUTED}]‖ loop #{loop.id} paused — /loop resume {loop.id} brings it back[/]",
+                    classes="tool-line"))
+            else:
+                await self._add(Static(f"[{MUTED}]· loop #{loop.id} is already paused[/]", classes="tool-line"))
+        elif verb == "resume":
+            if loop.status == "paused":
+                book.resume(loop)
+                await self._add(Static(
+                    f"[{VIOLET}]▶ loop #{loop.id} resumed[/] [dim]— next tick as soon as the chat is idle[/]",
+                    classes="tool-line"))
+            else:
+                await self._add(Static(f"[{MUTED}]· loop #{loop.id} isn't paused[/]", classes="tool-line"))
+        elif verb == "allow":
+            await self._loop_allow(loop)
+        self._render_cwd()
+
+    async def _loop_allow(self, loop) -> None:
+        """A paused loop's recorded ask, decided NOW while you're here: `once`
+        lets exactly that call run on the next tick; `session` grants the tool
+        (bash: its binary) like any approval — session_grantable still applies,
+        so a dangerous command can't be session-granted from here either; deny
+        keeps the loop paused."""
+        b = loop.blocked_on
+        if loop.status != "paused" or not b:
+            await self._add(Static(
+                f"[{MUTED}]· loop #{loop.id} isn't waiting on an approval[/]", classes="tool-line"))
+            return
+        from rockycode.engine.permission import command_binary, session_grantable
+
+        name, args = b["tool"], b.get("args", {})
+        session_label = None
+        if session_grantable(name, args):
+            if name == "bash":
+                binary = command_binary(str(args.get("command", "")))
+                if binary:
+                    session_label = f"Allow `{binary}` for this session"
+            else:
+                session_label = f"Allow {name} for this session"
+        choice = await self._ask_inline(name, b["detail"], b.get("risk", "risky"),
+                                        b.get("warning"), session_label=session_label)
+        if choice in ("once", "session"):
+            if choice == "session":
+                if name == "bash":
+                    bn = command_binary(str(args.get("command", "")))
+                    if bn:
+                        self._auto_approve_bins.add(bn)
+                else:
+                    self._auto_approve.add(name)
+            else:
+                self._tick_once.add((name, b["detail"]))
+            self._grant_read_if_escaping(name, args)
+            self._loops.resume(loop)
+            how = "allowed for this session" if choice == "session" else "that call may run once"
+            await self._add(Static(
+                f"[{VIOLET}]▶ loop #{loop.id} resumed[/] [dim]— {how}; the next tick retries as soon "
+                f"as the chat is idle[/]", classes="tool-line"))
+        else:
+            await self._add(Static(
+                f"[{MUTED}]· loop #{loop.id} stays paused — [/][{LAVENDER}]/loop resume {loop.id}[/] "
+                f"[dim]retries without it · [/][{LAVENDER}]/permission yolo[/] [dim](or shift+tab) "
+                f"resumes it · [/][{LAVENDER}]/loop stop {loop.id}[/] [dim]ends it[/]",
+                classes="tool-line"))
+
     # ---- transcript helpers -------------------------------------------------
 
     def _transcript(self) -> VerticalScroll:
@@ -1732,9 +2275,12 @@ class RockyCodeApp(App):
 
         resolved = P.resolve(arg)
         if resolved is None:
-            await self._add(Static(
-                f"[{AMBER}]· unknown or ambiguous — /model to see your options, /model all for the catalog[/]",
-                classes="tool-line"))
+            # a LOCAL provider that isn't ready gets its exact fix, not the
+            # generic shrug — "ollama isn't running — start it: ollama serve"
+            hint = P.local_hint(arg)
+            msg = hint or ("unknown or ambiguous — /model to see your options, "
+                           "/model all for the catalog")
+            await self._add(Static(f"[{AMBER}]· {escape(msg)}[/]", classes="tool-line"))
             return
         prov, ep, model = resolved
         await self._apply_model_choice(prov, ep, model)
@@ -1745,11 +2291,12 @@ class RockyCodeApp(App):
         from rockycode.tui.modelpicker import EndpointPicker, ModelPicker
 
         current = f"{self.engine.provider_name}:{self.engine.model}"
+        hints = P.local_hints()  # "ollama — not running · start it: …" rows
         result = await self.push_screen_wait(
-            ModelPicker(picks, current=current, hidden=hidden))
+            ModelPicker(picks, current=current, hidden=hidden, hints=hints))
         if result == "all":  # the "N more" row reopens over the full catalog
             result = await self.push_screen_wait(
-                ModelPicker(P.choices(), current=current, hidden=0))
+                ModelPicker(P.choices(), current=current, hidden=0, hints=hints))
         if isinstance(result, list):  # a model group — model first, URL second
             if len(result) == 1:  # one endpoint: nothing to ask, switch now
                 result = result[0]
@@ -1773,23 +2320,44 @@ class RockyCodeApp(App):
         self.query_one(ChatInput).focus()
 
     async def _apply_model_choice(self, prov, ep, model: str) -> None:
-        """The one switch path — picker picks and typed specs both land here."""
+        """The one switch path — picker picks and typed specs both land here.
+        A LOCAL target runs a readiness preflight FIRST (server up? model
+        pulled? tools? serving ctx?) — not ready means the engine is left
+        untouched and the card says exactly what to fix; ready means the
+        switch proceeds with context_window paced to the server's reality."""
         prev_model = self.engine.model
         try:
             from rockycode.onboarding import provider_key
-            key = provider_key(ep.key_env)
+            key = provider_key(ep.key_env, ep.key_aliases)
         except Exception as e:  # noqa: BLE001 — missing key: say exactly what to set
             await self._add(Static(f"[{AMBER}]· {escape(str(e))}[/]", classes="tool-line"))
             return
         from openai import AsyncOpenAI
         from rockycode.engine.providers import Choice
         vision = Choice(prov, ep, model).vision  # model-level, not provider-level
+        pf = None
+        if prov.local:
+            from rockycode.engine.localcheck import preflight
+            pf = await asyncio.to_thread(preflight, ep.base_url, model)
+            await self._add(Static(self._preflight_card(pf, ep.eid),
+                                   classes="tool-line"))
+            if not pf.ok:
+                return  # nothing changed — the card carries the fixes + retry
+            vision = vision or pf.vision  # the server said it sees
         client = AsyncOpenAI(api_key=key, base_url=ep.base_url, max_retries=5, timeout=300.0)
+        # The switch adopts the model's registry spec — wire shape, tiers,
+        # cache field, and (unless pinned via /config) its context window and
+        # output cap — so a cloud→cloud switch re-paces itself and a
+        # local→cloud one undoes the local pacing by construction.
         self.engine.switch_provider(
             client, model, provider_name=ep.eid,
             reasoning_policy=prov.reasoning, tools_enabled=(prov.tools == "native"),
-            vision=vision,
+            vision=vision, local=prov.local, provider=prov, endpoint=ep,
         )
+        if pf is not None and not self.engine._explicit_limits["context_window"]:
+            self.engine.context_window = pf.context_window  # the server's VERIFIED ctx wins
+        if prov.local:
+            self._ledger.mark_free(model)  # $0 · local — never the price nag
         self._render_status()
         # The topbar title bakes the model name in at compose() time — repaint
         # it here or it shows the launch model forever.
@@ -1805,12 +2373,40 @@ class RockyCodeApp(App):
         if model != prev_model:
             await self._add(Static(self._model_cost_note(model), classes="tool-line"))
 
+    def _preflight_card(self, pf, eid: str) -> str:
+        """The local-readiness checklist as one transcript card. Every ✗/⚠
+        line carries its exact fix — the card IS the setup guide, so a not-
+        ready switch teaches instead of dead-ending."""
+        head = (f"[{VIOLET}]✦ {escape(eid)} preflight — {escape(pf.model)}[/]"
+                if pf.ok else
+                f"[{AMBER}]✦ {escape(eid)} preflight — not ready "
+                f"(model unchanged)[/]")
+        mark = {"ok": f"[{MUTED}]✓", "warn": f"[{AMBER}]⚠",
+                "fail": f"[{AMBER}]✗", "info": f"[{MUTED}]·"}
+        lines = [head]
+        for c in pf.checks:
+            lines.append(f"  {mark[c.status]} {escape(c.text)}[/]")
+            if c.fix:
+                lines.append(f"    [{LAVENDER}]fix: {escape(c.fix)}[/]")
+        if pf.ok:
+            how = "verified" if pf.ctx_verified else "local default"
+            lines.append(f"  [{MUTED}]✓ rocky context_window → "
+                         f"{pf.context_window:,} ({how}) — compaction paced "
+                         f"to the local window[/]")
+        else:
+            lines.append(f"  [{MUTED}]fix the ✗ line, then: "
+                         f"[{LAVENDER}]/model {escape(eid)}:{escape(pf.model)}[/][/]")
+        return "\n".join(lines)
+
     def _model_cost_note(self, model: str) -> str:
         """One-line API-fee reminder for a just-switched model: its input/output
         rate in the session currency, or a nudge to set it. All pricing is
         per-token API fee (not membership/plan) — the ledger prices each turn by
         the model that produced it."""
         sym = "¥" if self._currency == "cny" else "$"
+        if model in self._ledger.free_models:
+            return (f"[dim]· {escape(model)} runs on this machine — $0 API fee, "
+                    f"as private as your disk[/]")
         if self._ledger.priced(model):
             r = self._ledger.rate(model, self._currency)
             body = (f"[dim]· {escape(model)} · API fee {sym}{r['in_miss']:.4g} in / "
@@ -1940,6 +2536,7 @@ class RockyCodeApp(App):
         prompt; the local dream reads it later (self-evolve phase 0)."""
         from rockycode.tui.exitsheet import NEVER, ExitSheet
 
+        self.engine.loops_at_exit = len(self._loops.live())  # the exit card says so
         if self._exit_sheet_open:
             # A second /exit or ctrl+q while the sheet waits = "skip, leave now".
             if self._exit_sheet_fut is not None and not self._exit_sheet_fut.done():
@@ -2009,8 +2606,11 @@ class RockyCodeApp(App):
                     # Model limits take effect on the live engine at once; other
                     # keys (currency/theme/language) are read at startup.
                     if parts[1] in ("context_window", "max_tokens"):
-                        setattr(self.engine, parts[1], v)
-                        note = "applied now"
+                        # a number pins the limit across /model switches;
+                        # 0 unpins it → back to the active model's registry value
+                        self.engine.set_limit(parts[1], v)
+                        note = ("applied now — pinned across /model" if v
+                                else f"applied now — follows the model ({getattr(self.engine, parts[1]):,})")
                     elif parts[1] == "exit_sheet":
                         self._exit_sheet = v
                         note = "applied now"
@@ -2097,6 +2697,8 @@ class RockyCodeApp(App):
             await self._handle_plan(text)
         elif cmd == "/goal":
             self._handle_goal(text)  # worker: probes Docker without blocking the pump
+        elif cmd in ("/loop", "/cron"):
+            await self._handle_loop(text)
         elif cmd == "/sandbox":
             self._handle_sandbox(text)  # worker; don't block the pump
         elif cmd == "/lsp":
@@ -2145,25 +2747,20 @@ class RockyCodeApp(App):
                 await self._add(Static(
                     f"[bold {VIOLET}]effort[/] [dim](how hard i think — this session)[/]\n"
                     f"  now: {self._effort_note()}\n"
-                    f"  [dim]/effort off | high | xhigh | max — off skips thinking; "
-                    f"xhigh = max on deepseek, its own tier elsewhere[/]",
+                    f"  [dim]/effort off | low | high | max — off skips thinking (a model that "
+                    f"can't: its lowest tier); each provider's own tiers come from the registry[/]",
                     classes="tool-line"))
         elif cmd == "/model":
             await self._handle_model(text)
         elif cmd == "/permission":
             parts = text.split()
             if len(parts) >= 2 and parts[1].lower() in ("yolo", "ask", "careful"):
-                self._set_permission_mode(parts[1].lower())
-                await self._add(Static(
-                    f"[{VIOLET}]✦ permission → {self._permission_note()}[/]",
-                    classes="tool-line"))
-                await self._maybe_nudge_yolo_host()  # switching TO yolo on the host
+                await self._apply_permission_switch(parts[1].lower())
             else:
-                await self._add(Static(
-                    f"[bold {VIOLET}]permission[/] [dim](this session — /config persists)[/]\n"
-                    f"  now: {self._perm_chip()}\n"
-                    f"  [dim]/permission yolo|ask|careful[/]",
-                    classes="tool-line"))
+                # Bare (or a typo'd mode) → the picker, same as clicking the
+                # chip: it shows the three modes and what each one allows,
+                # instead of a help line you have to translate yourself.
+                self.open_permission_picker()
         else:
             await self._add(
                 Static(
@@ -2175,7 +2772,8 @@ class RockyCodeApp(App):
     def _gather_host_tools(self) -> dict:
         """Return tools that should stay on the host (not enter the sandbox)."""
         host_names = {"web_search", "web_research", "web_fetch", "create_artifact",
-                      "lsp_lookup", "lsp_symbol_search", "lsp_file_symbols", "lsp_diagnostics"}
+                      "lsp_lookup", "lsp_symbol_search", "lsp_file_symbols", "lsp_diagnostics",
+                      "loop_start", "loop_stop"}
         if self._local_registry is None:
             return {}
         return {k: v for k, v in self._local_registry.items() if k in host_names}
@@ -2439,15 +3037,19 @@ class RockyCodeApp(App):
             # "once/always" but the switch is /config image_route ask|cli|….
             from rockycode.config import load as load_config
             route = load_config(self.engine.workdir)["image_route"]
+            from rockycode.engine import vision as vision_mod
+            eyes = vision_mod.sidecar_choice(load_config(self.engine.workdir)["image_provider"])
             how = {
                 "cli": "your image CLI will describe it on send",
                 "provider": "a vision provider will describe it on send",
                 "off": "image_route is off — the model is only told it exists",
-            }.get(route, "on send you'll pick a route (a vision provider / your image CLI)")
+                "ask": "on send you'll pick a route (a vision provider / your image CLI)",
+            }.get(route, (f"{eyes.model} will describe it on send" if eyes is not None
+                          else "no vision route yet — the model is only told it exists"))
             await self._add(Static(
-                f"[{MUTED}]· {escape(self.engine.model)} can't see images itself — {how} · "
-                f"[/][{LAVENDER}]/config image_route ask|provider|cli|off[/]"
-                f"[{MUTED}] · [/][{LAVENDER}]/model[/]",
+                f"[{MUTED}]· {escape(self.engine.model)} can't see images itself — {escape(how)} · "
+                f"[/][{LAVENDER}]/model deepseek-flash[/][{MUTED}] sees them · "
+                f"[/][{LAVENDER}]/config image_route auto|ask|provider|cli|off[/]",
                 classes="tool-line"))
 
     async def _route_images(self, text: str, images: list[str]) -> list:
@@ -2469,7 +3071,8 @@ class RockyCodeApp(App):
         if route == "provider" and choice is None:
             await self._add(Static(
                 f"[{AMBER}]· image_route=provider but no vision endpoint is keyed — "
-                f"sending a placeholder. key one (kimi · minimax · stepfun) or /config image_route[/]",
+                f"sending a placeholder. key one (deepseek · kimi · minimax · glm · qwen · mimo · stepfun) "
+                f"or /config image_route auto[/]",
                 classes="tool-line"))
             return images
         if route == "cli" and not template:
@@ -2478,14 +3081,30 @@ class RockyCodeApp(App):
                 f"set it: [/][{LAVENDER}]/config image_cli mmx[/]",
                 classes="tool-line"))
             return images
+        if route == "auto":
+            # the smooth path: no picker — the registry's sidecar (deepseek-flash
+            # on the home key) describes silently; your CLI if you set one;
+            # otherwise one line saying how to get eyes, and the turn proceeds.
+            if template:
+                route = "cli"
+            elif choice is not None:
+                route = "provider"
+            else:
+                await self._add(Static(
+                    f"[{AMBER}]· {escape(self.engine.model)} can't see images and nothing can describe "
+                    f"them yet — sending a placeholder.[/] [dim]give it eyes:[/] "
+                    f"[{LAVENDER}]/model deepseek-flash[/] [dim]· or[/] "
+                    f"[{LAVENDER}]/config image_cli mmx[/]",
+                    classes="tool-line"))
+                return images
         if route == "ask":
             if choice is None and not template:
                 await self._add(Static(
                     f"[{AMBER}]· {escape(self.engine.model)} can't see images and no route is set up. "
                     f"three ways:[/]\n"
-                    f"  [dim]· switch to a vision model →[/] [{LAVENDER}]/model deepseek-v4-flash-vision-exp[/] "
-                    f"[dim](your existing key; other vision providers: kimi · minimax · stepfun, "
-                    f"pin one: /config image_provider minimax-cn:minimax-m3)[/]\n"
+                    f"  [dim]· switch to a vision model →[/] [{LAVENDER}]/model deepseek-flash[/] "
+                    f"[dim](your existing key; other vision providers: kimi · minimax · glm · qwen · mimo · stepfun, "
+                    f"pin one: /config image_provider kimi:kimi-k3)[/]\n"
                     f"  [dim]· use a vision CLI →[/] [{LAVENDER}]/config image_cli mmx[/] "
                     f"[dim](or a full command template with {{path}})[/]\n"
                     f"  [dim]· or continue text-only — the model is told an image exists[/]",
@@ -2499,7 +3118,7 @@ class RockyCodeApp(App):
                 if not err:
                     await self._add(Static(
                         f"[{VIOLET}]✦ saved: image_route = {picked}[/] "
-                        f"[dim]— /config image_route ask to be asked again[/]",
+                        f"[dim]— /config image_route auto for the silent default, ask to be asked[/]",
                         classes="tool-line"))
             if picked == "skip":
                 return images
@@ -2582,6 +3201,11 @@ class RockyCodeApp(App):
             await self._add(Static(
                 f"  [{LAVENDER}]❖ {len(images)} image{'s' if len(images) > 1 else ''}[/] "
                 f"[dim]{escape(names)}[/]", classes="tool-line"))
+        if self._tick_loop is not None:
+            lp = self._tick_loop
+            await self._add(Static(
+                f"[{MUTED}]· loop #{lp.id} tick {lp.ticks} interrupted by your message — it fires "
+                f"again in {cron_mod.fmt_duration(lp.interval_s)}[/]", classes="tool-line"))
         self._turn_worker = self._run_turn(text, images)
 
     @work(group="shell", exclusive=True, exit_on_error=False)
@@ -2733,9 +3357,9 @@ class RockyCodeApp(App):
             elif isinstance(ev, ContextReminder):
                 await self._add(
                     Static(
-                        f"  [dim]◐ context at ~{ev.pct:.0%} — DeepSeek V4 is sharpest under half. "
-                        f"type [/][{LAVENDER}]/clear[/][dim] to start fresh, or keep going "
-                        f"(auto-compacts near full).[/]",
+                        f"  [dim]◐ context at ~{ev.pct:.0%} of {fmt_tokens(ev.window)} — models get "
+                        f"sloppier past the half. type [/][{LAVENDER}]/clear[/][dim] to start "
+                        f"fresh, or keep going (auto-compacts near full).[/]",
                         classes="tool-line",
                     )
                 )
@@ -2872,8 +3496,15 @@ class RockyCodeApp(App):
         # request inside cost().
         amt = self._ledger.cost(self._currency)
         sym = "¥" if self._currency == "cny" else "$"
-        note = "" if self._ledger.configured(self._currency) else " [dim](prices unset)[/]"
         t = self._ledger.totals()
+        if self._ledger.all_free():
+            # every turn ran on this machine: $0 by design, and the cache-rate
+            # story is an API-provider thing — say `local` instead.
+            self.query_one("#total", Static).update(
+                f"[{MUTED}]Σ $0 · {t['prompt']:,} in · "
+                f"{t['completion']:,} out · local[/]")
+            return
+        note = "" if self._ledger.configured(self._currency) else " [dim](prices unset)[/]"
         rate = (t["hit"] / t["prompt"] * 100) if t["prompt"] else 0.0
         self.query_one("#total", Static).update(
             f"[{MUTED}]Σ {sym}{amt:.4f} · {t['prompt']:,} in · "

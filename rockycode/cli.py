@@ -193,33 +193,39 @@ def chat(
     ),
     web: bool = typer.Option(
         True, "--web/--no-web",
-        help="Enable web_search/web_research/web_fetch tools (search runs on DeepSeek's "
-             "Anthropic endpoint; env: ROCKYCODE_SEARCH_MODEL, ROCKYCODE_SEARCH_ORDER).",
+        help="Enable web_search/web_research/web_fetch tools (native search runs on "
+             "the registry's search model — deepseek-flash — via DeepSeek's Anthropic "
+             "endpoint; env: ROCKYCODE_SEARCH_MODEL, ROCKYCODE_SEARCH_ORDER).",
     ),
     thinking: bool = typer.Option(
         _env_bool("ROCKYCODE_THINKING", True),
         "--thinking/--no-thinking",
-        help="Enable DeepSeek thinking mode (env: ROCKYCODE_THINKING).",
+        help="Enable the model's thinking mode (env: ROCKYCODE_THINKING). A model "
+             "that can't switch it off gets its lowest effort tier instead.",
     ),
     reasoning_effort: str = typer.Option(
         os.getenv("ROCKYCODE_REASONING_EFFORT", "max"),
         "--reasoning-effort",
-        help="Reasoning depth when thinking is on: high | xhigh | max. The dial is "
-             "provider-neutral; DeepSeek only knows high/max, so xhigh sends max "
-             "(env: ROCKYCODE_REASONING_EFFORT).",
+        help="Reasoning depth when thinking is on: low | high | max. The dial is "
+             "provider-neutral — each provider's own tiers come from the model "
+             "registry and the dial is clamped onto them at the wire (xhigh is "
+             "still accepted and means max; env: ROCKYCODE_REASONING_EFFORT).",
     ),
     max_tokens: int = typer.Option(
-        _env_int("ROCKYCODE_MAX_TOKENS", 384_000),
+        _env_int("ROCKYCODE_MAX_TOKENS", 0),
         "--max-tokens",
-        help="Max output tokens per call, incl. thinking/CoT (default = DeepSeek V4's "
-             "384K max, so it never truncates; env: ROCKYCODE_MAX_TOKENS).",
+        help="Max output tokens per call, incl. thinking/CoT. 0 (default) = the "
+             "active model's real cap from the registry (deepseek-flash: 384K), so "
+             "it never truncates and follows /model switches; a number is your own "
+             "ceiling (env: ROCKYCODE_MAX_TOKENS; config max_tokens).",
     ),
     context_window: int = typer.Option(
-        _env_int("ROCKYCODE_CONTEXT_WINDOW", 1048576),
+        _env_int("ROCKYCODE_CONTEXT_WINDOW", 0),
         "--context-window",
-        help="Model context window in tokens (DeepSeek V4 = 1M). Soft reminder at "
-             "50% (V4 degrades past the half); auto-compacts near full (env: "
-             "ROCKYCODE_CONTEXT_WINDOW).",
+        help="Model context window in tokens. 0 (default) = the active model's "
+             "registry value (most current models: 1M). Soft reminder at 50%; "
+             "auto-compacts near full (env: ROCKYCODE_CONTEXT_WINDOW; config "
+             "context_window).",
     ),
     sandbox: bool = typer.Option(
         False, "--sandbox/--no-sandbox",
@@ -266,8 +272,8 @@ def chat(
         fail(console, "no model. pass --model, set ROCKYCODE_MODEL in .env, or "
              "`rockycode config model <spec>`.")
         raise typer.Exit(1)
-    if reasoning_effort not in {"high", "xhigh", "max"}:
-        fail(console, f"invalid --reasoning-effort '{reasoning_effort}'. use high, xhigh, or max.")
+    if reasoning_effort not in {"low", "high", "max", "xhigh"}:
+        fail(console, f"invalid --reasoning-effort '{reasoning_effort}'. use low, high, or max.")
         raise typer.Exit(1)
 
     # Textual requests the kitty keyboard protocol (report-all-keys); iTerm2
@@ -386,8 +392,9 @@ def chat(
         model=model,
         thinking=thinking,
         reasoning_effort=reasoning_effort,
-        max_tokens=max_tokens,
-        context_window=context_window,
+        # flag/env → config → the model's own registry limits (None)
+        max_tokens=max_tokens or cfg["max_tokens"] or None,
+        context_window=context_window or cfg["context_window"] or None,
         max_steps=max_steps,
         workdir=wd,
         allowed_roots=allowed_roots,
@@ -414,6 +421,12 @@ def chat(
         from rockycode.engine.skills import build_skill_tool
         tool = build_skill_tool(skill_list)
         engine.registry[tool.name] = tool
+    # rocky configures rocky: a tool that edits rocky's OWN settings (config
+    # keys, own base URLs, custom providers) under ~/.rockycode — ask-tier,
+    # never a key. Pairs with the built-in `rocky-setup` skill.
+    from rockycode.engine.selfconfig import build_selfconfig_tool
+    _sc = build_selfconfig_tool(wd)
+    engine.registry[_sc.name] = _sc
     engine.memory_store = mem_store
     if mem_store is not None:
         from rockycode.memory import build_memory_tools
@@ -531,6 +544,14 @@ def chat(
         from rockycode.engine.explore import build_explore_tool
         engine.registry.update(build_explore_tool(engine))
 
+    # Loops (/loop — engine/cron.py): loop_start / loop_stop let rocky set up a
+    # check-in from one sentence ("check every 10 minutes whether it finished").
+    # Session state, not files — host tools, registered after any sandbox swap
+    # so they survive it; the TUI attaches its receipt hook at mount.
+    from rockycode.engine.cron import LoopBook, build_loop_tools
+    engine.loop_book = LoopBook(currency=cfg["currency"])
+    engine.registry.update(build_loop_tools(engine.loop_book))
+
     # Finalize the system prompt now that the registry is complete: the tools
     # section is GENERATED from what actually registered (the old hand-written
     # sentence advertised web/artifact tools in bench and under --no-web where
@@ -592,6 +613,10 @@ def _print_exit_card(engine) -> None:
     )
     console.print(f"  resume it:  [cyan]rockycode --resume {sid}[/]")
     console.print("  or browse:  [cyan]rockycode --resume[/]")
+    n = getattr(engine, "loops_at_exit", 0)
+    if n:
+        console.print(f"  [dim]⏱ {n} loop{'s' if n != 1 else ''} ended with the session — "
+                      f"loops live only while rocky runs[/]")
 
 
 # exec's local error exit — mirrors headless.EXIT_ERROR without importing the
@@ -616,9 +641,24 @@ def exec_cmd(
     model: Optional[str] = typer.Option(None, help="Model ID. Defaults to ROCKYCODE_MODEL env."),
     image: Optional[List[Path]] = typer.Option(
         None, "--image",
-        help="Image file to attach to the task (repeatable). Requires a "
-             "vision-capable model/endpoint (stepfun · minimax-m3 · kimi-k3); "
-             "sent as a base64 data URL, the one form every provider accepts.",
+        help="Image file to attach to the task (repeatable). Needs a vision-capable "
+             "model (deepseek-flash sees; so do kimi-k3, minimax-m3, glm-5.3-flash, "
+             "qwen3.8-*, mimo-v2.6-pro, step-5-preview); sent as a base64 data URL.",
+    ),
+    profile: str = typer.Option(
+        "full", "--profile",
+        help="What rocky may do: read (read_file/grep/glob/view_image only — no "
+             "shell, no writes, no Docker needed) · write (+ write_file/edit_file "
+             "jailed to --workdir/--allow-dir, still no shell, no Docker) · full "
+             "(+ bash, sandboxed in Docker by default). A calling agent that only "
+             "wants an answer or a small edit should pick read/write: sub-second "
+             "start, nothing to isolate.",
+    ),
+    events: bool = typer.Option(
+        False, "--events/--no-events",
+        help="Stream every tool.started/tool.finished/turn.* event line. Off by "
+             "default: the caller's context is the scarce resource, so stdout is "
+             "meta → text → result only (the trajectory keeps the full receipt).",
     ),
     max_steps: int = typer.Option(
         30, "--max-steps",
@@ -631,8 +671,8 @@ def exec_cmd(
     ),
     include_thinking: bool = typer.Option(
         False, "--include-thinking",
-        help="Emit DeepSeek reasoning deltas as `thinking` events (off by default — "
-             "they bloat the calling agent's context).",
+        help="Emit the model's reasoning as `thinking` events (off by default — "
+             "they bloat the calling agent's context). Implies --events.",
     ),
     originator: str = typer.Option(
         "", "--originator",
@@ -664,12 +704,16 @@ def exec_cmd(
     Exit codes: 0 done · 1 error · 2 blocked on an action needing a grant
     (result.blocked_on.grant says which) · 3 step budget spent.
 
-    Permissions are workspace-write: edits stay inside --workdir (+
-    --allow-dir roots). Destructive/irreversible commands are always refused —
+    Permissions follow --profile: read (no writes, no shell), write (edits
+    stay inside --workdir + --allow-dir roots, no shell), full (bash in a
+    Docker sandbox). Destructive/irreversible commands are always refused —
     no flag disables that. Deletes, pushes, installs, and sudo stop the run
     at exit 2; --resume + --allow to grant-and-continue land in phase 2.
     """
     err = Console(stderr=True)  # stdout belongs to the JSONL contract
+    if profile not in ("read", "write", "full"):
+        fail(err, f"--profile must be read | write | full (got {profile!r}).")
+        raise typer.Exit(EXIT_CODE_ERROR)
     try:
         require_key()
     except Exception as e:  # noqa: BLE001 — one friendly line, no traceback
@@ -737,6 +781,7 @@ def exec_cmd(
         max_steps=max_steps, originator=originator,
         include_thinking=include_thinking, output_last_message=output_last_message,
         sandbox=sandbox, network=network, err=err,
+        profile=profile, events=events or include_thinking,
     ))
     raise typer.Exit(code)
 
@@ -772,12 +817,15 @@ def pricing() -> None:
     from rockycode.pricing import (
         OVERRIDE_PATH, PRICING_SOURCE_URL, PRICING_VERIFIED, _is_peak, load_pricing,
     )
+    from rockycode.engine.providers import MODELS_TOML
     p = load_pricing()
     info(console, f"verified {PRICING_VERIFIED} · source {PRICING_SOURCE_URL}")
-    info(console, f"edit to update (no reinstall): {OVERRIDE_PATH}")
+    info(console, f"prices are registry data — add/correct a model's price in {MODELS_TOML}")
+    info(console, f"or override the assembled table in {OVERRIDE_PATH} (no reinstall)")
     console.print()
     for model, rates in p["models"].items():
-        console.print(f"  [cyan]{model}[/cyan] [dim](per 1M tokens)[/dim]")
+        sched = f" · peak schedule: {rates['peak']}" if rates.get("peak") else ""
+        console.print(f"  [cyan]{model}[/cyan] [dim](per 1M tokens{sched})[/dim]")
         for cur in ("usd", "cny"):
             r = rates.get(cur)
             if not r:
@@ -793,8 +841,9 @@ def pricing() -> None:
     if peak.get("enabled"):
         wins = ", ".join(f"{w['start']}–{w['end']}" for w in peak.get("windows_utc", []))
         active = "ACTIVE now" if _is_peak(datetime.now(timezone.utc), peak) else "not active right now"
+        days = " · Mon–Fri, CN holidays off-peak" if peak.get("weekdays_only") else ""
         console.print(
-            f"  [cyan]peak surcharge[/cyan] ×{peak.get('multiplier')} · UTC {wins} · "
+            f"  [cyan]peak surcharge (deepseek)[/cyan] ×{peak.get('multiplier')} · UTC {wins}{days} · "
             f"from {peak.get('effective_date', '?')} · [dim]{active}[/dim]"
         )
     else:
@@ -1008,13 +1057,13 @@ def bench(
     thinking: bool = typer.Option(
         _env_bool("ROCKYCODE_THINKING", True),
         "--thinking/--no-thinking",
-        help="Enable DeepSeek thinking mode (env: ROCKYCODE_THINKING).",
+        help="Enable the model's thinking mode (env: ROCKYCODE_THINKING).",
     ),
     reasoning_effort: str = typer.Option(
         os.getenv("ROCKYCODE_REASONING_EFFORT", "max"),
         "--reasoning-effort",
-        help="Reasoning depth when thinking is on: high | xhigh | max (xhigh sends "
-             "max on DeepSeek; env: ROCKYCODE_REASONING_EFFORT).",
+        help="Reasoning depth when thinking is on: low | high | max, clamped onto "
+             "the provider's own tiers at the wire (env: ROCKYCODE_REASONING_EFFORT).",
     ),
     max_tokens: int = typer.Option(
         _env_int("ROCKYCODE_MAX_TOKENS", 16384),
@@ -1024,8 +1073,8 @@ def bench(
     context_window: int = typer.Option(
         _env_int("ROCKYCODE_CONTEXT_WINDOW", 1048576),
         "--context-window",
-        help="Model context window in tokens (DeepSeek V4 = 1M). Soft reminder at "
-             "50% (V4 degrades past the half); auto-compacts near full (env: "
+        help="Model context window in tokens (pinned to 1M for reproducible bench "
+             "configs). Soft reminder at 50%; auto-compacts near full (env: "
              "ROCKYCODE_CONTEXT_WINDOW).",
     ),
     max_steps: int = typer.Option(
@@ -1050,8 +1099,8 @@ def bench(
              "`rockycode config model <spec>`.")
         raise typer.Exit(1)
 
-    if reasoning_effort not in {"high", "xhigh", "max"}:
-        fail(console, f"invalid --reasoning-effort '{reasoning_effort}'. use high, xhigh, or max.")
+    if reasoning_effort not in {"low", "high", "max", "xhigh"}:
+        fail(console, f"invalid --reasoning-effort '{reasoning_effort}'. use low, high, or max.")
         raise typer.Exit(1)
 
     # raw needs docker only for scoring; the rockycode harness always needs it
@@ -1435,10 +1484,12 @@ def serve(
         "--reasoning-effort",
     ),
     max_tokens: int = typer.Option(
-        _env_int("ROCKYCODE_MAX_TOKENS", 16384), "--max-tokens",
+        _env_int("ROCKYCODE_MAX_TOKENS", 0), "--max-tokens",
+        help="0 = the model's registry cap.",
     ),
     context_window: int = typer.Option(
-        _env_int("ROCKYCODE_CONTEXT_WINDOW", 131072), "--context-window",
+        _env_int("ROCKYCODE_CONTEXT_WINDOW", 0), "--context-window",
+        help="0 = the model's registry window.",
     ),
     max_steps: int = typer.Option(
         _env_int("ROCKYCODE_CHAT_MAX_STEPS", 0), "--max-steps",
@@ -1471,7 +1522,7 @@ def serve(
     asyncio.run(run_server(
         model=model, workdir=workdir,
         thinking=thinking, reasoning_effort=reasoning_effort,
-        max_tokens=max_tokens, context_window=context_window,
+        max_tokens=max_tokens or None, context_window=context_window or None,
         max_steps=max_steps, system_prompt=system_prompt,
     ))
 

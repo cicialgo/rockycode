@@ -1,0 +1,239 @@
+# rockycode model registry — models are DATA, the engine is generic.
+#
+# Every provider here speaks the OpenAI chat-completions protocol; the OpenAI
+# SDK is the only compatibility layer. A provider is a base URL, a key name, and
+# a reasoning WIRE SHAPE; a model is its limits, capabilities, price and roles.
+# The engine reads a ModelSpec — it carries no model-specific numbers of its own.
+#
+# Override or extend WITHOUT touching the install: ~/.rockycode/models.toml has
+# this same shape and is deep-merged on top (add a model, correct a limit, add a
+# price, `hidden = true` to drop a builtin row). ~/.rockycode/providers.toml
+# (custom OpenAI-compatible servers) and ~/.rockycode/endpoints.toml (own base
+# URLs, the picker's "custom base URL" row) keep working unchanged.
+#
+# base_url is the provider's China endpoint only — rocky no longer ships an
+# en/cn split. An international or proxy URL is one line in endpoints.toml.
+# Verified 2026-09-29 against each provider's own docs unless a `note` says
+# otherwise; correcting a value is a one-line data edit here or in the override.
+#
+# provider fields
+#   base_url      the official cn endpoint (OpenAI-compatible, ends in /v1 or /v4)
+#   key_env       rocky-OWNED env var for the key (default ROCKYCODE_<NAME>_API_KEY);
+#                 key_aliases = older names still read, so nobody's setup breaks
+#   reasoning     wire shape: thinking | effort | enable_thinking | minimax | openai | none
+#   efforts       the provider's own tiers, low→high (omit = the shape's default;
+#                 [] = send no effort field). rocky's dial off|low|high|max is
+#                 clamped onto this list at the wire.
+#   thinking_off  false = the model cannot switch thinking off (dial `off` sends
+#                 the lowest tier instead)
+#   cache_field   where usage reports prompt-cache hits:
+#                 prompt_cache_hit_tokens (DeepSeek) | cached_tokens (OpenAI-style
+#                 prompt_tokens_details)
+#   search        a provider-side web search backend, if any (deepseek: the
+#                 /anthropic sibling endpoint's server-side web_search tool)
+#   peak          name of a [peak.<name>] surcharge schedule that applies to
+#                 this provider's models
+#   plan          a subscription-plan endpoint (own URL, own key) — pickable as
+#                 <name>-plan with ROCKYCODE_<NAME>_PLAN_API_KEY
+#   aliases       old model ids → current id (legacy names keep resolving)
+# model fields
+#   context / max_output   tokens; compaction and the output clamp pace to these
+#   vision        takes image input
+#   price.usd / price.cny  per 1M tokens: in_hit · in_miss · out (each currency
+#                 from the provider's OWN table, never a conversion). Omitted =
+#                 the footer says "prices unset" — honest, never a guess.
+#   roles         default = the pick for a bare `/model <provider>` (first model
+#                 wins too) · sidecar = the cheap model for titles / image
+#                 describe / search on the home key · search = the model the
+#                 native web_search backend calls
+#   hidden        true = drop this row (an override hiding a builtin)
+
+schema = 1
+
+# ── DeepSeek — rocky's home provider (rides ROCKYCODE_API_KEY) ───────────────
+[providers.deepseek]
+label = "DeepSeek"
+base_url = "https://api.deepseek.com/v1"
+key_env = "ROCKYCODE_API_KEY"
+reasoning = "thinking"
+efforts = ["low", "high", "max"]
+thinking_off = true
+cache_field = "prompt_cache_hit_tokens"
+search = "anthropic"
+peak = "deepseek"
+
+[providers.deepseek.aliases]
+# retired 2026-09-10: DeepSeek still accepts the names and serves them with
+# V4.1-Flash at Flash rates — rocky maps them so old configs keep working.
+"deepseek-v4-flash" = "deepseek-flash"
+"deepseek-v4-flash-vision-exp" = "deepseek-flash"
+
+[models."deepseek-flash"]
+provider = "deepseek"
+label = "V4.1 Flash — rocky's home model"
+context = 1048576
+max_output = 384000
+vision = true
+roles = ["default", "sidecar", "search"]
+note = "DeepSeek-V4.1-Flash (2026-09-10): native image input, thinking optional (on by default)"
+[models."deepseek-flash".price]
+usd = { in_hit = 0.003, in_miss = 0.15, out = 0.60 }
+cny = { in_hit = 0.02, in_miss = 1.0, out = 4.0 }
+
+[models."deepseek-v4-pro"]
+provider = "deepseek"
+label = "V4 Pro — text only · routes to V4.1-Flash at Flash rates until V4.1-Pro ships"
+context = 1048576
+max_output = 384000
+vision = false
+note = "since 2026-09-14 every request is served by V4.1-Flash and billed at Flash rates; the listed price is the standing Pro table"
+[models."deepseek-v4-pro".price]
+usd = { in_hit = 0.022, in_miss = 0.66, out = 1.98 }
+cny = { in_hit = 0.15, in_miss = 4.5, out = 13.5 }
+
+# ── GLM / Zhipu (bigmodel.cn) ────────────────────────────────────────────────
+[providers.glm]
+label = "GLM (bigmodel.cn)"
+base_url = "https://open.bigmodel.cn/api/paas/v4"
+key_env = "ROCKYCODE_GLM_API_KEY"
+key_aliases = ["ROCKYCODE_GLM_CN_API_KEY", "ROCKYCODE_ZAI_EN_API_KEY"]
+reasoning = "thinking"
+efforts = ["low", "high", "max"]
+thinking_off = false
+cache_field = "cached_tokens"
+
+[models."glm-5.3"]
+provider = "glm"
+label = "GLM-5.3 — text only, thinking always on"
+context = 1048576
+max_output = 131072
+vision = false
+
+[models."glm-5.3-flash"]
+provider = "glm"
+label = "GLM-5.3-Flash — native multimodal"
+context = 1048576
+max_output = 131072
+vision = true
+
+# ── Kimi / Moonshot ──────────────────────────────────────────────────────────
+[providers.kimi]
+label = "Kimi / Moonshot"
+base_url = "https://api.moonshot.cn/v1"
+key_env = "ROCKYCODE_KIMI_API_KEY"
+key_aliases = ["ROCKYCODE_KIMI_CN_API_KEY", "ROCKYCODE_KIMI_EN_API_KEY"]
+reasoning = "effort"
+efforts = ["low", "high", "max"]
+thinking_off = false
+cache_field = "cached_tokens"
+
+[models."kimi-k3"]
+provider = "kimi"
+label = "Kimi K3 — image + video input, thinking always on"
+context = 1048576
+max_output = 131072
+vision = true
+note = "max_output is the documented default (131072); the API accepts up to 1048576"
+
+# ── MiniMax ──────────────────────────────────────────────────────────────────
+[providers.minimax]
+label = "MiniMax"
+base_url = "https://api.minimaxi.com/v1"
+key_env = "ROCKYCODE_MINIMAX_API_KEY"
+key_aliases = ["ROCKYCODE_MINIMAX_CN_API_KEY", "ROCKYCODE_MINIMAX_EN_API_KEY"]
+reasoning = "minimax"
+cache_field = "cached_tokens"
+
+[models."minimax-m3"]
+provider = "minimax"
+label = "MiniMax M3 — image + video input, adaptive thinking"
+context = 1048576
+max_output = 131072
+vision = true
+note = "docs spell the id MiniMax-M3; the endpoint accepts the lowercase form rocky's bench runs used. max_completion_tokens up to 524288"
+
+# ── StepFun ──────────────────────────────────────────────────────────────────
+[providers.stepfun]
+label = "StepFun"
+base_url = "https://api.stepfun.com/v1"
+key_env = "ROCKYCODE_STEPFUN_API_KEY"
+reasoning = "openai"
+efforts = ["low", "medium", "high"]
+thinking_off = false
+cache_field = "cached_tokens"
+
+[providers.stepfun.plan]
+label = "Step Plan"
+base_url = "https://api.stepfun.com/step_plan/v1"
+key_env = "ROCKYCODE_STEPFUN_PLAN_API_KEY"
+
+[models."step-5-preview"]
+provider = "stepfun"
+label = "Step 5 Preview — image + video input"
+context = 1000000
+max_output = 65536
+vision = true
+note = "plan URL mirrors the documented intl path (api.stepfun.ai/step_plan/v1) on the cn host — verify on first call"
+
+# ── Qwen / Alibaba Model Studio (Bailian) ────────────────────────────────────
+[providers.qwen]
+label = "Qwen (Model Studio / 百炼)"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+key_env = "ROCKYCODE_QWEN_API_KEY"
+reasoning = "enable_thinking"
+cache_field = "cached_tokens"
+
+[providers.qwen.plan]
+label = "Bailian Token Plan"
+base_url = "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+key_env = "ROCKYCODE_QWEN_PLAN_API_KEY"
+
+[models."qwen3.8-max"]
+provider = "qwen"
+label = "Qwen3.8 Max — image + video input"
+context = 1048576
+max_output = 65536
+vision = true
+note = "the dated snapshot is qwen3.8-max-0902; max_output unverified — lower it here if the endpoint rejects it"
+
+[models."qwen3.8-flash"]
+provider = "qwen"
+label = "Qwen3.8 Flash — multimodal, fast"
+context = 1048576
+max_output = 65536
+vision = true
+
+# ── Xiaomi MiMo ──────────────────────────────────────────────────────────────
+[providers.mimo]
+label = "Xiaomi MiMo"
+base_url = "https://api.xiaomimimo.com/v1"
+key_env = "ROCKYCODE_MIMO_API_KEY"
+reasoning = "thinking"
+efforts = []
+thinking_off = true
+cache_field = "cached_tokens"
+
+[providers.mimo.plan]
+label = "MiMo Token Plan"
+base_url = "https://token-plan-cn.xiaomimimo.com/v1"
+key_env = "ROCKYCODE_MIMO_PLAN_API_KEY"
+
+[models."mimo-v2.6-pro"]
+provider = "mimo"
+label = "MiMo-V2.6-Pro — omni input (image · video · audio)"
+context = 1048576
+max_output = 131072
+vision = true
+note = "thinking.type enabled|disabled is documented; reasoning_effort is not, so none is sent. Docs' curl examples show an `api-key` header — if Bearer auth is rejected, report it"
+
+# ── peak-hour surcharge schedules ────────────────────────────────────────────
+[peak.deepseek]
+# DeepSeek peak-valley pricing: peak = 2x base during Beijing 9:00–12:00 and
+# 14:00–18:00 (UTC 01:00–04:00, 06:00–10:00), Monday–Friday, excluding Chinese
+# public holidays (weekends + holidays bill off-peak). Verified 2026-09-29.
+enabled = true
+multiplier = 2.0
+effective_date = "2026-07-15"
+windows_utc = [{ start = "01:00", end = "04:00" }, { start = "06:00", end = "10:00" }]
+weekdays_only = true
+holidays = []   # ISO dates (Beijing) — maintain in ~/.rockycode/models.toml or pricing.toml

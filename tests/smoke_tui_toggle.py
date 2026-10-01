@@ -104,7 +104,7 @@ async def main():
         await enter(pilot, app, "/permission ask")
         await pilot.pause(0.2)
         assert app._permission_mode == "ask", "toggle did not apply"
-        assert "ask" in str(app.query_one("#cwd", Static).render()), "chip not refreshed"
+        assert "ask" in str(app.query_one("#permchip", Static).render()), "chip not refreshed"
 
         # Now the SAME risky tool prompts.
         before = ran["n"]

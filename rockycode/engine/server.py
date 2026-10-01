@@ -385,8 +385,8 @@ async def run_server(
     workdir: Path,
     thinking: bool = True,
     reasoning_effort: str = "max",
-    max_tokens: int = 16384,
-    context_window: int = 131072,
+    max_tokens: int | None = None,      # None = the model's registry cap
+    context_window: int | None = None,  # None = the model's registry window
     max_steps: int = 0,
     system_prompt: str = "",
 ) -> None:

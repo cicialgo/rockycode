@@ -131,8 +131,8 @@ SSH 远程会话下剪贴板走 OSC 52 —— 在本地端开启「允许应用�
 | `/research` | 研究模式：deep-research · paper-reading · whiteboard · prove |
 | `/learn` | 导师模式 —— 目标是你的理解，而不是 diff |
 | `/model` | 切换提供商与模型（见下） |
-| `/effort off\|high\|xhigh\|max` | 推理深度，会话内实时可调 |
-| `/permission yolo\|ask\|careful` | 本次会话的工具审批严格度 |
+| `/effort off\|low\|high\|max` | 推理深度，会话内实时可调（按位置收敛到各提供商自己的档位） |
+| `/permission yolo\|ask\|careful` | 本次会话的工具审批严格度 —— 不带参数打开选择器；也可按 `shift+tab` 循环切换，或点击状态栏的 🔒 标记 |
 | `/sandbox on\|off\|status` | 把工具执行隔离进容器 |
 | `/lsp` | 语言服务器状态；诊断信息随 `read_file` 一并返回 |
 | `/artifact` | 本会话的 artifact：`list` · `open <n>` · `stop` · `live on\|off` |
@@ -161,34 +161,72 @@ SSH 远程会话下剪贴板走 OSC 52 —— 在本地端开启「允许应用�
 
 ### 模型与提供商
 
-DeepSeek 是主场模型，但提供商是数据而非代码：每个提供商就是一个 base URL、
-一份模型列表、一个 key 环境变量，和 OpenAI 兼容 API 之上的推理参数形状。
+DeepSeek 是主场模型，但**模型是数据而非代码**：整份目录都在
+`rockycode/models.toml` 里 —— 每个提供商一个国内 base URL、一个 key 名、
+一种推理参数形状；每个模型有自己的上下文窗口、最大输出、视觉标记、价格与
+角色。引擎只读这份 spec，自身不带任何模型专属数字，所以新增一个模型只是改
+数据。你自己的 `~/.rockycode/models.toml`（同样形状）会深度合并在上面：加
+模型、改上限、补价格、隐藏某一行。
 
-| 提供商 | 模型（❖ = 支持图片输入） |
-|---|---|
-| **deepseek**（默认） | `deepseek-v4-flash`（默认）、`deepseek-v4-pro`（preview）、`deepseek-v4-flash-vision-exp` ❖ |
-| **minimax** | `minimax-m3` ❖ |
-| **kimi** | `kimi-k3` ❖ |
-| **stepfun** | `step-3.7-flash` ❖ |
-| **glm** | `glm-5.2` |
+| 提供商 | 模型（❖ = 支持图片输入） | 上下文 / 最大输出 |
+|---|---|---|
+| **deepseek**（默认） | `deepseek-flash`（V4.1 Flash，默认）❖、`deepseek-v4-pro` | 1M / 384K |
+| **glm** | `glm-5.3`、`glm-5.3-flash` ❖ | 1M / 128K |
+| **kimi** | `kimi-k3` ❖ | 1M / 128K |
+| **minimax** | `minimax-m3` ❖ | 1M / 128K |
+| **stepfun** | `step-5-preview` ❖ | 1M / 64K |
+| **qwen** | `qwen3.8-max` ❖、`qwen3.8-flash` ❖ | 1M / 64K |
+| **mimo** | `mimo-v2.6-pro` ❖ | 1M / 128K |
+| **ollama**（本地，$0） | 你拉取过什么就是什么 —— 从运行中的服务实时发现 | 以服务端实测为准 |
 
-`/model` 选择器**先选模型**（每个模型一行）；选中的模型如果有多个端点，再问
-由哪个 URL 提供服务（`kimi-cn` / `kimi-en` / …），其中「custom base URL」一行
-可以填你自己的网关或代理，按提供商记住（`~/.rockycode/endpoints.toml`，
-以 `<提供商>-custom` 寻址）。直接输入 spec 可以跳过这一切：
-`/model kimi-cn:kimi-k3`。自定义提供商 —— 包括本地 vLLM/SGLang 服务 ——
-写进 `~/.rockycode/providers.toml`；选择器只展示已配置好 key 的提供商。
+每个提供商只有一个国内端点（key 名 `ROCKYCODE_<提供商>_API_KEY`；旧的
+`_CN_`/`_EN_` 名字仍然能读）。自带 URL 与 key 的订阅套餐单独成行 ——
+`qwen-plan`（百炼 Token Plan）、`mimo-plan`、`stepfun-plan` —— key 名为
+`ROCKYCODE_<提供商>_PLAN_API_KEY`。`/model` 选择器**先选模型**（每个模型
+一行）；选中的模型如果有多个端点，再问由哪个 URL 提供服务（官方 · 套餐 ·
+你自己的），其中「custom base URL」一行可以填你自己的网关或代理，按提供商
+记住（`~/.rockycode/endpoints.toml`，以 `<提供商>-custom` 寻址）。直接输入
+spec 可以跳过这一切：`/model glm:flash`、`/model qwen-plan:qwen3.8-max`。已
+下线的 `deepseek-v4-flash` / `-vision-exp` 名字仍可解析（落到
+`deepseek-flash`，与 DeepSeek 自己的路由一致）。选择器只展示已配置好 key
+的提供商。
 
-视觉能力按「模型」而非「提供商」区分：`deepseek-v4-flash-vision-exp` 用
-flash 同一个 key 就能识图。以后哪个已有型号补上了视觉，在任何 shell 里一行
-翻开即可 —— `rockycode config vision_models <模型 id>` —— 无需升级；
-`rockycode config model <spec>` 则把任意选择固化为启动默认。DeepSeek 与
-MiniMax 都有完整 500 题的 bench 成绩（见上方「能力量化」）；Kimi、StepFun
-与 GLM 属于[实验性功能](#实验性功能)。
+视觉能力按「模型」区分：`deepseek-flash` 用主 key 就能识图，默认会话贴图即
+用。纯文本模型（`deepseek-v4-pro`、`glm-5.3`）收到的贴图会由
+`deepseek-flash` 静默描述（`image_route auto`），或交给你自己的 CLI。
+`rockycode config model <spec>` 把任意选择固化为启动默认。上下文窗口与最大
+输出跟随当前模型（配置 `context_window` / `max_tokens` = `0`）；填一个数字
+则是你自己的上限，切换模型也不变。DeepSeek 与 MiniMax 都有完整 500 题的
+bench 成绩（见上方「能力量化」）；其余提供商属于[实验性功能](#实验性功能)。
 
-推理深度旋钮（`/effort off|high|xhigh|max`）与提供商无关；各提供商在请求层
-把它映射到自己的档位（例如 DeepSeek 只区分 `high|max`，`xhigh` 会收敛为
-`max`）。
+推理深度旋钮（`/effort off|low|high|max`）与提供商无关；各提供商自己的档位
+来自注册表，旋钮在请求层按位置收敛到它们上面（StepFun 的
+`low|medium|high` 里 rocky 的 `high` 对应 `medium`；GLM 与 Kimi 关不掉
+thinking，`off` 会发它们的最低档）。`xhigh` 仍然接受，等于 `max`。
+
+rocky 也能配置它自己：告诉它「用我的代理」「加上我的 vLLM 服务」「换默认
+模型」，内置的 `rocky-setup` 技能加上需要确认的 `rocky_config` 工具就会在
+`~/.rockycode` 下完成修改。唯一不碰的是 key —— 它只告诉你变量名，值由你
+自己粘贴。
+
+#### 本地模型（Ollama）
+
+rocky 集成的是 OpenAI 兼容*协议*，而不是某个运行时 —— 推荐
+[Ollama](https://ollama.com)（0.19 起在 Apple Silicon 上用 MLX 引擎）。
+无需 key、无需配置：`ollama serve` 跑起来，拉一个支持工具调用的模型
+（推荐并实测过 `ollama pull qwen3.8:27b-mlx`），它就会出现在 `/model`
+里 —— 列表是实时发现的、按 `$0 · local` 计价。
+
+切到本地模型前会先跑一遍**就绪预检** —— 服务在不在、模型拉没拉、支不支持
+工具调用、serving 上下文够不够 —— 有问题就拒绝切换，并给出确切的修复命令
+（`ollama pull …`、`export OLLAMA_CONTEXT_LENGTH=65536`）。最要紧的一条：
+Ollama 默认上下文很小且**静默截断**，agent 会话会以莫名其妙的方式挂掉 ——
+请用 `OLLAMA_CONTEXT_LENGTH=65536` 启动。每次切换 rocky 都会把自己的
+`context_window` 对齐到服务端已验证的值。
+
+其它本地服务（LM Studio、llama.cpp、vLLM）同样只是数据：在
+`~/.rockycode/providers.toml` 里给提供商加一行 `local = true`，
+它的端点就免 key。
 
 ## 自主运行
 
@@ -217,10 +255,23 @@ rockycode goal "给 <fn> 加一段 docstring 并跑 linter" --max-usd 0.50 --max
 ### 自动委托：`exec`
 
 `rockycode exec "<任务>"` 是单次、非交互的入口，专为被*其他*智能体和脚本
-调用而设计。事件以 JSONL 流式输出到 stdout；Docker 沙箱**默认开启**
-（命令分类器只是纵深防御，不是边界）；预算始终强制生效；退出码区分
-成功、失败、待审批、预算终止 —— 调用方因此可以补上一次授权后继续，
-而不必猜测。
+调用而设计。stdout 是 JSONL：一行 `meta`、模型的 `text`、以及带证据（改过
+的文件、跑过的命令、被拒的操作）的 `result` 信封 —— 只给证据不给结论，由
+调用方自己核验；`--events` 会补上逐工具的回执行。预算始终强制生效；退出码
+区分成功、失败、待审批、预算终止 —— 调用方因此可以补上一次授权后继续，而
+不必猜测。
+
+用 `--profile` 决定 rocky 能做多少：`read`（read_file / grep / glob /
+view_image —— 无 shell、不写文件）和 `write`（多了限制在 `--workdir` 内的
+write_file / edit_file）直接在主机上运行，**不需要 Docker**，秒开 —— 这正是
+Claude Code 或 Codex 想要的「看看这个仓库告诉我」或小改动委托，用便宜又快
+的模型跑。`full` 加上 bash，**默认**在 Docker 沙箱内（命令分类器只是纵深防
+御，不是边界）。
+
+```bash
+rockycode exec --profile read "重试逻辑在哪个模块里，被哪些地方调用？"
+rockycode exec --profile write "给 utils.py 里每个公开函数补上 docstring"
+```
 
 ### 编辑器集成：`serve` 与 VS Code 扩展
 
@@ -267,11 +318,12 @@ sqlite-vec + FTS5 索引；没有 Ollama 则平滑退化为关键词检索。删
 - **`explore` —— 只读委派。** chat 可以向一个全新上下文的子进程「购买」一次
   有界的只读调查，只拿回带引用、经机械校验的报告；搜索噪声绝不进入你的会话。
   它同样为 goal 模式的分支评审与里程碑验证提供依据。
-- **DeepSeek 以外的提供商。** MiniMax、GLM / z.ai、Kimi、StepFun 都以
-  OpenAI 兼容的 profile 接入（`/model`）。DeepSeek 与 MiniMax 已有完整
-  bench 成绩（见「能力量化」）；GLM、Kimi 与 StepFun 在拿到 bench 分数前，
-  请当作未验证。`deepseek-v4-flash-vision-exp` 在 DeepSeek 官方也是
-  实验性型号（2026-08-21 发布）。
+- **DeepSeek 以外的提供商。** GLM、Kimi、MiniMax、StepFun、Qwen、MiMo 都以
+  OpenAI 兼容的注册表条目接入（`/model`）。DeepSeek 与 MiniMax 已有完整
+  bench 成绩（见「能力量化」）；其余在拿到 bench 分数前请当作未验证。
+  `models.toml` 里标着 `note = "… verify …"` 的条目（MiniMax 的端点域名、
+  MiMo 的鉴权头、各套餐 URL）取自 2026-09-29 各家文档，尚未实际调用 ——
+  错了也只是改一行数据。
 
 ## 复用你已有的配置
 

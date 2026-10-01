@@ -1,15 +1,19 @@
-"""The agent loop: stream DeepSeek with native tool calls, execute tools,
-repeat until the model answers without tools. Emits Events; owns history.
+"""The agent loop: stream an OpenAI-compatible model with native tool calls,
+execute tools, repeat until the model answers without tools. Emits Events;
+owns history.
 
 Before every API call the loop projects the next prompt size (last real
 prompt_tokens + char-based estimates for newer messages) and, over the
 threshold, compacts history via compaction.py (prune → state summary).
 
-DeepSeek specifics handled here (see memory: reference_deepseek_api):
-- thinking + reasoning_effort go in extra_body
+Model-specific facts are NOT here: the context window, output cap, vision
+flag, reasoning wire shape and cache field all come from the provider
+registry (engine/providers.py ← rockycode/models.toml) as a ModelSpec, so a
+new model is a data edit. What the loop does assume of every provider:
+- reasoning params ride `extra_body` (effort.build_extra_body shapes them)
 - the stream carries delta.reasoning_content AND delta.content
-- reasoning_content must NOT be sent back in history (HTTP 400) — we only
-  ever append {role, content, tool_calls} for assistant turns
+- reasoning_content is never sent back in history — we only ever append
+  {role, content, tool_calls} for assistant turns
 - usage extras (cache hit/miss) are read via model_dump()
 """
 from __future__ import annotations
@@ -30,6 +34,7 @@ from rockycode.engine import images as images_mod
 from rockycode.engine import planmode
 from rockycode.engine import providers as providers_mod
 from rockycode.engine import tools as tools_mod
+from rockycode.engine import effort as effort_mod
 from rockycode.engine.effort import build_extra_body
 from rockycode.engine.redact import redact
 from rockycode.engine.events import (
@@ -54,12 +59,20 @@ from rockycode.session import repair_history
 
 MAX_STEPS = 50
 FINALIZE_STEPS = 3  # forced wrap-up window after the explore budget is spent
-CONTEXT_WINDOW = 1_048_576  # DeepSeek V4's real 1M window (matches the bench config)
-# Two-tier context handling. DeepSeek V4 degrades past ~50%, but forcing a
-# compaction there interrupts the user — so 50% is a SOFT one-time reminder
+# Fallbacks for a model the registry doesn't know; a known model brings its
+# own limits (ModelSpec.context / max_output) at launch and on every switch.
+CONTEXT_WINDOW = providers_mod.DEFAULT_CONTEXT
+MAX_OUTPUT = providers_mod.DEFAULT_MAX_OUTPUT
+# Two-tier context handling. Long-context models get sloppier well before the
+# window is full (DeepSeek V4 measurably past ~50%), but forcing a compaction
+# there interrupts the user — so 50% is a SOFT one-time reminder
 # (ContextReminder), and automatic compaction only fires near the ceiling.
 REMIND_THRESHOLD = 0.50   # non-blocking nudge: "past the half, /clear if you want"
 COMPACT_THRESHOLD = 0.90  # hard auto-compact — the safety net before overflow
+# Provider prefix caches are block-granular (DeepSeek: 64 tokens); the cache
+# observer floors its expectation to this so a partial last block never reads
+# as an eviction.
+CACHE_BLOCK = 64
 
 # Soft nudge while there's still explore budget. Evidence (dev10, twice):
 # without pressure the model explores right through the cap and submits
@@ -101,14 +114,16 @@ class Engine:
         *,
         thinking: bool = True,
         reasoning_effort: str = "max",
-        max_tokens: int = 384_000,  # DeepSeek V4 max output (384K); never truncate
+        # None = the model's registry value (its real max output — never
+        # truncate); a number is an explicit ceiling that survives /model.
+        max_tokens: Optional[int] = None,
         workdir: Optional[Path] = None,
         allowed_roots: tuple[Path, ...] = (),
         system_prompt: str = ROCKY_SYSTEM,
         client: Optional[AsyncOpenAI] = None,
         registry: Optional[dict[str, tools_mod.Tool]] = None,
         trajectory_meta: Optional[dict] = None,
-        context_window: int = CONTEXT_WINDOW,
+        context_window: Optional[int] = None,  # None = the model's registry value
         compact_threshold: float = COMPACT_THRESHOLD,
         remind_threshold: float = REMIND_THRESHOLD,
         max_steps: int = MAX_STEPS,
@@ -117,21 +132,35 @@ class Engine:
     ) -> None:
         self.model = model
         self.thinking = thinking
-        self.reasoning_effort = reasoning_effort
-        # Which reasoning-param shape the active provider wants (deepseek |
-        # openai | none). Set by a /model switch; defaults to DeepSeek, rocky's
-        # home provider, so existing behavior is byte-identical.
-        self.reasoning_policy = "deepseek"
+        self.reasoning_effort = effort_mod.normalize(reasoning_effort)
+        # The active provider's reasoning WIRE SHAPE + its own effort tiers +
+        # whether thinking can be switched off + where usage reports cache
+        # hits — all registry data (providers.Provider), adopted at launch and
+        # on every /model switch. Defaults = the home provider's shape.
+        self.reasoning_policy = "thinking"
+        self.efforts: Optional[tuple[str, ...]] = None
+        self.thinking_off = True
+        self.cache_field = "prompt_cache_hit_tokens"
         self.provider_name = "deepseek"
         self.tools_enabled = True  # profile tools:off → drop tool schemas
+        # Serving on the user's OWN machine (ollama etc.)? Local compat layers
+        # ignore tool_choice, so compaction's summarize call must not carry
+        # tool schemas — the model may answer with a tool call instead of a
+        # summary.
+        self.provider_local = False
         # Does the active model take image input? False for DeepSeek (home
         # model), so plain sessions send byte-identical requests; flipped by
         # switch_provider for a vision profile (minimax / kimi / stepfun).
         # Gates images.api_view at the API boundary: True inflates image_path
         # parts to base64 data URLs, False collapses them to text placeholders.
         self.vision_enabled = False
-        self.max_tokens = max_tokens
-        self.context_window = context_window
+        # Limits: an explicit number (flag / env / config / /config) is the
+        # user's own ceiling and survives model switches; otherwise the active
+        # model's registry entry decides, and a switch re-paces them.
+        self._explicit_limits = {"context_window": bool(context_window),
+                                 "max_tokens": bool(max_tokens)}
+        self.max_tokens = max_tokens or MAX_OUTPUT
+        self.context_window = context_window or CONTEXT_WINDOW
         self.compact_threshold = compact_threshold
         self.remind_threshold = remind_threshold
         self._reminded = False  # fired the soft 50% nudge? re-arms below the mark
@@ -182,12 +211,12 @@ class Engine:
         launch = None if client is not None else providers_mod.resolve(self.model)
         if launch is not None:
             prov, ep, mdl = launch
-            self.model = mdl
-            self.provider_name = ep.eid
-            self.reasoning_policy = prov.reasoning
-            self.tools_enabled = prov.tools == "native"
-            self.vision_enabled = providers_mod.Choice(prov, ep, mdl).vision
-            if prov.name != "deepseek" and ep.key() is not None:
+            self.adopt(prov, ep, mdl)
+            # The home endpoint keeps the env transport (ROCKYCODE_BASE_URL +
+            # ROCKYCODE_API_KEY, below); any other keyed endpoint — another
+            # provider, a plan row, an own-URL row — supplies its own client.
+            if ep.key() is not None and (prov.name != "deepseek"
+                                         or ep.base_url != require_base_url()):
                 client = AsyncOpenAI(api_key=ep.key(), base_url=ep.base_url,
                                      max_retries=5, timeout=300.0)
         # Explicit key AND endpoint (not the SDK's env fallbacks): an ambient
@@ -208,11 +237,13 @@ class Engine:
         self.resumed_mode: Optional[str] = None  # mode seen in a resumed session's prompt
         self.trajectory = TrajectoryLogger(
             meta={
-                "model": model,
+                "model": self.model,
+                "provider": self.provider_name,
+                "reasoning": self.reasoning_policy,
                 "thinking": thinking,
-                "reasoning_effort": reasoning_effort,
-                "max_tokens": max_tokens,
-                "context_window": context_window,
+                "reasoning_effort": self.reasoning_effort,
+                "max_tokens": self.max_tokens,
+                "context_window": self.context_window,
                 "max_steps": max_steps,
                 "workdir": str(self.workdir),
                 "base_url": require_base_url(),
@@ -243,6 +274,28 @@ class Engine:
     def swap_registry(self, registry: dict[str, tools_mod.Tool]) -> None:
         """Hot-swap the tool registry at runtime (e.g. sandbox on/off)."""
         self.registry = registry
+
+    def rollback(self, n: int, *, reason: str = "") -> int:
+        """Drop everything after the first *n* messages — a turn boundary the
+        caller recorded before starting a turn it now wants gone from LIVE
+        context (a quiet /loop tick: it carried no information, and V4
+        degrades past half its window). Context hygiene only: the trajectory
+        is append-only and keeps every record, plus a note here, so training
+        data and --resume see the full story (resume replays it, exactly as a
+        compaction is replayed today). Cache-neutral — the prefix before *n*
+        is unchanged, so the next request still hits. Returns how many
+        messages were dropped; 0 (a no-op) when *n* is not a proper prefix."""
+        if n < 1 or n >= len(self.history):
+            return 0
+        dropped = len(self.history) - n
+        del self.history[n:]
+        # The projection's "already measured" cursor must not point past the
+        # end. _last_prompt_tokens still counts the dropped tail — an
+        # over-estimate, the safe direction; the next call re-measures.
+        if self._sent_until > n:
+            self._sent_until = n
+        self.trajectory.note({"rollback": {"to": n, "dropped": dropped, "reason": reason}})
+        return dropped
 
     def finalize_outcome(self) -> Optional[dict]:
         """Write the session's heuristic outcome record (self-evolve phase 0).
@@ -306,34 +359,89 @@ class Engine:
         self.trajectory.note({"mode": None})
 
     def _extra_body(self) -> dict:
-        # self.reasoning_effort holds the dial value (high|xhigh|max) and is
+        # self.reasoning_effort holds the dial value (low|high|max) and is
         # mutable mid-session (/effort); the provider clamp + param shape happen
-        # per call, keyed by the active provider's reasoning policy.
-        return build_extra_body(self.thinking, self.reasoning_effort, self.reasoning_policy)
+        # per call, keyed by the active provider's reasoning wire shape.
+        return build_extra_body(self.thinking, self.reasoning_effort, self.reasoning_policy,
+                                efforts=self.efforts, thinking_off=self.thinking_off)
+
+    def adopt(self, prov, ep, model: str) -> None:
+        """Take on a registry (provider, endpoint, model): its reasoning wire
+        shape, effort tiers, cache field, tools/vision flags, and — unless the
+        user pinned a number — the model's own context window and output cap.
+        The transport (self.client) is the caller's business."""
+        spec = prov.spec(model)
+        self.model = model
+        self.provider_name = ep.eid
+        self.reasoning_policy = prov.reasoning
+        self.efforts = prov.efforts
+        self.thinking_off = prov.thinking_off
+        self.cache_field = prov.cache_field
+        self.tools_enabled = prov.tools == "native"
+        self.vision_enabled = providers_mod.Choice(prov, ep, model).vision
+        self.provider_local = prov.local
+        if not self._explicit_limits["context_window"]:
+            self.context_window = spec.context
+        if not self._explicit_limits["max_tokens"]:
+            self.max_tokens = spec.max_output
+
+    def set_limit(self, name: str, value: Optional[int]) -> None:
+        """Pin (a positive number) or unpin (0/None → back to the active
+        model's registry value) context_window / max_tokens — the /config
+        path. Pinned values survive /model switches."""
+        assert name in ("context_window", "max_tokens")
+        if value:
+            self._explicit_limits[name] = True
+            setattr(self, name, int(value))
+            return
+        self._explicit_limits[name] = False
+        hit = providers_mod.resolve(f"{self.provider_name}:{self.model}")
+        spec = hit[0].spec(hit[2]) if hit else None
+        fallback = CONTEXT_WINDOW if name == "context_window" else MAX_OUTPUT
+        setattr(self, name, (spec.context if name == "context_window" else spec.max_output)
+                if spec else fallback)
 
     def switch_provider(self, client, model: str, *, provider_name: str,
                         reasoning_policy: str, tools_enabled: bool = True,
-                        vision: bool = False) -> None:
+                        vision: bool = False, local: bool = False,
+                        provider=None, endpoint=None) -> None:
         """Point the engine at a different OpenAI-compatible endpoint/model live
         (a /model switch). The caller builds the client with the provider's
-        base_url + key; we swap model + reasoning policy. The prompt-cache prefix
-        is provider-specific, so the switch naturally starts a fresh cache — no
-        stale-hit risk. History and tools are untouched (same OpenAI protocol)."""
+        base_url + key; we swap model + reasoning shape. With the registry
+        `provider`/`endpoint` given, everything else (effort tiers, cache
+        field, un-pinned limits) is adopted from the model's spec too; the
+        explicit flags stay as the override for callers without a registry
+        entry. The prompt-cache prefix is provider-specific, so the switch
+        naturally starts a fresh cache — no stale-hit risk. History and tools
+        are untouched (same OpenAI protocol)."""
         self.client = client
-        self.model = model
-        self.provider_name = provider_name
-        self.reasoning_policy = reasoning_policy
-        self.tools_enabled = tools_enabled
-        self.vision_enabled = vision
+        if provider is not None and endpoint is not None:
+            self.adopt(provider, endpoint, model)
+            self.provider_name = provider_name or endpoint.eid
+            self.tools_enabled = tools_enabled and self.tools_enabled
+            self.vision_enabled = vision or self.vision_enabled  # a preflight may add sight
+        else:
+            self.model = model
+            self.provider_name = provider_name
+            self.reasoning_policy = "thinking" if reasoning_policy == "deepseek" else reasoning_policy
+            self.efforts = None
+            self.thinking_off = True
+            self.cache_field = ("prompt_cache_hit_tokens" if self.reasoning_policy == "thinking"
+                                and provider_name.startswith("deepseek") else "cached_tokens")
+            self.tools_enabled = tools_enabled
+            self.vision_enabled = vision
+            self.provider_local = local
         self._mark_cache_reset("model switch")
-        self.trajectory.note({"provider": provider_name, "model": model,
-                              "vision": vision})
+        self.trajectory.note({"provider": self.provider_name, "model": self.model,
+                              "vision": self.vision_enabled, "local": self.provider_local,
+                              "context_window": self.context_window,
+                              "max_tokens": self.max_tokens})
 
     def _repair_history(self) -> None:
         """Inject synthetic tool responses for ANY orphaned tool_calls.
 
         A tool_calls assistant message with no matching tool response for one of
-        its ids makes DeepSeek 400. This happens after a hard kill mid-tool, or
+        its ids makes the API 400. This happens after a hard kill mid-tool, or
         when a turn is cancelled (new submit / Esc). This is:
           - idempotent: a call that already has a response is left alone, so it
             is safe to call repeatedly (the turn's finally + the next turn's
@@ -379,12 +487,14 @@ class Engine:
     def _observe_cache(self, u: dict) -> Optional[CacheReset]:
         """Per-request cache accounting from the API's OWN numbers (never an
         estimate). With an append-only history, this request's hit tokens
-        should be ≈ the previous request's whole prompt (floored to DeepSeek's
-        64-token cache blocks). A hit far below that with no rocky-caused
+        should be ≈ the previous request's whole prompt (floored to the
+        provider's cache block). A hit far below that with no rocky-caused
         reset means the provider evicted the prefix — DeepSeek publishes no
         TTL ("hours to days"), so these trajectory notes, with their idle
         gaps, are the only way to learn the real rule empirically. Known
-        resets are logged too, just without the user-facing event."""
+        resets are logged too, just without the user-facing event. `u` has
+        been normalized (run_turn) so the hit count is always under
+        prompt_cache_hit_tokens whatever field the provider used."""
         reason, self._cache_reset_reason = self._cache_reset_reason, None
         if "prompt_cache_hit_tokens" not in u:
             return None  # this provider doesn't report cache — nothing to observe
@@ -395,7 +505,7 @@ class Engine:
         self._cache_prev, self._cache_req_at = (prompt, hit), now
         if prompt <= 0 or prev is None:
             return None
-        expected = (prev[0] // 64) * 64
+        expected = (prev[0] // CACHE_BLOCK) * CACHE_BLOCK
         idle = round(now - prev_at, 1) if prev_at is not None else 0.0
         # 2048-token floor: a tiny session losing its cache costs pennies and
         # would only produce alarm noise.
@@ -524,9 +634,14 @@ class Engine:
                     self.client, self.model,
                     # Same view as the main call — the request prefix matches
                     # what the provider has cached, and image_path parts never
-                    # reach the wire.
+                    # reach the wire. LOCAL providers get no tool schemas:
+                    # their compat layers drop tool_choice="none", and a local
+                    # model handed tools may emit a call instead of a summary.
                     images_mod.api_view(self.history, vision=self.vision_enabled),
-                    tools=[t.schema for t in self.registry.values()],
+                    tools=([] if self.provider_local
+                           else [t.schema for t in self.registry.values()]),
+                    reasoning=self.reasoning_policy,
+                    efforts=self.efforts, thinking_off=self.thinking_off,
                 )
                 if not summary:
                     raise ValueError("model returned an empty summary")
@@ -629,9 +744,9 @@ class Engine:
             self._repair_history()
             sent = len(self.history)
             # Clamp output to what the window can still hold: input can run up to
-            # 90% before auto-compaction and max_tokens may be the full 384K, so
-            # input + output could exceed the window. Reserve the rest for output,
-            # never below a usable floor.
+            # 90% before auto-compaction and max_tokens may be the model's full
+            # output cap, so input + output could exceed the window. Reserve the
+            # rest for output, never below a usable floor.
             out_room = self.context_window - self._projected_prompt_tokens() - 512
             eff_max_tokens = max(1024, min(self.max_tokens, out_room))
             try:
@@ -678,6 +793,12 @@ class Engine:
                         u = chunk.usage.model_dump()
                     except AttributeError:
                         u = dict(chunk.usage)
+                    # One cache shape downstream (ledger, trajectory, the
+                    # observer): providers report hits under different
+                    # fields — the registry says which; normalize here.
+                    hit = providers_mod.cache_hit_tokens(u, self.cache_field)
+                    if hit is not None and "prompt_cache_hit_tokens" not in u:
+                        u["prompt_cache_hit_tokens"] = hit
                     _merge_usage(usage_total, u)
                     _merge_usage(self.stats.usage, u)
                     self.trajectory.usage(u)  # per-call: prompt/completion + cache hit/miss

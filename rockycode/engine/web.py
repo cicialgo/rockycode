@@ -62,7 +62,13 @@ def _anthropic_messages_url() -> str:
 
 
 def _search_model() -> str:
-    return os.getenv("ROCKYCODE_SEARCH_MODEL", "deepseek-v4-flash")
+    """The model the native (DeepSeek /anthropic) search backend calls: env
+    override, else the registry's `search` role (deepseek-flash)."""
+    explicit = os.getenv("ROCKYCODE_SEARCH_MODEL")
+    if explicit:
+        return explicit
+    from rockycode.engine import providers as P
+    return P.role_model("search") or "deepseek-flash"
 
 
 def default_search_order() -> tuple[str, ...]:

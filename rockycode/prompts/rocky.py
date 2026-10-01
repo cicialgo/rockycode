@@ -102,6 +102,7 @@ TOOL_HINTS: dict[str, str] = {
     "web_research": "deep multi-source web research",
     "web_fetch": "fetch one page",
     "skill": "run an installed skill",
+    "rocky_config": "change rocky's own settings (model, URLs, providers — never keys)",
     "remember": "save a durable note",
     "recall_memory": "look up saved notes",
     "create_artifact": "visual report in the browser",
@@ -110,6 +111,8 @@ TOOL_HINTS: dict[str, str] = {
     "list_goal_branches": "list /goal work branches",
     "review_goal_branch": "grounded review of a /goal branch",
     "merge_goal_branch": "merge a reviewed /goal branch",
+    "loop_start": "check back on something every N minutes, in this chat",
+    "loop_stop": "stop a loop",
 }
 
 ARTIFACT_GUIDE = """\

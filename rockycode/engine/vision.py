@@ -8,7 +8,8 @@ the image part itself ({"type": "image_path", …, "description": …}) so it
 lands in history + trajectory once, survives resume, and is never re-billed:
 
   provider — one-shot describe call to a keyed VISION endpoint from the same
-             registry (minimax / kimi / stepfun). In-process, another API key.
+             registry (deepseek-flash on the home key by default; kimi /
+             minimax / glm / qwen / mimo / stepfun when keyed). In-process.
   cli      — the user's own command (`image_cli` config): stdout becomes the
              description. A bare known tool name ("mmx") expands via
              KNOWN_CLIS to its real describe invocation; a full template with
@@ -63,16 +64,17 @@ def sidecar_choice(preferred: str = "") -> Optional[P.Choice]:
     """The vision (endpoint, model) a sidecar describe call would use.
 
     `preferred` (config image_provider) uses the same spec shape as /model —
-    an endpoint id (`minimax-cn`) or `endpoint:model` (`minimax-cn:minimax-m3`,
-    substring ok) — so the user pins not just whose key but exactly WHICH
-    model describes images. Unset/unmatched falls back to the first KEYED
-    vision endpoint (what the picker row then shows) — deepseek rides the
-    default key, so since flash-vision-exp its vision model is the zero-setup
-    default describer. None → no provider route."""
+    an endpoint id (`kimi`) or `endpoint:model` (`kimi:kimi-k3`, substring
+    ok) — so the user pins not just whose key but exactly WHICH model
+    describes images. Unset/unmatched falls back to the registry's keyed
+    `sidecar` model (deepseek-flash rides the home key, so it is the
+    zero-setup default describer), then the first other KEYED vision
+    endpoint. None → no provider route."""
     picks = [c for c in P.choices() if c.vision and c.configured]
+    picks.sort(key=lambda c: 0 if "sidecar" in c.spec.roles else 1)
     if preferred:
-        eid, _, model = preferred.replace(":", " ").partition(" ")
-        eid, model = eid.strip(), model.strip().lower()
+        eid, model = P.split_spec(preferred)  # first `:`/space only — ollama
+        model = model.lower()                 # tags keep their inner colon
         for c in picks:
             if c.prov_id == eid and (not model or model in c.model.lower()):
                 return c
@@ -83,12 +85,13 @@ async def describe_provider(
     path: Path, question: str = "", *, preferred: str = "",
 ) -> tuple[str, str]:
     """One-shot describe via a keyed vision endpoint. Returns (description,
-    source label like 'minimax-cn:minimax-m3')."""
+    source label like 'deepseek:deepseek-flash')."""
     choice = sidecar_choice(preferred)
     if choice is None:
         raise VisionError(
-            "no keyed vision endpoint — set a ROCKYCODE_<KIMI|MINIMAX|STEPFUN>"
-            "…_API_KEY (or config image_provider), or configure a vision CLI: "
+            "no keyed vision endpoint — set ROCKYCODE_API_KEY (deepseek-flash "
+            "sees) or a ROCKYCODE_<KIMI|MINIMAX|GLM|QWEN|MIMO|STEPFUN>_API_KEY "
+            "(or config image_provider), or configure a vision CLI: "
             "/config image_cli mmx"
         )
     from openai import AsyncOpenAI  # deferred: this module must import cheap
@@ -98,11 +101,13 @@ async def describe_provider(
         prompt += f"\n\nThe agent specifically wants to know: {question.strip()}"
     client = AsyncOpenAI(api_key=choice.endpoint.key(), base_url=choice.endpoint.base_url,
                          max_retries=2, timeout=PROVIDER_TIMEOUT)
-    # Thinking OFF for a deepseek-policy describer: max_tokens includes CoT on
-    # DeepSeek, so an enabled default would eat the 1024 budget before the
-    # description starts.
+    # Thinking OFF (or the lowest tier where it can't be off): max_tokens
+    # includes CoT on thinking models, so an enabled default would eat the
+    # 1024 budget before the description starts.
     from rockycode.engine.effort import build_extra_body
-    extra = build_extra_body(False, "high", choice.provider.reasoning)
+    extra = build_extra_body(False, "high", choice.provider.reasoning,
+                             efforts=choice.provider.efforts,
+                             thinking_off=choice.provider.thinking_off)
     try:
         resp = await client.chat.completions.create(
             model=choice.model,

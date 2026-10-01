@@ -145,16 +145,20 @@ def require_base_url() -> str:
     return v or DEFAULT_BASE_URL
 
 
-def provider_key(key_env: str) -> str:
+def provider_key(key_env: str, aliases: tuple[str, ...] = ()) -> str:
     """A named provider's key from its ROCKY-OWNED env var (loaded from
     ~/.rockycode by bootstrap). NEVER an ambient provider key: a user's own
-    MINIMAX_API_KEY is theirs; rocky reads only ROCKYCODE_<PROVIDER>_API_KEY.
+    MINIMAX_API_KEY is theirs; rocky reads only ROCKYCODE_<PROVIDER>_API_KEY
+    (plus *aliases* — the older `_CN_`/`_EN_` spellings, still honored).
     Raises with the exact var to set if it's missing."""
+    if not key_env:  # keyless LOCAL endpoint (ollama etc.) — no secret exists;
+        return "local"  # the SDK still requires a non-empty api_key string
     if key_env == KEY_ENV:  # the default provider — full keychain chain
         return require_key()
-    v = (os.getenv(key_env) or "").strip()
-    if v and v.lower() not in _PLACEHOLDERS:
-        return v
+    for name in (key_env, *aliases):
+        v = (os.getenv(name) or "").strip()
+        if v and v.lower() not in _PLACEHOLDERS:
+            return v
     raise RuntimeError(
         f"no key for this provider — set {key_env} in ~/.rockycode/.env "
         f"(or export it). rocky reads only rocky-owned {key_env}, never an "
@@ -302,8 +306,9 @@ def run_setup(console) -> None:
     while _key_rejected(key, base_url):
         info(console, "that key was rejected by the endpoint (401) — check for typos or stray spaces.")
         key = typer.prompt("  paste your API key again", hide_input=True).strip()
-    model = typer.prompt("  default model (deepseek-v4-pro is the heavier preview tier)",
-                         default="deepseek-v4-flash").strip()
+    model = typer.prompt("  default model (deepseek-flash = V4.1 Flash, sees images; "
+                         "deepseek-v4-pro = the heavier tier)",
+                         default="deepseek-flash").strip()
     # Reply language — asked once so a 中文 user's first session already
     # answers in Chinese instead of depending on model luck. auto mirrors
     # whatever language each message is written in. Changeable anytime:
