@@ -69,7 +69,8 @@ def test_parse_args():
 
 
 def test_clock():
-    face = lambda h, m: C.clock_face(datetime(2026, 9, 30, h, m))
+    def face(h, m):
+        return C.clock_face(datetime(2026, 9, 30, h, m))
     assert face(14, 35) == "\U0001F55D", hex(ord(face(14, 35)))  # 🕝 two-thirty
     assert face(14, 50) == "\U0001F552"                          # 🕒 three
     assert face(0, 10) == "\U0001F55B"                           # 🕛 twelve

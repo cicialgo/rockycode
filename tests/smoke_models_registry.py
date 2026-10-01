@@ -113,7 +113,8 @@ assert P.fmt_tokens(65_536) == "64K" and P.fmt_tokens(131_072) == "128K" and P.f
 print("cache field normalizer · roles · fmt_tokens  ✓")
 
 # ── the engine reads the spec: cache normalization + limits at launch ────────
-import asyncio, types
+import asyncio
+import types
 from rockycode.engine.loop import Engine
 
 

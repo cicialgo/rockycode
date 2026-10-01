@@ -25,7 +25,6 @@ saves it. The built-in `rocky-setup` skill teaches the model the shapes.
 """
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
 from typing import Optional
@@ -91,7 +90,6 @@ def _show(workdir: Path) -> str:
     for prov in P.discover().values():
         spec_bits = []
         for m in prov.models[:8]:
-            sp = prov.spec(m)
             spec_bits.append(f"{m}{' ❖' if P.Choice(prov, prov.endpoints[0], m).vision else ''}")
         lines.append(f"  {prov.name}: reasoning={prov.reasoning} · models: "
                      f"{', '.join(spec_bits) or '(none discovered)'}")
