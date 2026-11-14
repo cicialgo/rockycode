@@ -1,5 +1,5 @@
-"""Mic capture via ffmpeg — raw PCM to a temp file, the VAD reads it as it
-grows (no new dependencies: ffmpeg is already rocky's image-downscale
+"""Mic capture via ffmpeg — raw PCM over a pipe into a bounded rolling
+buffer, no new dependencies (ffmpeg is already rocky's image-downscale
 fallback, and every recording backend needs *some* binary).
 
 Backends are ffmpeg's own input devices, selected by platform:
@@ -9,18 +9,25 @@ Backends are ffmpeg's own input devices, selected by platform:
     windows  -f dshow -i audio=<device>
 
 `<device>` is `default` unless ROCKYCODE_VOICE_DEVICE pins an index ("0")
-or a name — some ffmpeg builds never resolve `:default`, so when no audio
-file appears the recorder retries device `0` once before reporting.
-ROCKYCODE_FFMPEG pins the binary path (a machine can carry a broken
-ffmpeg early on PATH — see the /usr/local vs /opt/homebrew split).
+or a name. ROCKYCODE_FFMPEG pins the binary path (a machine can carry a
+broken ffmpeg early on PATH — the /usr/local vs /opt/homebrew split).
 
-Output is 16-bit mono PCM at engine/voice.SAMPLE_RATE (16 kHz — inside the
-ASR-accepted 8k–48k span, and small enough that a 115 s cap is ~3.7 MB, well
-under the 8 MiB upload limit). The app wraps the PCM in a WAV header
-(voice.pcm_to_wav) before upload.
+WHY A PERSISTENT PROCESS: avfoundation's first device open takes ~10 s on
+a real Mac (measured 9.4–12.2 s across three devices) — a per-capture
+spawn would lose the first ten seconds of speech every time. The recorder
+therefore stays alive for the session once started: the first hotkey pays
+the warm-up (the line says so), every later capture is instant, and
+segments are cut from the stream via mark()/finish_segment() instead of
+process restarts. The mic stays hot until /exit — macOS shows the orange
+mic dot, same as any call app. Output is 16-bit mono PCM at
+engine/voice.SAMPLE_RATE (16 kHz — inside the ASR-accepted 8k–48k span;
+a 115 s segment is ~3.7 MB, well under the 8 MiB upload limit). The app
+wraps the segment in a WAV header (voice.pcm_to_wav) before upload.
 
-ffmpeg's own stdout/stderr are kept quiet; stderr is drained into a bounded
-buffer so a dying device can still say why.
+Failure signatures (found live): a TCC-blocked mic makes the process sit
+alive and silent — warm-up times out and the error names the permission
+fix. A bad device name kills the process fast — stderr says why, and
+`default` falls back to device `0` once (an explicit pin never does).
 """
 from __future__ import annotations
 
@@ -29,14 +36,13 @@ import collections
 import os
 import platform
 import shutil
-import tempfile
-from pathlib import Path
 from typing import Optional
 
 from rockycode.engine import voice
 
 FFMPEG_ENV = "ROCKYCODE_FFMPEG"
 DEVICE_ENV = "ROCKYCODE_VOICE_DEVICE"
+WARM_TIMEOUT_S = 20.0  # measured device-open latency is ~10 s; TCC stall = forever
 
 _INPUTS = {
     "Darwin": ("-f", "avfoundation"),
@@ -78,91 +84,129 @@ def ffmpeg_available() -> Optional[str]:
     return None
 
 
+def _permission_error(devices: tuple[str, ...]) -> RecorderError:
+    return RecorderError(
+        f"the microphone stays silent ({', '.join(f'`{d}`' for d in devices)} tried) — on "
+        f"macOS this is almost always the microphone permission: System Settings → "
+        f"Privacy & Security → Microphone → your terminal app (then restart rocky). "
+        f"Pin a device with {DEVICE_ENV} if several mics exist"
+    )
+
+
 class Recorder:
-    """One recording session: start() spawns ffmpeg writing raw PCM; the app
-    polls read_new() (feeding the VAD) and stop() ends it. stop_requested is
-    the hotkey's manual endpoint — the worker checks it, stop() honors it."""
+    """One live mic session, kept warm across captures. start() spawns ffmpeg
+    writing PCM to stdout (pipe → rolling buffer); mark() begins a segment,
+    finish_segment() cuts it; stop() ends the session. stop_requested is the
+    hotkey's manual endpoint — the app's capture loop checks it."""
 
     def __init__(self, *, rate: int = voice.SAMPLE_RATE) -> None:
         self._rate = rate
         self._proc: Optional[asyncio.subprocess.Process] = None
-        self._pcm: Optional[Path] = None
-        self._fd = None
-        self._offset = 0
-        self._stderr: collections.deque = collections.deque(maxlen=5)
+        self._reader: Optional[asyncio.Task] = None
         self._drain: Optional[asyncio.Task] = None
+        self._stderr: collections.deque = collections.deque(maxlen=5)
+        self._buf = bytearray()
+        self._cap = rate * 2 * (voice.MAX_RECORD_S + 15)  # ~130 s of s16le
+        self._vad_cur = 0   # bytes already handed to the VAD
+        self._mark = 0      # segment start index into _buf
+        self._first = asyncio.Event()   # the device delivered bytes
+        self._dead = asyncio.Event()    # ffmpeg exited on its own
         self.stop_requested = False
 
     @property
     def running(self) -> bool:
         return self._proc is not None and self._proc.returncode is None
 
-    async def start(self) -> Path:
-        """Spawn ffmpeg; returns the raw-PCM path. Raises RecorderError with
-        the fix when ffmpeg is missing, the mic device cannot open (TCC
-        permission is the usual cause — the process hangs, alive but
-        fileless), or every device candidate fails."""
+    @property
+    def started(self) -> bool:
+        return self._proc is not None
+
+    @property
+    def warm(self) -> bool:
+        return self._first.is_set()
+
+    async def start(self) -> None:
+        """Spawn ffmpeg and wait for the first audio bytes (up to
+        WARM_TIMEOUT_S). Raises RecorderError with the fix when ffmpeg is
+        missing, the device cannot open, or the mic never delivers."""
         hint = ffmpeg_available()
         if hint:
             raise RecorderError(hint)
-        if self._proc is not None:
-            raise RecorderError("a recording is already running")
-        tmp = Path(tempfile.mkdtemp(prefix="rockyvoice-"))
-        pcm = tmp / "voice.pcm"
-        self._pcm = pcm
+        if self.started:
+            return  # warm from an earlier capture — segments are instant
         # A pinned device is tried alone (an explicit choice must not be
         # silently replaced); otherwise `default` first, then index 0 — some
-        # ffmpeg builds never resolve `:default` (found on ffmpeg 9/arm64
-        # with two mics: the open just stalls).
+        # ffmpeg builds never resolve `:default`.
         pinned = (os.getenv(DEVICE_ENV) or "").strip()
-        candidates = [pinned] if pinned else ["default", "0"]
-        last_err = ""
+        candidates = (pinned,) if pinned else ("default", "0")
+        tried = []
         for device in candidates:
+            tried.append(device)
+            self._first.clear()
+            self._dead.clear()
             args = ("-loglevel", "error", *ffmpeg_input_args(device=device),
-                    "-ac", "1", "-ar", str(self._rate), "-f", "s16le", "-y", str(pcm))
+                    "-ac", "1", "-ar", str(self._rate), "-f", "s16le", "pipe:1")
             proc = await asyncio.create_subprocess_exec(
                 ffmpeg_bin(), *args,
-                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
             self._proc = proc
+            self._reader = asyncio.create_task(self._read_loop())
             self._drain = asyncio.create_task(self._drain_stderr())
-            # The device open is slow (macOS: TCC + avfoundation enumeration
-            # can take seconds) — the process is alive but the output file
-            # does not exist yet. Wait for the file; a process that dies
-            # first is a device failure and its stderr says why.
-            for _ in range(60):  # up to 3 s
-                if pcm.exists():
-                    break
-                if not self.running:
-                    break
-                await asyncio.sleep(0.05)
-            if pcm.exists():
-                # The file existing is not enough: a TCC-blocked open can
-                # create it and then hang forever. A delivering mic writes
-                # bytes immediately (raw PCM); still 0 after 0.5 s = failed.
-                for _ in range(10):
-                    if pcm.stat().st_size > 0:
-                        self._fd = open(pcm, "rb")  # noqa: SIM115 — closed in stop()
-                        return pcm
-                    if not self.running:
-                        break
-                    await asyncio.sleep(0.05)
-            last_err = "".join(self._stderr).strip().splitlines()[-1] if self._stderr else ""
-            await self.stop()
-            pcm.unlink(missing_ok=True)
-        if last_err:
-            raise RecorderError(
-                f"the microphone did not start (ffmpeg: {last_err}) — check System "
-                f"Settings → Privacy & Security → Microphone for your terminal, or pin "
-                f"a device: {DEVICE_ENV}=0 (list them: ffmpeg -f avfoundation "
-                f"-list_devices true -i dummy)"
+            first_t = asyncio.ensure_future(self._first.wait())
+            dead_t = asyncio.ensure_future(self._dead.wait())
+            done, _ = await asyncio.wait(
+                {first_t, dead_t},
+                return_when=asyncio.FIRST_COMPLETED, timeout=WARM_TIMEOUT_S,
             )
+            for t in (first_t, dead_t):  # never leak a pending wait
+                if not t.done():
+                    t.cancel()
+            if self._first.is_set() and self.running:
+                return  # warm — capture immediately
+            if self._dead.is_set():
+                err = "".join(self._stderr).strip().splitlines()[-1] if self._stderr else ""
+                await self._teardown_proc()
+                raise RecorderError(
+                    f"the microphone did not start (ffmpeg: {err or 'no device'}) — pin a "
+                    f"device with {DEVICE_ENV} (index like `0`, or a name; list them: ffmpeg "
+                    f"-f avfoundation -list_devices true -i dummy)"
+                )
+            if not done:  # warm-up timed out: alive but silent = the TCC stall
+                await self._teardown_proc()
+                raise _permission_error(tuple(tried))
+            # delivered bytes but the process died before start() returned —
+            # rare race; treat as a failed device and let the next candidate try
+            await self._teardown_proc()
         raise RecorderError(
-            f"the microphone did not start — the device open stalls, which on macOS "
-            f"is usually the microphone permission (System Settings → Privacy & "
-            f"Security → Microphone → your terminal app); pin a device with "
-            f"{DEVICE_ENV} (index or name) if several mics exist"
+            f"the microphone did not start — ffmpeg died on every device "
+            f"({', '.join(tried)}) — pin one with {DEVICE_ENV}"
         )
+
+    async def stop(self) -> None:
+        """End the session — the app calls this on /exit (never per capture;
+        the warm process is the whole point)."""
+        await self._teardown_proc()
+        self._buf = bytearray()
+        self._vad_cur = 0
+        self._mark = 0
+        self.stop_requested = False
+
+    async def _read_loop(self) -> None:
+        assert self._proc is not None and self._proc.stdout is not None
+        while True:
+            chunk = await self._proc.stdout.read(65536)
+            if not chunk:  # EOF: ffmpeg died
+                self._dead.set()
+                return
+            if not self._first.is_set():
+                self._first.set()
+            self._buf.extend(chunk)
+            over = len(self._buf) - self._cap
+            if over > 0:
+                del self._buf[:over]
+                self._vad_cur = max(0, self._vad_cur - over)
+                self._mark = max(0, self._mark - over)
 
     async def _drain_stderr(self) -> None:
         assert self._proc is not None and self._proc.stderr is not None
@@ -172,27 +216,35 @@ class Recorder:
                 return
             self._stderr.append(line.decode(errors="replace").strip())
 
+    def mark(self) -> None:
+        """Begin a capture segment: everything from now until finish_segment
+        is that clip (whatever the warm mic recorded before is dropped)."""
+        self._mark = len(self._buf)
+        self._vad_cur = max(self._vad_cur, self._mark)
+
     def read_new(self) -> bytes:
-        """The bytes appended since the last call (synchronous; the worker
-        calls it via to_thread so file I/O stays off the message pump)."""
-        if self._fd is None:
+        """The bytes since the last read_new (synchronous; the worker calls
+        it via to_thread so buffer copies stay off the message pump)."""
+        if self._vad_cur >= len(self._buf):
             return b""
-        self._fd.seek(self._offset)
-        data = self._fd.read()
-        self._offset += len(data)
+        data = bytes(self._buf[self._vad_cur:])
+        self._vad_cur = len(self._buf)
         return data
 
-    async def stop(self) -> Path:
-        """End the session; returns the PCM path (the app wraps it in WAV)."""
+    def finish_segment(self) -> bytes:
+        """The segment's PCM since mark() — the app wraps it in WAV."""
+        seg = bytes(self._buf[self._mark:])
+        self._mark = len(self._buf)
+        self._vad_cur = max(self._vad_cur, self._mark)
+        return seg
+
+    async def _teardown_proc(self) -> None:
+        if self._reader is not None:
+            self._reader.cancel()
+            self._reader = None
         if self._drain is not None:
             self._drain.cancel()
             self._drain = None
-        if self._fd is not None:
-            try:
-                self._fd.close()
-            except OSError:
-                pass
-            self._fd = None
         if self._proc is not None and self._proc.returncode is None:
             self._proc.terminate()
             try:
@@ -201,5 +253,3 @@ class Recorder:
                 self._proc.kill()
                 await self._proc.wait()
         self._proc = None
-        assert self._pcm is not None
-        return self._pcm

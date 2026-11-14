@@ -36,13 +36,19 @@ change between minor versions.
   `voice_autosend` · `voice_autoend` · `voice_id stella|tide` ·
   `voice_hotkey ctrl+<letter|digit>` · `voice_end_silence_ms` ·
   `voice_threshold` · `voice_min_speech_ms`.
-- Recorder robustness (found on live hardware): `ROCKYCODE_FFMPEG` pins
-  the ffmpeg binary (a machine can carry a broken one early on PATH),
-  `ROCKYCODE_VOICE_DEVICE` pins the mic by index or name when `:default`
-  doesn't resolve (ffmpeg 9 on arm64 with two mics: the open just
-  stalls), the default falls back to device `0` once, and a stalled
-  device open — the macOS microphone-permission hang — now fails fast
-  with the exact fix instead of stalling a recording.
+- Recorder design settled on live hardware (avfoundation's first device
+  open measures ~10 s on a real Mac): the mic process stays WARM for the
+  session after the first capture — the hotkey pays the warm-up once
+  (the line says "mic warming…"), every later capture starts instantly,
+  and segments are cut from a pipe-fed rolling buffer instead of process
+  restarts. The orange mic dot stays on until /exit, like any call app.
+  `ROCKYCODE_FFMPEG` pins the ffmpeg binary (a machine can carry a broken
+  one early on PATH), `ROCKYCODE_VOICE_DEVICE` pins the mic when
+  `:default` doesn't resolve (falls back to device `0` once; an explicit
+  pin never does), and a mic that stays silent past the warm-up window —
+  the macOS microphone-permission stall — fails fast with the exact fix.
+  Verified end-to-end on hardware: TTS → speakers → mic → VAD endpoint →
+  ASR transcribes the sentence back through the air.
 
 ### Notes
 - ASR is whole-file (no streaming — DeepSeek docs, 2026-11-13): the VAD

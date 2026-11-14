@@ -70,29 +70,53 @@ class Script:
 
 
 class FakeRecorder:
-    """Stands in for the ffmpeg recorder: start() writes a few bytes of PCM
-    (enough to look non-empty), running is scripted, read_new feeds nothing
-    (the VAD paths are covered in smoke_voice)."""
+    """Stands in for the warm pipe recorder: start() is instant, read_new
+    delivers one "utterance" of PCM (silence — the VAD paths are covered in
+    smoke_voice) and then the device idles (keep_running=False), or streams
+    ambient silence until stop_requested (keep_running=True, the barge
+    path). Segments are cut via mark()/finish_segment() like the real one."""
 
     stop_requested = False
     keep_running = False  # True → stays RECORDING until stop_requested
 
     def __init__(self):
-        self._pcm = Path(tempfile.mkdtemp(prefix="fakevoice-")) / "voice.pcm"
+        self._buf = bytearray()
+        self._mark = 0
+        self._vad_cur = 0
+        self._delivered = False
 
     @property
     def running(self):
-        return self.keep_running and not self.stop_requested
+        if self.keep_running:
+            return not self.stop_requested
+        return not self._delivered
 
     async def start(self):
-        self._pcm.write_bytes(b"\x00\x00" * 1600)  # 100 ms of silence
-        return self._pcm
+        return None
+
+    def mark(self):
+        self._mark = len(self._buf)
+        self._vad_cur = max(self._vad_cur, self._mark)
 
     def read_new(self):
-        return b""
+        if not self._delivered:
+            self._delivered = True
+            self._buf.extend(b"\x00\x00" * 1600)  # 100 ms of "audio"
+        if self.keep_running:
+            self._buf.extend(b"\x00\x00" * 160)   # ambient silence stream
+        if self._vad_cur >= len(self._buf):
+            return b""
+        data = bytes(self._buf[self._vad_cur:])
+        self._vad_cur = len(self._buf)
+        return data
+
+    def finish_segment(self):
+        seg = bytes(self._buf[self._mark:])
+        self._mark = len(self._buf)
+        return seg
 
     async def stop(self):
-        return self._pcm
+        return None
 
 
 def build(permission="ask", *, voice_engine="deepseek", voice_readback="off",

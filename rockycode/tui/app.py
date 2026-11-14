@@ -859,65 +859,63 @@ class RockyCodeApp(App):
 
     @work(group="voice", exclusive=True)
     async def _voice_record(self) -> None:
-        """One capture: record (VAD auto-end or hotkey stop) → ASR → input box."""
+        """One capture: record (VAD auto-end or hotkey stop) → ASR → input box.
+        The recorder stays warm across captures — the first hotkey pays the
+        ~10 s device open, later captures start instantly."""
         from rockycode.engine import asr as asr_mod
         from rockycode.engine.recorder import Recorder, RecorderError
         self._voice.recording()
         self._render_voice_chip()
-        rec = Recorder()
+        rec = self._recorder or Recorder()
         self._recorder = rec
+        line = Static(f"[bold {VIOLET}]🎙 mic warming…[/]", classes="tool-line")
+        await self._add(line)
         try:
-            await rec.start()
+            await rec.start()  # first capture: waits for the device (~10 s)
         except RecorderError as e:
-            self._recorder = None
             self._voice.transcribed()
             self._render_voice_chip()
-            await self._add(Static(f"[{MUTED}]🎙 {escape(str(e))}[/]", classes="tool-line"))
+            line.update(f"[{MUTED}]🎙 {escape(str(e))}[/]")
             return
-        line = Static(
+        rec.stop_requested = False
+        rec.mark()  # the clip starts NOW — whatever the warm mic had is dropped
+        line.update(
             f"[bold {VIOLET}]🎙 listening…[/] [dim](stop talking to send · "
-            f"{self._voice_hotkey} to stop)[/]", classes="tool-line")
-        await self._add(line)
+            f"{self._voice_hotkey} to stop)[/]")
         vad = voice_mod.EnergyVad(
             threshold=self._voice_threshold,
             release_ms=self._voice_end_silence_ms,
             min_speech_ms=self._voice_min_speech_ms,
         )
         t0 = time.monotonic()
-        try:
-            while rec.running:
-                await asyncio.sleep(0.05)
-                if rec.stop_requested:
-                    break
-                data = await asyncio.to_thread(rec.read_new)
-                if data:
-                    vad.feed(data)
-                if self._voice_autoend and vad.ended:
-                    break
-                if time.monotonic() - t0 >= voice_mod.MAX_RECORD_S:
-                    break
-        finally:
-            pcm = await rec.stop()
-        self._recorder = None
-        if pcm.stat().st_size == 0:
+        while rec.running:
+            await asyncio.sleep(0.05)
+            if rec.stop_requested:
+                break
+            data = await asyncio.to_thread(rec.read_new)
+            if data:
+                vad.feed(data)
+            if self._voice_autoend and vad.ended:
+                break
+            if time.monotonic() - t0 >= voice_mod.MAX_RECORD_S:
+                break
+        seg = rec.finish_segment()
+        if len(seg) == 0:
             self._voice.transcribed()
             self._render_voice_chip()
             line.update(f"[{MUTED}]· nothing recorded — the mic got no audio[/]")
-            pcm.unlink(missing_ok=True)
             return
         self._voice.transcribing()
         self._render_voice_chip()
         line.update(f"[{MUTED}]🎙 transcribing…[/]")
         try:
-            wav = await asyncio.to_thread(lambda: voice_mod.pcm_to_wav(pcm.read_bytes()))
+            wav = await asyncio.to_thread(voice_mod.pcm_to_wav, seg)
             text, _dur = await asr_mod.transcribe(wav)
         except asr_mod.AsrError as e:
             self._voice.transcribed()
             self._render_voice_chip()
             line.update(f"✗ {escape(str(e))}")
-            pcm.unlink(missing_ok=True)
             return
-        pcm.unlink(missing_ok=True)
         self._voice.transcribed()
         self._render_voice_chip()
         line.update(f"[{MUTED}]🎙 heard — into the input box; Enter sends[/]")
