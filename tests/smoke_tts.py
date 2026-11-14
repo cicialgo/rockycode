@@ -108,8 +108,15 @@ def test_recorder_args():
     assert ffmpeg_input_args("Linux") == ("-f", "pulse", "-i", "default")
     assert ffmpeg_input_args("Windows") == ("-f", "dshow", "-i", "audio=default")
     assert ffmpeg_input_args("Haiku") == ()  # unknown platform → honest empty
+    # a device override (arg or env) replaces `default` — some ffmpeg builds
+    # never resolve it; an explicit pin must not be silently replaced
+    assert ffmpeg_input_args("Darwin", "1") == ("-f", "avfoundation", "-i", ":1")
+    os.environ["ROCKYCODE_VOICE_DEVICE"] = "MacBook Pro麦克风"
+    assert ffmpeg_input_args("Darwin") == ("-f", "avfoundation", "-i", ":MacBook Pro麦克风")
+    assert ffmpeg_input_args("Darwin", "0")[-1] == ":0"  # the arg wins over env
+    os.environ.pop("ROCKYCODE_VOICE_DEVICE")
     assert ffmpeg_available() is None or isinstance(ffmpeg_available(), str)
-    print("  recorder: per-platform input args; availability is a hint or None  ✓")
+    print("  recorder: per-platform args; device pin via arg/env; availability hint  ✓")
 
 
 test_synthesize_shape()

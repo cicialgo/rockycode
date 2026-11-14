@@ -4,9 +4,15 @@ fallback, and every recording backend needs *some* binary).
 
 Backends are ffmpeg's own input devices, selected by platform:
 
-    darwin   -f avfoundation -i :default
-    linux    -f pulse -i default
-    windows  -f dshow -i audio=default
+    darwin   -f avfoundation -i :<device>
+    linux    -f pulse -i <device>
+    windows  -f dshow -i audio=<device>
+
+`<device>` is `default` unless ROCKYCODE_VOICE_DEVICE pins an index ("0")
+or a name — some ffmpeg builds never resolve `:default`, so when no audio
+file appears the recorder retries device `0` once before reporting.
+ROCKYCODE_FFMPEG pins the binary path (a machine can carry a broken
+ffmpeg early on PATH — see the /usr/local vs /opt/homebrew split).
 
 Output is 16-bit mono PCM at engine/voice.SAMPLE_RATE (16 kHz — inside the
 ASR-accepted 8k–48k span, and small enough that a 115 s cap is ~3.7 MB, well
@@ -20,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import os
 import platform
 import shutil
 import tempfile
@@ -28,10 +35,13 @@ from typing import Optional
 
 from rockycode.engine import voice
 
+FFMPEG_ENV = "ROCKYCODE_FFMPEG"
+DEVICE_ENV = "ROCKYCODE_VOICE_DEVICE"
+
 _INPUTS = {
-    "Darwin": ("-f", "avfoundation", "-i", ":default"),
-    "Linux": ("-f", "pulse", "-i", "default"),
-    "Windows": ("-f", "dshow", "-i", "audio=default"),
+    "Darwin": ("-f", "avfoundation"),
+    "Linux": ("-f", "pulse"),
+    "Windows": ("-f", "dshow"),
 }
 
 
@@ -39,15 +49,30 @@ class RecorderError(Exception):
     """Recording could not start. Message is user-facing (a fix)."""
 
 
-def ffmpeg_input_args(system: Optional[str] = None) -> tuple[str, ...]:
-    """The input-device args for this platform (pure — smoke-tested)."""
-    return _INPUTS.get(system or platform.system(), ())
+def ffmpeg_bin() -> str:
+    """The binary to spawn — env-pinned or PATH's."""
+    return (os.getenv(FFMPEG_ENV) or "ffmpeg").strip() or "ffmpeg"
+
+
+def ffmpeg_input_args(system: Optional[str] = None, device: Optional[str] = None) -> tuple[str, ...]:
+    """The input-device args for this platform (pure — smoke-tested).
+    `device` wins over the env override, which wins over `default`."""
+    args = _INPUTS.get(system or platform.system())
+    if args is None:
+        return ()
+    dev = (device or os.getenv(DEVICE_ENV) or "default").strip() or "default"
+    if (system or platform.system()) == "Windows":
+        return (*args, "-i", f"audio={dev}")
+    if (system or platform.system()) == "Darwin":
+        return (*args, "-i", f":{dev}")
+    return (*args, "-i", dev)
 
 
 def ffmpeg_available() -> Optional[str]:
     """None = fine; else the user-facing hint for a missing ffmpeg."""
-    if shutil.which("ffmpeg") is None:
-        return "ffmpeg not found — install it (brew install ffmpeg) or use a system mic recorder"
+    if shutil.which(ffmpeg_bin()) is None:
+        return (f"ffmpeg not found — install it (brew install ffmpeg) or point "
+                f"{FFMPEG_ENV} at an ffmpeg binary")
     if not ffmpeg_input_args():
         return f"no known mic input for {platform.system()} — voice recording is not wired here"
     return None
@@ -74,7 +99,9 @@ class Recorder:
 
     async def start(self) -> Path:
         """Spawn ffmpeg; returns the raw-PCM path. Raises RecorderError with
-        the fix when ffmpeg or the mic device is missing."""
+        the fix when ffmpeg is missing, the mic device cannot open (TCC
+        permission is the usual cause — the process hangs, alive but
+        fileless), or every device candidate fails."""
         hint = ffmpeg_available()
         if hint:
             raise RecorderError(hint)
@@ -82,38 +109,60 @@ class Recorder:
             raise RecorderError("a recording is already running")
         tmp = Path(tempfile.mkdtemp(prefix="rockyvoice-"))
         pcm = tmp / "voice.pcm"
-        args = ("-loglevel", "error", *ffmpeg_input_args(),
-                "-ac", "1", "-ar", str(self._rate), "-f", "s16le", "-y", str(pcm))
-        proc = await asyncio.create_subprocess_exec(
-            "ffmpeg", *args,
-            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
-        )
-        self._proc = proc
         self._pcm = pcm
-        self._drain = asyncio.create_task(self._drain_stderr())
-        # The device open is slow (macOS: TCC + avfoundation enumeration can
-        # take seconds) — the process is alive but the output file does not
-        # exist yet. Wait for the file; a process that dies first is a device
-        # failure and its stderr says why.
-        for _ in range(60):  # up to 3 s
-            if pcm.exists():
-                break
-            if not self.running:
-                err = "".join(self._stderr).strip().splitlines()[-1] if self._stderr else ""
-                await self.stop()
-                raise RecorderError(
-                    f"the microphone did not start (ffmpeg: {err or 'no device'}) — "
-                    f"check System Settings → Privacy & Security → Microphone for your terminal"
-                )
-            await asyncio.sleep(0.05)
-        if not pcm.exists():
-            await self.stop()
-            raise RecorderError(
-                "ffmpeg started but produced no audio file — the mic device is "
-                "not delivering; check System Settings → Privacy & Security → Microphone"
+        # A pinned device is tried alone (an explicit choice must not be
+        # silently replaced); otherwise `default` first, then index 0 — some
+        # ffmpeg builds never resolve `:default` (found on ffmpeg 9/arm64
+        # with two mics: the open just stalls).
+        pinned = (os.getenv(DEVICE_ENV) or "").strip()
+        candidates = [pinned] if pinned else ["default", "0"]
+        last_err = ""
+        for device in candidates:
+            args = ("-loglevel", "error", *ffmpeg_input_args(device=device),
+                    "-ac", "1", "-ar", str(self._rate), "-f", "s16le", "-y", str(pcm))
+            proc = await asyncio.create_subprocess_exec(
+                ffmpeg_bin(), *args,
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
             )
-        self._fd = open(pcm, "rb")  # noqa: SIM115 — closed in stop()
-        return pcm
+            self._proc = proc
+            self._drain = asyncio.create_task(self._drain_stderr())
+            # The device open is slow (macOS: TCC + avfoundation enumeration
+            # can take seconds) — the process is alive but the output file
+            # does not exist yet. Wait for the file; a process that dies
+            # first is a device failure and its stderr says why.
+            for _ in range(60):  # up to 3 s
+                if pcm.exists():
+                    break
+                if not self.running:
+                    break
+                await asyncio.sleep(0.05)
+            if pcm.exists():
+                # The file existing is not enough: a TCC-blocked open can
+                # create it and then hang forever. A delivering mic writes
+                # bytes immediately (raw PCM); still 0 after 0.5 s = failed.
+                for _ in range(10):
+                    if pcm.stat().st_size > 0:
+                        self._fd = open(pcm, "rb")  # noqa: SIM115 — closed in stop()
+                        return pcm
+                    if not self.running:
+                        break
+                    await asyncio.sleep(0.05)
+            last_err = "".join(self._stderr).strip().splitlines()[-1] if self._stderr else ""
+            await self.stop()
+            pcm.unlink(missing_ok=True)
+        if last_err:
+            raise RecorderError(
+                f"the microphone did not start (ffmpeg: {last_err}) — check System "
+                f"Settings → Privacy & Security → Microphone for your terminal, or pin "
+                f"a device: {DEVICE_ENV}=0 (list them: ffmpeg -f avfoundation "
+                f"-list_devices true -i dummy)"
+            )
+        raise RecorderError(
+            f"the microphone did not start — the device open stalls, which on macOS "
+            f"is usually the microphone permission (System Settings → Privacy & "
+            f"Security → Microphone → your terminal app); pin a device with "
+            f"{DEVICE_ENV} (index or name) if several mics exist"
+        )
 
     async def _drain_stderr(self) -> None:
         assert self._proc is not None and self._proc.stderr is not None

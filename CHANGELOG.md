@@ -36,6 +36,13 @@ change between minor versions.
   `voice_autosend` · `voice_autoend` · `voice_id stella|tide` ·
   `voice_hotkey ctrl+<letter|digit>` · `voice_end_silence_ms` ·
   `voice_threshold` · `voice_min_speech_ms`.
+- Recorder robustness (found on live hardware): `ROCKYCODE_FFMPEG` pins
+  the ffmpeg binary (a machine can carry a broken one early on PATH),
+  `ROCKYCODE_VOICE_DEVICE` pins the mic by index or name when `:default`
+  doesn't resolve (ffmpeg 9 on arm64 with two mics: the open just
+  stalls), the default falls back to device `0` once, and a stalled
+  device open — the macOS microphone-permission hang — now fails fast
+  with the exact fix instead of stalling a recording.
 
 ### Notes
 - ASR is whole-file (no streaming — DeepSeek docs, 2026-11-13): the VAD
