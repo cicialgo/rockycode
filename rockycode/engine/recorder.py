@@ -90,16 +90,29 @@ class Recorder:
         )
         self._proc = proc
         self._pcm = pcm
-        self._fd = open(pcm, "rb")  # noqa: SIM115 — closed in stop()
         self._drain = asyncio.create_task(self._drain_stderr())
-        await asyncio.sleep(0.3)  # let a bad device die so we can report it
-        if not self.running:
-            err = "".join(self._stderr).strip().splitlines()[-1] if self._stderr else ""
+        # The device open is slow (macOS: TCC + avfoundation enumeration can
+        # take seconds) — the process is alive but the output file does not
+        # exist yet. Wait for the file; a process that dies first is a device
+        # failure and its stderr says why.
+        for _ in range(60):  # up to 3 s
+            if pcm.exists():
+                break
+            if not self.running:
+                err = "".join(self._stderr).strip().splitlines()[-1] if self._stderr else ""
+                await self.stop()
+                raise RecorderError(
+                    f"the microphone did not start (ffmpeg: {err or 'no device'}) — "
+                    f"check System Settings → Privacy & Security → Microphone for your terminal"
+                )
+            await asyncio.sleep(0.05)
+        if not pcm.exists():
             await self.stop()
             raise RecorderError(
-                f"the microphone did not start (ffmpeg: {err or 'no device'}) — "
-                f"check System Settings → Privacy & Security → Microphone for your terminal"
+                "ffmpeg started but produced no audio file — the mic device is "
+                "not delivering; check System Settings → Privacy & Security → Microphone"
             )
+        self._fd = open(pcm, "rb")  # noqa: SIM115 — closed in stop()
         return pcm
 
     async def _drain_stderr(self) -> None:
