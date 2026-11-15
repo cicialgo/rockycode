@@ -122,7 +122,8 @@ async def test_exit_while_speaking():
     rec_mod.Recorder = TalkRec
     voice_mod.STALL_S = 300.0
     client = types.SimpleNamespace(chat=types.SimpleNamespace(completions=Script(False)))
-    app = RockyCodeApp(Engine(model="fake", client=client, workdir=WD, registry={}))
+    app = RockyCodeApp(Engine(model="fake", client=client, workdir=WD, registry={}),
+                       voice_readback="on")
     try:
         async with app.run_test() as pilot:
             await pilot.pause(0.5)
@@ -150,7 +151,8 @@ async def test_exit_while_thinking():
     rec_mod.Recorder = TalkRec
     voice_mod.STALL_S = 300.0
     client = types.SimpleNamespace(chat=types.SimpleNamespace(completions=Script(True)))
-    app = RockyCodeApp(Engine(model="fake", client=client, workdir=WD, registry={}))
+    app = RockyCodeApp(Engine(model="fake", client=client, workdir=WD, registry={}),
+                       voice_readback="on")
     try:
         async with app.run_test() as pilot:
             await pilot.pause(0.5)

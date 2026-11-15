@@ -16,9 +16,12 @@ playback also means no audio-library dependency in the install.
 """
 from __future__ import annotations
 
+import io
 import shutil
 import subprocess
 import tempfile
+import time
+import wave
 from pathlib import Path
 from typing import Optional
 
@@ -34,13 +37,13 @@ _ERRORS = {
     504: "DeepSeek TTS timed out — readback paused; the transcript keeps the text",
 }
 
-# One candidate player per platform (argv prefix, resolved with which()).
-# afplay ships with macOS; ffplay ships with ffmpeg (already rocky's image
-# scaler); `play` is sox. Any of them plays a .wav file; the last two need
-# their silent flags so a readback never fills a log.
+# Candidate players (argv prefix, resolved with which()). ffplay FIRST:
+# it's the only one that can stream raw PCM over a pipe (gapless multi-
+# sentence playback — the whole point of stream mode); afplay (macOS) and
+# sox's `play` fall back to one-process-per-clip file mode.
 _PLAYERS = (
-    ("afplay",),
     ("ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet"),
+    ("afplay",),
     ("play", "-q"),
 )
 
@@ -53,6 +56,18 @@ class TtsError(Exception):
     def __init__(self, message: str, *, permanent: bool = False) -> None:
         super().__init__(message)
         self.permanent = permanent
+
+
+def wav_parts(wav: bytes) -> tuple[int, bytes]:
+    """(sample rate, raw PCM) from a WAV clip — the pipe-streaming player
+    feeds ffplay raw PCM (concatenated WAV files are NOT a valid stream:
+    the second RIFF header would be played as audio). A clip that isn't a
+    WAV at all is defensive noise — nothing to feed."""
+    try:
+        with wave.open(io.BytesIO(wav), "rb") as w:
+            return w.getframerate() or 24_000, w.readframes(w.getnframes())
+    except (wave.Error, EOFError):
+        return 24_000, b""
 
 
 def pick_player() -> Optional[tuple[str, ...]]:
@@ -104,28 +119,42 @@ async def synthesize(
 
 
 class Player:
-    """Plays one .wav at a time; stop() kills it instantly (barge-in).
+    """Plays clips; stop() kills it instantly (barge-in).
 
-    A temp file per sentence (afplay needs a path; ffplay could stream but
-    one mechanism for all three players keeps it simple). stop() is
-    idempotent and safe to call from any phase — including with nothing
-    playing.
-    """
+    Two modes:
+    - STREAM mode (ffplay): one persistent process reads raw PCM from a
+      pipe — consecutive clips play back CONTIGUOUSLY with no per-sentence
+      process spawns or gaps (a bulleted reply is a dozen tiny sentences;
+      a spawn each would stutter). feed() opens the stream lazily on the
+      first clip (the sample rate is only known then), finish_stream()
+      closes stdin so ffplay drains the buffer and exits (-autoexit).
+    - FILE mode (afplay / sox): one temp .wav per clip, one process per
+      clip — the fallback when ffplay is missing.
+
+    stop() is idempotent and safe to call from any phase — including with
+    nothing playing."""
 
     def __init__(self, argv: Optional[tuple[str, ...]] = None) -> None:
         self._argv = argv if argv is not None else pick_player()
         self._proc: Optional[subprocess.Popen] = None
         self._path: Optional[Path] = None
+        self._streaming = False
+        self._fed_s = 0.0       # stream mode: total audio seconds fed
+        self._started_at = 0.0  # stream mode: when the pipe process spawned
 
     def available(self) -> bool:
         return self._argv is not None
+
+    def streamable(self) -> bool:
+        """ffplay (and only ffplay) can take a raw-PCM pipe."""
+        return self._argv is not None and self._argv[0] == "ffplay"
 
     def missing_hint(self) -> str:
         return ("no audio player installed — afplay (macOS), ffplay (ffmpeg) or sox "
                 "is needed for voice readback")
 
     def speak(self, wav: bytes) -> bool:
-        """Start playing. False = could not start (nothing playing)."""
+        """FILE mode: play one clip. False = could not start."""
         if self._argv is None:
             return False
         self.stop()
@@ -145,14 +174,66 @@ class Player:
         self._path = path
         return True
 
+    def feed(self, pcm: bytes, rate: int) -> None:
+        """STREAM mode: push one clip's PCM into the pipe (call via
+        to_thread — the write blocks when ffplay's buffer is full, which
+        is exactly the backpressure that keeps playback gapless). The
+        stream opens lazily on the first clip, at that clip's rate."""
+        if not self.streamable():
+            return
+        if self._proc is None or self._proc.poll() is not None:
+            # NOTE ffplay (unlike ffmpeg) rejects `-ac` — "Option not found"
+            # kills it instantly; -ch_layout is the ffplay spelling.
+            self._proc = subprocess.Popen(
+                [*self._argv, "-f", "s16le", "-ar", str(rate), "-ch_layout", "mono", "-i", "-"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            self._streaming = True
+            self._fed_s = 0.0
+            self._started_at = time.monotonic()
+        if self._proc.stdin is not None and self._proc.poll() is None:
+            try:
+                self._proc.stdin.write(pcm)
+                self._proc.stdin.flush()
+                self._fed_s += len(pcm) / rate / 2
+            except (BrokenPipeError, OSError):
+                pass  # the process died — the next feed or drain notices
+
+    def finish_stream(self) -> None:
+        """STREAM mode: the last clip was fed — close stdin. NOTE ffplay
+        exits at pipe EOF WITHOUT draining its queue (raw PCM has no
+        duration), so finishing is the caller's pacing job — see drain()."""
+        if self._streaming and self._proc is not None and self._proc.stdin is not None:
+            try:
+                self._proc.stdin.close()
+            except OSError:
+                pass
+            self._streaming = False
+
+    def drain(self, pad: float = 0.15) -> None:
+        """STREAM mode: pace out the buffered tail, then reap. ffplay's
+        queue holds everything the pipe accepted ahead of playback, so the
+        remaining audio is fed-duration minus elapsed (plus a small pad)."""
+        if not self._streaming_was() or self._proc is None or self._proc.poll() is not None:
+            return
+        self.finish_stream()
+        remaining = self._fed_s - (time.monotonic() - self._started_at) + pad
+        if remaining > 0:
+            time.sleep(remaining)
+        self.stop()
+
+    def _streaming_was(self) -> bool:
+        return self._fed_s > 0 or self._streaming
+
     def wait(self) -> None:
-        """Block until the current clip finishes (call via to_thread)."""
+        """Block until playback finishes (call via to_thread)."""
         if self._proc is not None:
             self._proc.wait()
             self._cleanup()
 
     def stop(self) -> None:
-        """Kill the current clip now; idempotent."""
+        """Kill playback now (barge-in); idempotent."""
         if self._proc is not None and self._proc.poll() is None:
             self._proc.kill()
         self._cleanup()
@@ -164,6 +245,9 @@ class Player:
     def _cleanup(self) -> None:
         if self._proc is not None:
             self._proc = None
+        self._streaming = False
+        self._fed_s = 0.0
+        self._started_at = 0.0
         if self._path is not None:
             self._path.unlink(missing_ok=True)
             self._path = None

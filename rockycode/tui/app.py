@@ -816,6 +816,8 @@ class RockyCodeApp(App):
             self._turn_worker = self._run_turn(text)
 
     async def _after_cancel(self) -> None:
+        if self._shutting_down:
+            return  # a cancel landing during ctrl+q teardown must not mount
         self._voice_cut()  # Esc mid-reply: silence readback too, not just the stream
         self._talk_turn_done()  # a cancelled talk turn listens again
         await self._flush_buffers()
@@ -1021,20 +1023,47 @@ class RockyCodeApp(App):
 
     # ---- readback (🔊 — DeepSeek TTS, sentence by sentence) --------------------
 
-    def _voice_enqueue(self, sentence: str) -> None:
+    def _voice_enqueue(self, sentence: str | None) -> None:
         if self._voice_failed or self._voice_turn_failed:
             return  # permanent (no key/player) or this turn's transient error
+        if sentence is None:
+            # The turn-end sentinel: only meaningful to a LIVE loop (a done
+            # loop already drained — a fresh one would open a stream for
+            # nothing).
+            if self._voice_speak_task is None or self._voice_speak_task.done():
+                return
+            self._voice_queue.put_nowait(None)
+            return
         if self._voice_speak_task is None or self._voice_speak_task.done():
             self._voice_queue = asyncio.Queue()
             self._voice_cut_flag = False
             self._voice_speak_task = asyncio.create_task(self._voice_speak_loop())
         self._voice_queue.put_nowait(sentence)
 
+    async def _voice_synth(self, text: str, key: str) -> bytes:
+        """Synthesize with ONE retry on transient errors — a 429/503 after a
+        few rounds must not drop the sentence (and with it the rest of the
+        tail, which is exactly the live 'only one sound' report)."""
+        from rockycode.engine import tts as tts_mod
+        try:
+            return await tts_mod.synthesize(text, key=key, voice_id=self._voice_id)
+        except tts_mod.TtsError as e:
+            if e.permanent:
+                raise
+            await asyncio.sleep(1.0)
+            return await tts_mod.synthesize(text, key=key, voice_id=self._voice_id)
+
     async def _voice_speak_loop(self) -> None:
-        """Serial playback: synthesize → play → next. Barge-in/cancel cuts
-        anywhere (Player.stop kills the subprocess; the queue drains)."""
+        """Pipelined playback: while clip N plays, clip N+1 synthesizes —
+        and with ffplay the clips stream as ONE contiguous PCM pipe (no
+        per-sentence process spawns, no inter-sentence gaps — a bulleted
+        reply is a dozen tiny sentences; spawning a player each would
+        stutter). Barge-in/cancel cuts anywhere (Player.stop kills the
+        process; the queue drains)."""
         from rockycode.engine import asr as asr_mod
         from rockycode.engine import tts as tts_mod
+        pending = None  # the next clip's synth task (one ahead)
+        streaming = False
         try:
             key, _src = asr_mod.home_key()
             if not key:
@@ -1042,30 +1071,61 @@ class RockyCodeApp(App):
                     "no DeepSeek API key — set ROCKYCODE_API_KEY (readback rides the home key)",
                     permanent=True,
                 )
+            if self._voice_player is None:
+                self._voice_player = tts_mod.Player()
+            if not self._voice_player.available():
+                raise tts_mod.TtsError(self._voice_player.missing_hint(), permanent=True)
+            streaming = self._voice_player.streamable()
+            started = False
             while True:
-                text = await self._voice_queue.get()
+                if pending is None:
+                    text = await self._voice_queue.get()
+                    if text is None:  # the turn's sentinel — nothing more to say
+                        break
+                    if self._voice_cut_flag:
+                        continue
+                    if not started:
+                        started = True
+                        self._voice.speaking()
+                        self._render_voice_chip()
+                    data = await self._voice_synth(text, key)
+                else:
+                    data = await pending
+                    pending = None
                 if self._voice_cut_flag:
                     continue
-                self._voice.speaking()
-                self._render_voice_chip()
-                data = await tts_mod.synthesize(text, key=key, voice_id=self._voice_id)
-                if self._voice_cut_flag:
-                    continue
-                if self._voice_player is None:
-                    self._voice_player = tts_mod.Player()
-                if not self._voice_player.available():
-                    raise tts_mod.TtsError(self._voice_player.missing_hint(), permanent=True)
-                if not self._voice_player.speak(data):
-                    raise tts_mod.TtsError("could not start the audio player", permanent=True)
-                await asyncio.to_thread(self._voice_player.wait)
-                if self._voice_queue.empty():
-                    self._voice.spoken()
-                    self._render_voice_chip()
+                # start the NEXT synth while this clip plays; a sentinel in
+                # the one-ahead slot marks THIS clip the last
+                done = False
+                if not self._voice_queue.empty():
+                    nxt = self._voice_queue.get_nowait()
+                    if nxt is None:
+                        done = True
+                    else:
+                        pending = asyncio.create_task(self._voice_synth(nxt, key))
+                if streaming:
+                    rate, pcm = tts_mod.wav_parts(data)
+                    await asyncio.to_thread(self._voice_player.feed, pcm, rate)
+                else:
+                    if not self._voice_player.speak(data):
+                        raise tts_mod.TtsError("could not start the audio player", permanent=True)
+                    await asyncio.to_thread(self._voice_player.wait)
+                if done:
                     break
+            if streaming:
+                # ffplay exits at pipe EOF without draining its queue — the
+                # drain paces out the buffered tail (fed-duration - elapsed)
+                await asyncio.to_thread(self._voice_player.drain)
+            self._voice.spoken()
+            self._render_voice_chip()
         except asyncio.CancelledError:
+            if pending is not None:
+                pending.cancel()
             self._voice_cut()
             raise
         except tts_mod.TtsError as e:
+            if pending is not None:
+                pending.cancel()
             self._voice_cut()
             if e.permanent:
                 self._voice_failed = str(e)  # readback off for the session
@@ -1073,7 +1133,7 @@ class RockyCodeApp(App):
                 self._voice_turn_failed = True  # no per-sentence retry spam
             await self._add(Static(f"[{MUTED}]🔊 {escape(str(e))}[/]", classes="tool-line"))
         finally:
-            # EVERY exit (break, error, cancel) must hand the conversation
+            # EVERY exit (drain, error, cancel) must hand the conversation
             # back — a speak loop that dies without this strands talk in
             # SPEAKING forever (found live: a transient TTS 429/503 after a
             # few rounds killed the conversation).
@@ -1114,14 +1174,18 @@ class RockyCodeApp(App):
                     f"[{MUTED}]· talk is already on ({self._talk.phase}) — "
                     f"{self._voice_hotkey} pauses[/]", classes="tool-line"))
                 return
-            if not self._voice_readback:  # talk speaks — for the session
-                self._voice_readback = True
             self._talk.start()
             self._render_voice_chip()
             self._talk_begin_listen()
+            if self._voice_readback:  # readback is OPTIONAL — config voice_readback
+                reply_note = ("rocky answers aloud and listens again. Say anything "
+                              "while he thinks or speaks to interrupt.")
+            else:
+                reply_note = ("rocky's replies stay on screen (voice_readback off — "
+                              "/config voice_readback on to hear him). He listens "
+                              "again after each reply.")
             await self._add(Static(
-                f"[bold {VIOLET}]🎙 talk on[/] [dim]— speak; rocky answers aloud and "
-                f"listens again. Say anything while he thinks or speaks to interrupt. "
+                f"[bold {VIOLET}]🎙 talk on[/] [dim]— speak; {reply_note} "
                 f"{self._voice_hotkey} pauses.[/]", classes="tool-line"))
         else:
             self._talk.stop()
@@ -3993,6 +4057,7 @@ class RockyCodeApp(App):
             rest = self._voice_feeder.flush()  # read the tail that never got an ender
             if rest:
                 self._voice_enqueue(rest)
+            self._voice_enqueue(None)  # the sentinel: the turn is fully out
         await self._flush_buffers()
         await self._finalize_reply()
 

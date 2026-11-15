@@ -8,6 +8,20 @@ change between minor versions.
 ## [Unreleased]
 
 ### Added
+- **Readback is now OPTIONAL and its audio is gapless.** Talk mode
+  respects `voice_readback` instead of forcing it on — off means a
+  voice-in / screen-out conversation. And the stutter is gone (found
+  live: "choppy, sometimes just one sound"): replies now play through
+  ONE persistent ffplay process fed raw PCM over a pipe — consecutive
+  sentences are contiguous, no per-sentence process spawns (a bulleted
+  reply is a dozen tiny sentences; a spawn each was the chop) — with
+  the NEXT sentence synthesizing while the current one plays, and one
+  retry on transient TTS errors (a 429/503 used to drop the whole
+  tail — the "one sound" case). ffplay is preferred when present
+  (ffplay 9 rejects `-ac`; the stream uses `-ch_layout mono`), afplay/
+  sox fall back to the old one-clip-per-process mode. Barge-in still
+  kills playback instantly. Verified live: 3 clips streamed
+  contiguously, full tail played, kill in 0ms.
 - **Talk mode** (`/voice talk on` — the conversation turns itself): an
   utterance auto-submits (no Enter), the reply is spoken aloud (readback
   on for the session), the warm mic listens again when the spoken tail

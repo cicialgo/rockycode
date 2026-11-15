@@ -4,10 +4,12 @@ for the API, a `sleep` subprocess as the "audio device" (no sound, no ffmpeg
 needed to test stop()).
 """
 import asyncio
+import io
 import os
 import sys
 import tempfile
 import time
+import wave
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -18,7 +20,13 @@ os.environ.pop("ROCKYCODE_API_KEY", None)  # hermetic: no ambient key
 import httpx  # noqa: E402
 
 from rockycode.engine.recorder import ffmpeg_available, ffmpeg_input_args  # noqa: E402
-from rockycode.engine.tts import Player, TtsError, pick_player, synthesize  # noqa: E402
+from rockycode.engine.tts import (  # noqa: E402
+    Player,
+    TtsError,
+    pick_player,
+    synthesize,
+    wav_parts,
+)
 
 
 def test_synthesize_shape():
@@ -103,6 +111,22 @@ def test_player_missing():
     print("  player: no binary → honest hint, failed spawn is a clean no-op  ✓")
 
 
+def test_wav_parts():
+    # The stream player feeds ffplay raw PCM — concatenated WAVs would play
+    # the second RIFF header as audio, so clips are stripped to (rate, PCM).
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(24000)
+        w.writeframes(b"\x01\x02" * 100)
+    rate, pcm = wav_parts(buf.getvalue())
+    assert rate == 24000 and pcm == b"\x01\x02" * 100
+    # a headerless/empty clip falls back to the DeepSeek TTS default rate
+    assert wav_parts(b"RIFF" + b"\x00" * 40)[0] == 24000
+    print("  wav_parts: (rate, raw PCM) — the stream player's input  ✓")
+
+
 def test_recorder_args():
     assert ffmpeg_input_args("Darwin") == ("-f", "avfoundation", "-i", ":default")
     assert ffmpeg_input_args("Linux") == ("-f", "pulse", "-i", "default")
@@ -123,5 +147,6 @@ test_synthesize_shape()
 test_synthesize_errors()
 test_player_barge_in()
 test_player_missing()
+test_wav_parts()
 test_recorder_args()
-print("TTS SMOKE OK — shape · errors · barge-in player · recorder args. amaze!")
+print("TTS SMOKE OK — shape · errors · barge-in player · wav_parts · recorder args. amaze!")

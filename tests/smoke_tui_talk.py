@@ -127,11 +127,11 @@ class TalkRec:
         return ""
 
 
-def build(script=None):
+def build(script=None, *, voice_readback="off"):
     script = script or Script()
     client = types.SimpleNamespace(chat=types.SimpleNamespace(completions=script))
     engine = Engine(model="fake", client=client, workdir=WD, registry={})
-    app = RockyCodeApp(engine)
+    app = RockyCodeApp(engine, voice_readback=voice_readback)
     return app, engine, script
 
 
@@ -216,7 +216,7 @@ async def test_talk_readback_error_resumes():
     rec_mod.Recorder = TalkRec
     voice_mod.STALL_S = 300.0
     script = Script().text("收到，继续。")
-    app, _, _ = build(script=script)
+    app, _, _ = build(script=script, voice_readback="on")
     try:
         async with app.run_test() as pilot:
             await wait_until(pilot, lambda: "ctrl+g" in txt(app))
@@ -251,7 +251,7 @@ async def test_talk_barge_during_speaking():
     rec_mod.Recorder = TalkRec
     voice_mod.STALL_S = 300.0
     script = Script().text("收到。")
-    app, _, _ = build(script=script)
+    app, _, _ = build(script=script, voice_readback="on")
     try:
         async with app.run_test() as pilot:
             await wait_until(pilot, lambda: "ctrl+g" in txt(app))
