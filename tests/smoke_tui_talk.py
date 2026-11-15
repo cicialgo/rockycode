@@ -27,9 +27,13 @@ from textual.widgets import Static  # noqa: E402
 
 import rockycode.engine.asr as asr_mod  # noqa: E402
 import rockycode.engine.recorder as rec_mod  # noqa: E402
+import rockycode.engine.tts as tts_mod  # noqa: E402
 import rockycode.engine.voice as voice_mod  # noqa: E402
 from rockycode.engine.loop import Engine  # noqa: E402
 from rockycode.tui.app import ChatInput, RockyCodeApp  # noqa: E402
+
+REAL_HOME_KEY = asr_mod.home_key  # saved — the speak loop reads these attrs
+REAL_SYNTH = tts_mod.synthesize
 
 WD = Path.cwd()
 TONE = voice_mod.tone_samples(220, 500, amp=8000)   # 0.5 s of "voice"
@@ -199,6 +203,79 @@ async def test_talk_barge_in():
     print("  barge: speech during the turn cuts it, cancels, and listens  ✓")
 
 
+async def test_talk_readback_error_resumes():
+    # THE live bug: a transient TTS error (429/503 — plausible after a few
+    # rounds) exited the speak loop without handing the conversation back,
+    # stranding talk in SPEAKING forever. The finally now always resumes.
+    async def boom(text, **kw):
+        raise tts_mod.TtsError("DeepSeek TTS is busy — readback paused", permanent=False)
+
+    asr_mod.transcribe = _fake_transcribe
+    asr_mod.home_key = lambda: ("sk-test", "T")
+    tts_mod.synthesize = boom
+    rec_mod.Recorder = TalkRec
+    voice_mod.STALL_S = 300.0
+    script = Script().text("收到，继续。")
+    app, _, _ = build(script=script)
+    try:
+        async with app.run_test() as pilot:
+            await wait_until(pilot, lambda: "ctrl+g" in txt(app))
+            await pilot.press(*"/voice talk on")
+            await pilot.press("enter")
+            await wait_until(pilot, lambda: app._talk.phase == "listening")
+            app._recorder.q.extend([TONE, SIL_300, SIL_900])
+            ok = await wait_until(pilot, lambda: "busy" in txt(app))
+            assert ok, txt(app)  # the transient error is surfaced
+            ok = await wait_until(pilot, lambda: app._talk.phase == "listening")
+            assert ok, app._talk.phase  # …and NEVER strands in speaking
+    finally:
+        asr_mod.home_key = REAL_HOME_KEY
+        tts_mod.synthesize = REAL_SYNTH
+        voice_mod.STALL_S = 3.0
+    print("  tts error: one line, and the conversation listens again  ✓")
+
+
+async def test_talk_barge_during_speaking():
+    # The barge watcher must stay armed through the spoken tail — speech
+    # mid-sentence interrupts too (the watcher used to be cancelled at turn
+    # end, leaving the tail without protection).
+    gate = asyncio.Event()
+
+    async def gated(text, **kw):
+        await gate.wait()
+        return b"RIFF" + b"\x00" * 60
+
+    asr_mod.transcribe = _fake_transcribe
+    asr_mod.home_key = lambda: ("sk-test", "T")
+    tts_mod.synthesize = gated
+    rec_mod.Recorder = TalkRec
+    voice_mod.STALL_S = 300.0
+    script = Script().text("收到。")
+    app, _, _ = build(script=script)
+    try:
+        async with app.run_test() as pilot:
+            await wait_until(pilot, lambda: "ctrl+g" in txt(app))
+            await pilot.press(*"/voice talk on")
+            await pilot.press("enter")
+            await wait_until(pilot, lambda: app._talk.phase == "listening")
+            app._recorder.q.extend([TONE, SIL_300, SIL_900])
+            ok = await wait_until(pilot, lambda: app._talk.phase == "speaking")
+            assert ok, app._talk.phase  # the tail is playing (synth gated)
+            app._recorder.q.append(TONE)  # the user speaks over it
+            ok = await wait_until(pilot, lambda: "interrupted" in txt(app))
+            assert ok, txt(app)
+            assert app._talk.phase == "listening", app._talk.phase
+            assert app._talk.barges == 1
+            gate.set()
+            ok = await wait_until(pilot, lambda: app._talk.phase == "listening")
+            assert ok, app._talk.phase
+    finally:
+        asr_mod.home_key = REAL_HOME_KEY
+        tts_mod.synthesize = REAL_SYNTH
+        voice_mod.STALL_S = 3.0
+    print("  barge mid-sentence: the tail is protected too  ✓")
+
+
 async def test_talk_hotkey_pauses():
     asr_mod.transcribe = _fake_transcribe
     rec_mod.Recorder = TalkRec
@@ -224,9 +301,11 @@ async def test_talk_hotkey_pauses():
 def run():
     asyncio.run(test_talk_conversation())
     asyncio.run(test_talk_barge_in())
+    asyncio.run(test_talk_readback_error_resumes())
+    asyncio.run(test_talk_barge_during_speaking())
     asyncio.run(test_talk_hotkey_pauses())
 
 
 if __name__ == "__main__":
     run()
-    print("TUI TALK SMOKE OK — auto-turn · barge · pause/resume. amaze!")
+    print("TUI TALK SMOKE OK — auto-turn · barge · tts-error resume · tail barge · pause/resume. amaze!")

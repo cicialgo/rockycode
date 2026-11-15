@@ -753,6 +753,7 @@ class RockyCodeApp(App):
         self._voice_speak_task: asyncio.Task | None = None
         self._voice_cut_flag = False       # set on barge/cancel/new turn → drain, stop
         self._voice_failed = ""            # permanent readback blocker (no key / no player)
+        self._voice_turn_failed = False    # this turn's transient TTS error — stop retrying
         self._recorder = None              # the active recorder while the mic is hot
         self._voice_rec_worker: Worker | None = None
         self._initial_text = initial_text  # --audio transcript: sits in the input box
@@ -1020,8 +1021,8 @@ class RockyCodeApp(App):
     # ---- readback (🔊 — DeepSeek TTS, sentence by sentence) --------------------
 
     def _voice_enqueue(self, sentence: str) -> None:
-        if self._voice_failed:  # no key / no player: stay silent, one line said why
-            return
+        if self._voice_failed or self._voice_turn_failed:
+            return  # permanent (no key/player) or this turn's transient error
         if self._voice_speak_task is None or self._voice_speak_task.done():
             self._voice_queue = asyncio.Queue()
             self._voice_cut_flag = False
@@ -1059,7 +1060,6 @@ class RockyCodeApp(App):
                 if self._voice_queue.empty():
                     self._voice.spoken()
                     self._render_voice_chip()
-                    self._talk_readback_done()  # talk mode: the tail is out → listen
                     break
         except asyncio.CancelledError:
             self._voice_cut()
@@ -1068,7 +1068,15 @@ class RockyCodeApp(App):
             self._voice_cut()
             if e.permanent:
                 self._voice_failed = str(e)  # readback off for the session
+            else:
+                self._voice_turn_failed = True  # no per-sentence retry spam
             await self._add(Static(f"[{MUTED}]🔊 {escape(str(e))}[/]", classes="tool-line"))
+        finally:
+            # EVERY exit (break, error, cancel) must hand the conversation
+            # back — a speak loop that dies without this strands talk in
+            # SPEAKING forever (found live: a transient TTS 429/503 after a
+            # few rounds killed the conversation).
+            self._talk_readback_done()
 
     def _voice_cut(self) -> None:
         """Silence readback instantly — barge-in, Esc, or a new turn. The
@@ -1101,8 +1109,9 @@ class RockyCodeApp(App):
                     classes="tool-line"))
                 return
             if self._talk.phase != talk_mod.TalkPhase.PAUSED:
-                await self._add(Static(f"[{MUTED}]· talk is already on — speaking…[/]",
-                                       classes="tool-line"))
+                await self._add(Static(
+                    f"[{MUTED}]· talk is already on ({self._talk.phase}) — "
+                    f"{self._voice_hotkey} pauses[/]", classes="tool-line"))
                 return
             if not self._voice_readback:  # talk speaks — for the session
                 self._voice_readback = True
@@ -1211,7 +1220,13 @@ class RockyCodeApp(App):
             self._render_voice_chip()
             if action == talk_mod.SUBMIT:
                 await self._on_submit(ChatInput.Submitted(text))  # the same path
-                return  # …as a typed Enter; the barge watcher owns the mic now
+                # …as a typed Enter; the barge watcher owns the mic now.
+                # A spoken `! cmd` runs shell-side (no turn worker) — hand the
+                # conversation back so talk never strands in THINKING.
+                w = self._turn_worker
+                if w is None or not w.is_running:
+                    self._talk_turn_done()
+                return
             await asyncio.sleep(0.3)  # heard nothing — keep listening
 
     def _talk_arm_barge(self) -> None:
@@ -1257,17 +1272,19 @@ class RockyCodeApp(App):
             pass
 
     def _talk_turn_done(self) -> None:
-        """A turn ended (completed, cancelled, or barged): disarm the barge
-        watcher and let the machine decide — listen again, or wait for the
-        spoken tail to finish (readback_done then listens)."""
-        if self._talk_barge_task is not None and not self._talk_barge_task.done():
-            self._talk_barge_task.cancel()
+        """A turn ended (completed, cancelled, or barged): let the machine
+        decide — listen again, or wait for the spoken tail to finish
+        (readback_done then listens). The barge watcher stays armed through
+        the tail — its phase condition ends it when listening resumes or
+        talk pauses, so speech interrupts rocky mid-sentence too."""
         if self._talk.phase == talk_mod.TalkPhase.PAUSED:
             return
         if self._talk.phase == talk_mod.TalkPhase.THINKING:
             q = self._voice_queue
+            task = self._voice_speak_task
             playing = self._voice_player is not None and self._voice_player.playing
-            self._talk.expect_readback(q is not None and (not q.empty() or playing))
+            alive = task is not None and not task.done()  # mid-synth counts too
+            self._talk.expect_readback(q is not None and (not q.empty() or playing or alive))
             action, _ = self._talk.reply_done()
             if action == talk_mod.LISTEN:
                 self._talk_begin_listen()
@@ -3841,6 +3858,7 @@ class RockyCodeApp(App):
         self._voice_feeder = voice_mod.SentenceFeeder()  # per turn — one readback stream
         self._talk_spoken = 0
         self._talk_capped_noted = False
+        self._voice_turn_failed = False  # per turn — a transient TTS error stops the tail
 
         async for ev in self.engine.run_turn(text, images=images):
             if isinstance(ev, StateChanged):
