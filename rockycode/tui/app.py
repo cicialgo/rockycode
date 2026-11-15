@@ -868,7 +868,12 @@ class RockyCodeApp(App):
         self._render_voice_chip()
         rec = self._recorder or Recorder()
         self._recorder = rec
-        line = Static(f"[bold {VIOLET}]🎙 mic warming…[/]", classes="tool-line")
+        rec.stop_requested = False   # a fresh flag per capture
+        rec.mark()                   # the clip starts at the PRESS — the warm
+        # buffer's pre-roll is skipped, but everything said DURING a first
+        # capture's warm-up is kept (mark is before start).
+        line = Static(f"[bold {VIOLET}]🎙 mic warming…[/] [dim](speak any time)[/]",
+                      classes="tool-line")
         await self._add(line)
         try:
             await rec.start()  # first capture: waits for the device (~10 s)
@@ -877,11 +882,14 @@ class RockyCodeApp(App):
             self._render_voice_chip()
             line.update(f"[{MUTED}]🎙 {escape(str(e))}[/]")
             return
-        rec.stop_requested = False
-        rec.mark()  # the clip starts NOW — whatever the warm mic had is dropped
+        if rec.stop_requested:  # pressed again while warming — that's a cancel
+            self._voice.transcribed()
+            self._render_voice_chip()
+            line.update(f"[{MUTED}]· cancelled[/]")
+            return
         line.update(
-            f"[bold {VIOLET}]🎙 listening…[/] [dim](stop talking to send · "
-            f"{self._voice_hotkey} to stop)[/]")
+            f"[bold {VIOLET}]🎙 listening…[/] [dim](device {rec.device or 'default'} · "
+            f"stop talking to send · {self._voice_hotkey} to stop)[/]")
         vad = voice_mod.EnergyVad(
             threshold=self._voice_threshold,
             release_ms=self._voice_end_silence_ms,
@@ -890,20 +898,32 @@ class RockyCodeApp(App):
         t0 = time.monotonic()
         while rec.running:
             await asyncio.sleep(0.05)
+            data = await asyncio.to_thread(rec.read_new)  # read BEFORE the
+            if data:                                      # stop check: a stop
+                vad.feed(data)                            # never loses audio
             if rec.stop_requested:
                 break
-            data = await asyncio.to_thread(rec.read_new)
-            if data:
-                vad.feed(data)
             if self._voice_autoend and vad.ended:
                 break
             if time.monotonic() - t0 >= voice_mod.MAX_RECORD_S:
                 break
         seg = rec.finish_segment()
         if len(seg) == 0:
+            # Say WHY, not just that it failed: a dead ffmpeg process, or a
+            # warm device that stopped delivering. Either way the binary
+            # path is the first thing to check (a machine can carry a broken
+            # ffmpeg early on PATH — ROCKYCODE_FFMPEG pins a healthy one).
+            from rockycode.engine.recorder import ffmpeg_bin
             self._voice.transcribed()
             self._render_voice_chip()
-            line.update(f"[{MUTED}]· nothing recorded — the mic got no audio[/]")
+            if not rec.running:
+                tail = rec.stderr_tail()
+                line.update(f"[{MUTED}]· nothing recorded — the mic process died"
+                            f"{f' (ffmpeg: {tail})' if tail else ''} · ffmpeg used: {ffmpeg_bin()}[/]")
+            else:
+                line.update(f"[{MUTED}]· nothing recorded — the mic delivered no audio "
+                            f"(device {rec.device or 'default'} · ffmpeg {ffmpeg_bin()}) — "
+                            f"check the input device[/]")
             return
         self._voice.transcribing()
         self._render_voice_chip()

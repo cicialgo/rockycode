@@ -86,10 +86,11 @@ def ffmpeg_available() -> Optional[str]:
 
 def _permission_error(devices: tuple[str, ...]) -> RecorderError:
     return RecorderError(
-        f"the microphone stays silent ({', '.join(f'`{d}`' for d in devices)} tried) — on "
-        f"macOS this is almost always the microphone permission: System Settings → "
-        f"Privacy & Security → Microphone → your terminal app (then restart rocky). "
-        f"Pin a device with {DEVICE_ENV} if several mics exist"
+        f"the microphone stays silent ({', '.join(f'`{d}`' for d in devices)} tried, "
+        f"ffmpeg: {ffmpeg_bin()}) — on macOS this is almost always the microphone "
+        f"permission: System Settings → Privacy & Security → Microphone → your "
+        f"terminal app (then restart rocky). Pin a device with {DEVICE_ENV} if "
+        f"several mics exist"
     )
 
 
@@ -112,6 +113,8 @@ class Recorder:
         self._first = asyncio.Event()   # the device delivered bytes
         self._dead = asyncio.Event()    # ffmpeg exited on its own
         self.stop_requested = False
+        self.device = ""    # the candidate that actually opened (diagnostics)
+        self._bytes = 0     # total PCM delivered since start (diagnostics)
 
     @property
     def running(self) -> bool:
@@ -133,7 +136,14 @@ class Recorder:
         if hint:
             raise RecorderError(hint)
         if self.started:
-            return  # warm from an earlier capture — segments are instant
+            if self.running:
+                return  # warm from an earlier capture — segments are instant
+            # Died while idle (device unplugged, binary killed): a stale
+            # recorder must never masquerade as warm — respawn below.
+            await self._teardown_proc()
+            self._buf = bytearray()
+            self._vad_cur = 0
+            self._mark = 0
         # A pinned device is tried alone (an explicit choice must not be
         # silently replaced); otherwise `default` first, then index 0 — some
         # ffmpeg builds never resolve `:default`.
@@ -163,14 +173,15 @@ class Recorder:
                 if not t.done():
                     t.cancel()
             if self._first.is_set() and self.running:
+                self.device = device
                 return  # warm — capture immediately
             if self._dead.is_set():
                 err = "".join(self._stderr).strip().splitlines()[-1] if self._stderr else ""
                 await self._teardown_proc()
                 raise RecorderError(
-                    f"the microphone did not start (ffmpeg: {err or 'no device'}) — pin a "
-                    f"device with {DEVICE_ENV} (index like `0`, or a name; list them: ffmpeg "
-                    f"-f avfoundation -list_devices true -i dummy)"
+                    f"the microphone did not start (ffmpeg: {err or 'no device'} · binary "
+                    f"{ffmpeg_bin()}) — pin a device with {DEVICE_ENV} (index like `0`, or a "
+                    f"name; list them: ffmpeg -f avfoundation -list_devices true -i dummy)"
                 )
             if not done:  # warm-up timed out: alive but silent = the TCC stall
                 await self._teardown_proc()
@@ -191,22 +202,29 @@ class Recorder:
         self._vad_cur = 0
         self._mark = 0
         self.stop_requested = False
+        self.device = ""
+        self._bytes = 0
 
     async def _read_loop(self) -> None:
         assert self._proc is not None and self._proc.stdout is not None
-        while True:
-            chunk = await self._proc.stdout.read(65536)
-            if not chunk:  # EOF: ffmpeg died
-                self._dead.set()
-                return
-            if not self._first.is_set():
-                self._first.set()
-            self._buf.extend(chunk)
-            over = len(self._buf) - self._cap
-            if over > 0:
-                del self._buf[:over]
-                self._vad_cur = max(0, self._vad_cur - over)
-                self._mark = max(0, self._mark - over)
+        try:
+            while True:
+                chunk = await self._proc.stdout.read(65536)
+                if not chunk:  # EOF: ffmpeg died
+                    self._dead.set()
+                    return
+                if not self._first.is_set():
+                    self._first.set()
+                self._bytes += len(chunk)
+                self._buf.extend(chunk)
+                over = len(self._buf) - self._cap
+                if over > 0:
+                    del self._buf[:over]
+                    self._vad_cur = max(0, self._vad_cur - over)
+                    self._mark = max(0, self._mark - over)
+        except OSError as e:  # a broken pipe must not kill the task silently
+            self._stderr.append(f"pipe error: {e}")
+            self._dead.set()
 
     async def _drain_stderr(self) -> None:
         assert self._proc is not None and self._proc.stderr is not None
@@ -215,6 +233,10 @@ class Recorder:
             if not line:
                 return
             self._stderr.append(line.decode(errors="replace").strip())
+
+    def stderr_tail(self) -> str:
+        """The last ffmpeg stderr line — the 'why' in failure messages."""
+        return "".join(self._stderr).strip().splitlines()[-1] if self._stderr else ""
 
     def mark(self) -> None:
         """Begin a capture segment: everything from now until finish_segment

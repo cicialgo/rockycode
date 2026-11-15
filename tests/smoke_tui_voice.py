@@ -78,6 +78,8 @@ class FakeRecorder:
 
     stop_requested = False
     keep_running = False  # True → stays RECORDING until stop_requested
+    silent = False        # True → never delivers, process "dies" instantly
+    device = "fake"
 
     def __init__(self):
         self._buf = bytearray()
@@ -85,8 +87,13 @@ class FakeRecorder:
         self._vad_cur = 0
         self._delivered = False
 
+    def stderr_tail(self):
+        return ""
+
     @property
     def running(self):
+        if self.silent:
+            return False
         if self.keep_running:
             return not self.stop_requested
         return not self._delivered
@@ -211,6 +218,25 @@ async def test_barge_in_then_stop():
     print("  barge: ctrl+g during speech cuts audio and records; again stops  ✓")
 
 
+async def test_silent_mic_reports_why():
+    # An empty segment must say WHY (dead process vs no audio) and name the
+    # ffmpeg binary — the first thing to check when a machine carries a
+    # broken ffmpeg early on PATH.
+    asr_mod.transcribe = _fake_transcribe
+    FakeRecorder.silent = True
+    rec_mod.Recorder = FakeRecorder
+    app, _, _ = build()
+    async with app.run_test() as pilot:
+        await wait_until(pilot, lambda: "ctrl+g" in txt(app))
+        await pilot.press("ctrl+g")
+        ok = await wait_until(pilot, lambda: "nothing recorded" in txt(app))
+        assert ok, txt(app)
+        assert "ffmpeg used" in txt(app)           # names the binary, says it died
+        assert app.query_one(ChatInput).text == ""  # and inserts nothing
+    FakeRecorder.silent = False
+    print("  silent mic: reports the death + ffmpeg path, inserts nothing  ✓")
+
+
 async def test_busy_while_transcribing():
     gate = asyncio.Event()
 
@@ -256,6 +282,7 @@ def run():
     asyncio.run(test_record_inserts())
     asyncio.run(test_autosend_runs_a_turn())
     asyncio.run(test_barge_in_then_stop())
+    asyncio.run(test_silent_mic_reports_why())
     asyncio.run(test_busy_while_transcribing())
     asyncio.run(test_readback_no_key())
 
