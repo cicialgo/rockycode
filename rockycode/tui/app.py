@@ -40,6 +40,7 @@ from rockycode.banner import ROCKY_TAGLINE
 from rockycode.engine import AgentState, Engine
 from rockycode.engine import cron as cron_mod
 from rockycode.engine import tools as tools_mod
+from rockycode.engine import talk as talk_mod
 from rockycode.engine import voice as voice_mod
 from rockycode.engine.effort import EFFORT_LEVELS, wire_tier
 from rockycode.engine.providers import fmt_tokens
@@ -124,6 +125,7 @@ HELP_TEXT = f"""\
   [{LAVENDER}]/model[/]   switch provider + model (deepseek · glm · kimi · minimax · stepfun · qwen · mimo · ollama = local, $0)
   [{LAVENDER}]/paste[/]   attach a clipboard image (or ctrl+v in the input). a vision model sees it raw (deepseek-flash does); a text-only model gets it described by deepseek-flash or your own CLI (/config image_cli)
   [{LAVENDER}]{{voice}}[/]   🎙 speak — DeepSeek ASR transcribes and puts it in the input box (Enter still sends). /config voice_readback on makes rocky speak back; the hotkey during speech barges in
+  [{LAVENDER}]/voice talk[/]  hands-free conversation — speak, rocky answers aloud and listens again; speech while he thinks or speaks interrupts (also /voice talk off · config voice_talk)
   [{LAVENDER}]/sandbox[/]  sandbox on | off | status — isolate tools in a container
   [{LAVENDER}]/lsp[/]     language-server status (diagnostics ride along read_file)
   [{LAVENDER}]/artifact[/]  list | open | stop | live on/off — manage this session's artifacts
@@ -284,7 +286,7 @@ class ChatInput(TextArea):
         "/help", "/plan", "/goal", "/loop", "/cron", "/research", "/learn", "/sandbox", "/lsp", "/artifact",
         "/artifacts",
         "/paste",
-        "/prompt", "/config", "/model", "/effort", "/permission", "/mcp", "/skills", "/memory",
+        "/prompt", "/config", "/model", "/effort", "/permission", "/voice", "/mcp", "/skills", "/memory",
         "/proposals", "/routines", "/remember", "/clear", "/exit", "/quit",
     ]
 
@@ -675,7 +677,7 @@ class RockyCodeApp(App):
         voice_autosend: str = "off", voice_autoend: str = "on",
         voice_id: str = "stella", voice_hotkey: str = "ctrl+g",
         voice_end_silence_ms: int = 700, voice_threshold: int = 700,
-        voice_min_speech_ms: int = 200,
+        voice_min_speech_ms: int = 200, voice_talk: str = "off",
         initial_text: str = "",
     ) -> None:
         super().__init__()
@@ -754,6 +756,15 @@ class RockyCodeApp(App):
         self._recorder = None              # the active recorder while the mic is hot
         self._voice_rec_worker: Worker | None = None
         self._initial_text = initial_text  # --audio transcript: sits in the input box
+        # Talk mode (engine/talk.py — /voice talk): the conversation turns
+        # itself. The machine owns the phase; the app drives it with the same
+        # recorder/VAD/ASR/TTS parts as tap mode.
+        self._talk = talk_mod.TalkMachine()
+        self._talk_barge_task: asyncio.Task | None = None
+        self._talk_barge_vad: voice_mod.EnergyVad | None = None
+        self._talk_spoken = 0              # spoken chars this turn (the cap)
+        self._talk_capped_noted = False    # one muted line per turn at the cap
+        self._talk_cfg = voice_talk == "on"
 
 
     # animate=False on purpose: instant, snappy scroll (the default animation
@@ -804,6 +815,7 @@ class RockyCodeApp(App):
 
     async def _after_cancel(self) -> None:
         self._voice_cut()  # Esc mid-reply: silence readback too, not just the stream
+        self._talk_turn_done()  # a cancelled talk turn listens again
         await self._flush_buffers()
         await self._finalize_reply()
         ct, self._cancelled_tick = self._cancelled_tick, None
@@ -826,6 +838,17 @@ class RockyCodeApp(App):
             chip = self.query_one("#voicechip", Static)
         except NoMatches:  # a pushed screen (goal) covers the chat — nothing to render
             return
+        phase = self._talk.phase
+        if phase != talk_mod.TalkPhase.PAUSED:  # talk mode owns the chip
+            if phase == talk_mod.TalkPhase.LISTENING:
+                chip.update(f"[bold {LAVENDER}]🎙 talk · listening[/]")
+            elif phase == talk_mod.TalkPhase.TRANSCRIBING:
+                chip.update(f"[italic {MUTED}]🎙 talk · …[/]")
+            elif phase == talk_mod.TalkPhase.THINKING:
+                chip.update(f"[italic {VIOLET}]🎙 talk · working…[/]")
+            elif phase == talk_mod.TalkPhase.SPEAKING:
+                chip.update(f"[italic {LAVENDER}]🎙 talk · speaking[/]")
+            return
         phase = self._voice.phase
         if phase == voice_mod.VoicePhase.OFF:
             chip.update("[dim]🎙 off[/]")
@@ -840,6 +863,9 @@ class RockyCodeApp(App):
 
     @on(ChatInput.VoiceToggleRequested)
     async def _on_voice_toggle(self, _event: ChatInput.VoiceToggleRequested) -> None:
+        if self._talk.phase != talk_mod.TalkPhase.PAUSED:
+            await self._talk_set(False)  # the hotkey pauses a running talk
+            return
         action, msg = self._voice.hotkey()
         if action == voice_mod.HINT or action == voice_mod.BUSY:
             await self._add(Static(f"[{MUTED}]🎙 {escape(msg)}[/]", classes="tool-line"))
@@ -915,21 +941,16 @@ class RockyCodeApp(App):
                                 f"check the device (unplugged? bluetooth?)[/]")
                     break
                 stalled = True
-                accumulated += rec.finish_segment()
-                await rec.stop()
-                line.update(f"[{MUTED}]🎙 mic stalled — restarting it…[/]")
-                try:
-                    await rec.start()
-                except RecorderError as e:
+                accumulated, err = await self._voice_stall_restart(rec, line, accumulated)
+                if err:
                     self._voice.transcribed()
                     self._render_voice_chip()
                     if accumulated:
                         await self._voice_deliver(accumulated, line)
                     else:
                         line.update(f"[{MUTED}]🎙 mic stalled and did not come back — "
-                                    f"{escape(str(e))}[/]")
+                                    f"{escape(err)}[/]")
                     return
-                rec.mark()
                 last_data = time.monotonic()
             if rec.stop_requested:
                 break
@@ -940,6 +961,20 @@ class RockyCodeApp(App):
             if not rec.running:
                 break  # died — _voice_deliver's empty branch names the reason
         await self._voice_deliver(accumulated + rec.finish_segment(), line)
+
+    async def _voice_stall_restart(self, rec, line: Static, accumulated: bytes) -> tuple[bytes, str]:
+        """The mic is alive but silent: restart it once, keeping the clip so
+        far. Returns (accumulated, error) — error non-empty when the restart
+        failed and the clip must end."""
+        accumulated += rec.finish_segment()
+        await rec.stop()
+        line.update(f"[{MUTED}]🎙 mic stalled — restarting it…[/]")
+        try:
+            await rec.start()
+        except RecorderError as e:
+            return accumulated, str(e)
+        rec.mark()
+        return accumulated, ""
 
     async def _voice_deliver(self, seg: bytes, line: Static) -> None:
         """The capture's tail: WAV wrap → ASR → input box. Empty segments say
@@ -1024,6 +1059,7 @@ class RockyCodeApp(App):
                 if self._voice_queue.empty():
                     self._voice.spoken()
                     self._render_voice_chip()
+                    self._talk_readback_done()  # talk mode: the tail is out → listen
                     break
         except asyncio.CancelledError:
             self._voice_cut()
@@ -1051,6 +1087,201 @@ class RockyCodeApp(App):
         if task is not None and task is not asyncio.current_task() and not task.done():
             task.cancel()
         self._voice.cut()
+        self._render_voice_chip()
+
+    # ---- talk mode (/voice talk — engine/talk.py: the conversation turns
+    # itself — utterance auto-sends, replies are spoken, speech barges in) ----
+
+    async def _talk_set(self, on: bool) -> None:
+        """/voice talk on|off — the hotkey also lands here (pause)."""
+        if on:
+            if not self._voice.enabled:
+                await self._add(Static(
+                    f"[{MUTED}]· voice is off — /config voice_engine deepseek first[/]",
+                    classes="tool-line"))
+                return
+            if self._talk.phase != talk_mod.TalkPhase.PAUSED:
+                await self._add(Static(f"[{MUTED}]· talk is already on — speaking…[/]",
+                                       classes="tool-line"))
+                return
+            if not self._voice_readback:  # talk speaks — for the session
+                self._voice_readback = True
+            self._talk.start()
+            self._render_voice_chip()
+            self._talk_begin_listen()
+            await self._add(Static(
+                f"[bold {VIOLET}]🎙 talk on[/] [dim]— speak; rocky answers aloud and "
+                f"listens again. Say anything while he thinks or speaks to interrupt. "
+                f"{self._voice_hotkey} pauses.[/]", classes="tool-line"))
+        else:
+            self._talk.stop()
+            self._render_voice_chip()
+            await self._add(Static(
+                f"[{MUTED}]· talk paused — {self._voice_hotkey} records a message "
+                f"(tap mode), /voice talk resumes[/]", classes="tool-line"))
+
+    def _talk_begin_listen(self) -> None:
+        """Start the hands-free listen worker (idempotent — a barge and a
+        cancel can both ask)."""
+        if self._talk.phase != talk_mod.TalkPhase.LISTENING:
+            return
+        if self._voice_rec_worker is not None and self._voice_rec_worker.is_running:
+            return
+        self._voice_rec_worker = self._talk_listen()
+
+    @work(group="voice", exclusive=True)
+    async def _talk_listen(self) -> None:
+        """The hands-free loop: capture → ASR → auto-submit → return (the
+        turn's barge watcher owns the mic during THINKING/SPEAKING and calls
+        _talk_begin_listen again when the conversation comes back around).
+        One worker per LISTENING phase; it exits the moment talk pauses or a
+        typed turn supersedes it — the in-flight clip is dropped, never
+        submitted."""
+        from rockycode.engine import asr as asr_mod
+        from rockycode.engine.recorder import Recorder, RecorderError
+        rec = self._recorder or Recorder()
+        self._recorder = rec
+        line = Static("", classes="tool-line")
+        await self._add(line)
+        try:
+            await rec.start()  # warm (instant after the first capture)
+        except RecorderError as e:
+            self._talk.stop()
+            self._render_voice_chip()
+            line.update(f"[{MUTED}]🎙 talk could not start — {escape(str(e))}[/]")
+            return
+        while self._talk.phase == talk_mod.TalkPhase.LISTENING:
+            rec.stop_requested = False
+            rec.mark()
+            vad = voice_mod.EnergyVad(
+                threshold=self._voice_threshold,
+                release_ms=self._voice_end_silence_ms,
+                min_speech_ms=self._voice_min_speech_ms,
+            )
+            t0 = time.monotonic()
+            last_data = time.monotonic()
+            accumulated = b""
+            stalled = False
+            while True:
+                await asyncio.sleep(0.05)
+                if self._talk.phase != talk_mod.TalkPhase.LISTENING:
+                    return  # paused / typed turn / barge — the clip is dropped
+                data = await asyncio.to_thread(rec.read_new)
+                if data:
+                    vad.feed(data)
+                    last_data = time.monotonic()
+                elif rec.running and (time.monotonic() - last_data) > voice_mod.STALL_S:
+                    if stalled:
+                        line.update(f"[{MUTED}]· the mic stayed silent after the restart — "
+                                    f"check the device (unplugged? bluetooth?)[/]")
+                        break
+                    stalled = True
+                    accumulated, err = await self._voice_stall_restart(rec, line, accumulated)
+                    if err:
+                        self._talk.stop()
+                        self._render_voice_chip()
+                        line.update(f"[{MUTED}]🎙 mic stalled and did not come back — "
+                                    f"{escape(err)}[/]")
+                        return
+                    last_data = time.monotonic()
+                if vad.ended:
+                    break
+                if time.monotonic() - t0 >= voice_mod.MAX_RECORD_S:
+                    break
+                if not rec.running:
+                    break
+            seg = accumulated + rec.finish_segment()
+            if len(seg) == 0:
+                await asyncio.sleep(0.3)  # debounce: silence must not hot-loop
+                continue
+            action, _ = self._talk.heard_end()
+            if action != talk_mod.TRANSCRIBE:
+                continue
+            self._render_voice_chip()
+            try:
+                wav = await asyncio.to_thread(voice_mod.pcm_to_wav, seg)
+                text, _dur = await asr_mod.transcribe(wav)
+            except asr_mod.AsrError as e:
+                line.update(f"[{MUTED}]🎙 {escape(str(e))}[/]")
+                self._talk.transcript("")  # back to LISTENING
+                self._render_voice_chip()
+                await asyncio.sleep(0.3)
+                continue
+            action, text = self._talk.transcript(text)
+            self._render_voice_chip()
+            if action == talk_mod.SUBMIT:
+                await self._on_submit(ChatInput.Submitted(text))  # the same path
+                return  # …as a typed Enter; the barge watcher owns the mic now
+            await asyncio.sleep(0.3)  # heard nothing — keep listening
+
+    def _talk_arm_barge(self) -> None:
+        """During a talk turn, keep feeding the warm mic into a fresh VAD —
+        detected speech = BARGE: cut the audio, cancel the turn, listen."""
+        if self._talk.phase != talk_mod.TalkPhase.THINKING:
+            return
+        if self._talk_barge_task is not None and not self._talk_barge_task.done():
+            self._talk_barge_task.cancel()
+        self._talk_barge_vad = voice_mod.EnergyVad(
+            threshold=self._voice_threshold, attack_ms=60,
+            release_ms=self._voice_end_silence_ms,
+            min_speech_ms=self._voice_min_speech_ms,
+        )
+        self._talk_barge_task = asyncio.create_task(self._talk_barge_watch())
+
+    async def _talk_barge_watch(self) -> None:
+        rec = self._recorder
+        if rec is None:
+            return
+        try:
+            while self._talk.phase in (talk_mod.TalkPhase.THINKING,
+                                       talk_mod.TalkPhase.SPEAKING):
+                await asyncio.sleep(0.05)
+                data = await asyncio.to_thread(rec.read_new)
+                if data and self._talk_barge_vad is not None:
+                    self._talk_barge_vad.feed(data)
+                    if self._talk_barge_vad.state == "speech":
+                        action, _ = self._talk.speech()
+                        if action != talk_mod.BARGE:
+                            continue
+                        await self._add(Static(
+                            f"[{VIOLET}]🎙 interrupted — listening…[/]", classes="tool-line"))
+                        self._voice_cut()  # cut the audio instantly
+                        w = self._turn_worker
+                        if w is not None and w.is_running:
+                            w.cancel()  # …then cancel the turn (Esc's path)
+                        self._talk_begin_listen()
+                        return
+                if not rec.running:
+                    return
+        except asyncio.CancelledError:
+            pass
+
+    def _talk_turn_done(self) -> None:
+        """A turn ended (completed, cancelled, or barged): disarm the barge
+        watcher and let the machine decide — listen again, or wait for the
+        spoken tail to finish (readback_done then listens)."""
+        if self._talk_barge_task is not None and not self._talk_barge_task.done():
+            self._talk_barge_task.cancel()
+        if self._talk.phase == talk_mod.TalkPhase.PAUSED:
+            return
+        if self._talk.phase == talk_mod.TalkPhase.THINKING:
+            q = self._voice_queue
+            playing = self._voice_player is not None and self._voice_player.playing
+            self._talk.expect_readback(q is not None and (not q.empty() or playing))
+            action, _ = self._talk.reply_done()
+            if action == talk_mod.LISTEN:
+                self._talk_begin_listen()
+        elif self._talk.phase == talk_mod.TalkPhase.LISTENING:
+            self._talk_begin_listen()  # a barge already set LISTENING
+        self._render_voice_chip()
+
+    def _talk_readback_done(self) -> None:
+        """The spoken tail finished — listen again (no-op in tap mode)."""
+        if self._talk.phase == talk_mod.TalkPhase.PAUSED:
+            return
+        action, _ = self._talk.readback_done()
+        if action == talk_mod.LISTEN:
+            self._talk_begin_listen()
         self._render_voice_chip()
 
     async def _approve_tool(self, name: str, args: dict) -> bool:
@@ -1656,6 +1887,8 @@ class RockyCodeApp(App):
             self._resume_flow()  # picker → replay (or fall through to fresh)
         else:
             await self._greet()
+        if self._talk_cfg:  # config voice_talk on → the conversation starts itself
+            await self._talk_set(True)
         if self._initial_text:  # --audio transcript: visible + reviewable, Enter sends
             ci = self.query_one(ChatInput)
             ci.text = self._initial_text
@@ -2171,6 +2404,8 @@ class RockyCodeApp(App):
                 pass
         # Voice teardown: never leave a clip playing or a mic hot after exit.
         self._voice_cut_flag = True
+        if self._talk_barge_task is not None and not self._talk_barge_task.done():
+            self._talk_barge_task.cancel()
         if self._voice_player is not None:
             self._voice_player.stop()
         if self._voice_speak_task is not None and not self._voice_speak_task.done():
@@ -2895,6 +3130,17 @@ class RockyCodeApp(App):
             await self._add(Static(HELP_TEXT.format(voice=self._voice_hotkey), classes="tool-line"))
         elif cmd == "/paste":
             self._paste_worker(text_fallback=False)
+        elif cmd == "/voice":
+            parts = text.split()
+            if len(parts) >= 2 and parts[1] in ("talk", "t"):
+                on = len(parts) < 3 or parts[2] not in ("off", "no", "stop")
+                await self._talk_set(on)
+            else:
+                status = self._talk.phase
+                await self._add(Static(
+                    f"[{MUTED}]· voice talk: {status} — [/][{LAVENDER}]/voice talk on|off[/]"
+                    f"[{MUTED}] turns the conversation hands-free (utterance auto-sends, "
+                    f"replies are spoken, speech interrupts)[/]", classes="tool-line"))
         elif cmd in ("/research", "/learn"):
             await self._handle_mode_cmd(cmd[1:], text)
         elif cmd == "/config":
@@ -3543,6 +3789,8 @@ class RockyCodeApp(App):
         on_worker_state_changed — run_turn's finally already keeps history valid."""
         from rockycode.tui.permission import CancelTurn
         self._voice_cut()  # a new message moves the conversation on — stop readback
+        self._talk.typed_turn()   # a typed turn yields the mic (no-op when paused)
+        self._talk_arm_barge()    # arms only while the machine says THINKING
         try:
             if images:
                 # dragged/typed files skip the paste worker's downscale — cap
@@ -3556,11 +3804,13 @@ class RockyCodeApp(App):
             await self._drive_turn(text, images)
             await self._maybe_plan_gate(plan_before)  # no-op unless plan mode + file changed
             self._maybe_title()  # first completed turn names the session (async, free)
+            self._talk_turn_done()
         except CancelTurn:
             await self._flush_buffers()
             await self._finalize_reply()
             self._set_status(AgentState.IDLE)
             await self._add(Static(f"[{MUTED}]· turn cancelled[/]", classes="tool-line"))
+            self._talk_turn_done()
             self.query_one(ChatInput).focus()
         except Exception as e:  # noqa: BLE001
             # Never let one turn crash the whole app. The @work default
@@ -3577,6 +3827,7 @@ class RockyCodeApp(App):
                 pass
             self._set_status(AgentState.IDLE)
             await self._add(Static(f"✗ {escape(f'{type(e).__name__}: {e}')}", classes="error-msg"))
+            self._talk_turn_done()
             self.query_one(ChatInput).focus()
 
     async def _drive_turn(self, text: str, images: list[str] | None = None) -> None:
@@ -3588,6 +3839,8 @@ class RockyCodeApp(App):
         self._think_box = None
         self._reply_widget = None
         self._voice_feeder = voice_mod.SentenceFeeder()  # per turn — one readback stream
+        self._talk_spoken = 0
+        self._talk_capped_noted = False
 
         async for ev in self.engine.run_turn(text, images=images):
             if isinstance(ev, StateChanged):
@@ -3620,8 +3873,23 @@ class RockyCodeApp(App):
                     # Recording suppresses it: never speak over the user's mic.
                     if self._voice.phase in (voice_mod.VoicePhase.IDLE,
                                              voice_mod.VoicePhase.SPEAKING):
-                        for sent in self._voice_feeder.feed(ev.text):
-                            self._voice_enqueue(sent)
+                        if self._talk.phase != talk_mod.TalkPhase.PAUSED:
+                            # Talk mode caps the SPOKEN part (coding replies
+                            # run long — reading 40 lines is noise); the
+                            # transcript keeps everything.
+                            if self._talk_spoken >= talk_mod.TALK_SPOKEN_CAP:
+                                if not self._talk_capped_noted:
+                                    self._talk_capped_noted = True
+                                    await self._add(Static(
+                                        f"[{MUTED}]🔊 spoken cap reached — the rest is on screen[/]",
+                                        classes="tool-line"))
+                            else:
+                                for sent in self._voice_feeder.feed(ev.text):
+                                    self._talk_spoken += len(sent)
+                                    self._voice_enqueue(sent)
+                        else:
+                            for sent in self._voice_feeder.feed(ev.text):
+                                self._voice_enqueue(sent)
 
             elif isinstance(ev, ToolStarted):
                 await self._add(
@@ -3849,7 +4117,7 @@ def run_app(
     voice_autosend: str = "off", voice_autoend: str = "on",
     voice_id: str = "stella", voice_hotkey: str = "ctrl+g",
     voice_end_silence_ms: int = 700, voice_threshold: int = 700,
-    voice_min_speech_ms: int = 200,
+    voice_min_speech_ms: int = 200, voice_talk: str = "off",
     initial_text: str = "",
 ):
     """Run the chat TUI. /goal runs in its own screen inside the app and pops back,
@@ -3865,5 +4133,6 @@ def run_app(
         voice_id=voice_id, voice_hotkey=voice_hotkey,
         voice_end_silence_ms=voice_end_silence_ms, voice_threshold=voice_threshold,
         voice_min_speech_ms=voice_min_speech_ms,
+        voice_talk=voice_talk,
         initial_text=initial_text,
     ).run()

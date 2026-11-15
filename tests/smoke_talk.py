@@ -122,10 +122,27 @@ def test_turn_cancelled_elsewhere():
     print("  esc/typed cancel: talk resumes listening  ✓")
 
 
+def test_typed_turn_yields_the_mic():
+    m = TalkMachine()
+    m.start()
+    m.heard_end()  # an utterance is in flight…
+    # …the user types instead: the mic yields, the typed turn owns the phase
+    assert m.typed_turn() == (NONE, "")
+    assert m.phase == TalkPhase.THINKING
+    # a typed turn while thinking (talk-submitted) is a no-op
+    assert m.typed_turn() == (NONE, "")
+    # a typed turn while paused changes nothing
+    m.stop()
+    assert m.typed_turn() == (NONE, "")
+    assert m.phase == TalkPhase.PAUSED
+    print("  typed turn: the mic yields; talk turns and paused stays put  ✓")
+
+
 test_happy_conversation()
 test_readback_tail_delays_listening()
 test_barge_in()
 test_empty_transcript_keeps_listening()
 test_pause_and_stop()
 test_turn_cancelled_elsewhere()
-print("TALK CORE SMOKE OK — turn-taking · readback tail · barge · empty · pause · cancel. amaze!")
+test_typed_turn_yields_the_mic()
+print("TALK CORE SMOKE OK — turn-taking · readback tail · barge · empty · pause · cancel · typed. amaze!")

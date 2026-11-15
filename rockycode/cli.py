@@ -615,6 +615,7 @@ def chat(
         voice_end_silence_ms=cfg["voice_end_silence_ms"],
         voice_threshold=cfg["voice_threshold"],
         voice_min_speech_ms=cfg["voice_min_speech_ms"],
+        voice_talk=cfg["voice_talk"],
         initial_text=initial_text,
     )
     engine.finalize_outcome()  # heuristic outcome record (self-evolve phase 0)

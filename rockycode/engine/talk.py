@@ -29,6 +29,11 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
+# A talk turn reads at most this many chars of the reply aloud — coding
+# replies run long, and reading 40 lines of code is noise. The transcript
+# keeps everything; one muted line says the rest is on screen.
+TALK_SPOKEN_CAP = 1500
+
 
 class TalkPhase:
     PAUSED = "paused"            # talk off — tap mode (hotkey capture) only
@@ -134,6 +139,14 @@ class TalkMachine:
         if self.phase == TalkPhase.THINKING:
             self._set(TalkPhase.LISTENING)
             return LISTEN, ""
+        return NONE, ""
+
+    def typed_turn(self) -> tuple[str, str]:
+        """A typed message starts a turn while talk is on — the mic worker
+        yields (its in-flight utterance is discarded, never submitted) and
+        barge protection arms for this turn like any talk turn."""
+        if self.phase in (TalkPhase.LISTENING, TalkPhase.TRANSCRIBING):
+            self._set(TalkPhase.THINKING)
         return NONE, ""
 
     # The app tells the machine whether readback is expected BEFORE calling

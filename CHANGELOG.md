@@ -8,6 +8,21 @@ change between minor versions.
 ## [Unreleased]
 
 ### Added
+- **Talk mode** (`/voice talk on` — the conversation turns itself): an
+  utterance auto-submits (no Enter), the reply is spoken aloud (readback
+  on for the session), the warm mic listens again when the spoken tail
+  finishes — and speech while rocky thinks or speaks **barges in**: the
+  audio cuts, the turn cancels, listening starts, like talking over a
+  person. The hotkey pauses a running talk. A typed message yields the
+  mic (its in-flight utterance is dropped, never submitted); Esc/typed
+  cancels resume listening; empty transcripts are never submitted —
+  the mic just keeps listening. Long replies cap the SPOKEN part at
+  ~1500 chars with one muted line (the transcript keeps everything) —
+  reading 40 lines of code aloud is noise. Config `voice_talk on` starts
+  a session in talk mode. The rules live in `engine/talk.py` as a pure,
+  fully smoke-tested state machine; the app drives it with the same
+  recorder/VAD/ASR/TTS parts as tap mode. Assumes headphones (the mic
+  never hears rocky's own TTS) — open-speaker AEC is a later plan.
 - **Voice input** (phase 1): `ctrl+g` records the mic (ffmpeg — no new
   dependencies; `avfoundation` on macOS, `pulse`/`dshow` elsewhere), an
   energy VAD does the endpointing (trailing-silence auto-end, noise-floor

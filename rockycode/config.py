@@ -91,6 +91,13 @@ DEFAULTS: dict[str, Any] = {
     "voice_end_silence_ms": 700,  # how much trailing silence ends an utterance
     "voice_threshold": 700,       # RMS×32768 floor (calibrates up to 3× the noise floor)
     "voice_min_speech_ms": 200,   # shorter utterances are blips — ignored
+    # Talk mode (/voice talk — engine/talk.py): the conversation turns
+    # itself. An utterance auto-submits (no Enter), the reply is spoken
+    # (readback on for the session), then the warm mic listens again; speech
+    # while rocky thinks or speaks barges in. Assumes headphones so the mic
+    # never hears rocky's own TTS. Long replies cap the spoken part (~1500
+    # chars) — the transcript keeps everything.
+    "voice_talk": "off",          # on | off — hands-free voice conversation
 }
 
 _ALLOWED = {
@@ -102,6 +109,7 @@ _ALLOWED = {
     "dream": {"auto", "manual"},
     "image_route": {"auto", "ask", "provider", "cli", "off"},
     "voice_engine": {"off", "deepseek"},
+    "voice_talk": {"on", "off"},
     "voice_readback": {"on", "off"},
     "voice_autosend": {"on", "off"},
     "voice_autoend": {"on", "off"},
