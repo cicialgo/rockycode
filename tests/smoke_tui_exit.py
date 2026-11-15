@@ -115,6 +115,50 @@ async def slow_synth(text, **kw):
     return b"RIFF" + b"\x00" * 60
 
 
+async def instant_synth(text, **kw):
+    return b"RIFF" + b"\x00" * 60
+
+
+class FakePlayer:
+    """Stands in for the ffplay stream player with a MINUTES-long tail —
+    the paced-out sleep must be cancellable, or ctrl+q join-blocks in the
+    executor thread (the second live hang)."""
+
+    def __init__(self):
+        self.stopped = 0
+
+    def available(self):
+        return True
+
+    def missing_hint(self):
+        return "fake"
+
+    def streamable(self):
+        return True
+
+    def speak(self, wav):
+        return True
+
+    def feed(self, pcm, rate):
+        pass
+
+    def finish_stream(self):
+        pass
+
+    def remaining_s(self):
+        return 3600.0  # a minutes-long spoken tail
+
+    def wait(self):
+        pass
+
+    def stop(self):
+        self.stopped += 1
+
+    @property
+    def playing(self):
+        return False
+
+
 async def test_exit_while_speaking():
     asr_mod.transcribe = fake_transcribe
     asr_mod.home_key = lambda: ("sk-test", "T")
@@ -142,6 +186,42 @@ async def test_exit_while_speaking():
         tts_mod.synthesize = REAL_SYNTH
         voice_mod.STALL_S = REAL_STALL
     print("  exit while speaking: ctrl+q returns cleanly  ✓")
+
+
+async def test_exit_while_draining():
+    # THE second live hang: exit while the tail's drain sleep paces out the
+    # buffered audio. A thread-sleep there joins asyncio.run() shutdown for
+    # the whole remaining tail; the async sleep is cancelled instantly and
+    # the player is stopped.
+    asr_mod.transcribe = fake_transcribe
+    asr_mod.home_key = lambda: ("sk-test", "T")
+    tts_mod.synthesize = instant_synth
+    real_player, tts_mod.Player = tts_mod.Player, FakePlayer
+    rec_mod.Recorder = TalkRec
+    voice_mod.STALL_S = 300.0
+    client = types.SimpleNamespace(chat=types.SimpleNamespace(completions=Script(False)))
+    app = RockyCodeApp(Engine(model="fake", client=client, workdir=WD, registry={}),
+                       voice_readback="on")
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause(0.5)
+            await pilot.press(*"/voice talk on")
+            await pilot.press("enter")
+            await pilot.pause(0.5)
+            app._recorder.q.extend([TONE, SIL_300, SIL_900])
+            for _ in range(200):
+                await pilot.pause(0.05)
+                if app._talk.phase == "speaking" and app._voice_player is not None:
+                    break
+            assert app._voice_player is not None, "the stream player must be live"
+            await pilot.press("ctrl+q")  # must return instantly, not in ~1 h
+        assert app._voice_player.stopped >= 1, "the tail must be cut at exit"
+    finally:
+        asr_mod.home_key = REAL_HOME_KEY
+        tts_mod.synthesize = REAL_SYNTH
+        tts_mod.Player = real_player
+        voice_mod.STALL_S = REAL_STALL
+    print("  exit while draining: the tail cut is cancellable — instant quit  ✓")
 
 
 async def test_exit_while_thinking():
@@ -176,8 +256,9 @@ async def test_exit_while_thinking():
 def run():
     asyncio.run(test_exit_while_speaking())
     asyncio.run(test_exit_while_thinking())
+    asyncio.run(test_exit_while_draining())
 
 
 if __name__ == "__main__":
     run()
-    print("TUI EXIT SMOKE OK — ctrl+q during speaking/thinking tears down cleanly. amaze!")
+    print("TUI EXIT SMOKE OK — ctrl+q during speaking/thinking/draining tears down cleanly. amaze!")

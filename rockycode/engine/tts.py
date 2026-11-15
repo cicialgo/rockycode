@@ -235,20 +235,15 @@ class Player:
                 pass
             self._streaming = False
 
-    def drain(self, pad: float = 0.15) -> None:
-        """STREAM mode: pace out the buffered tail, then reap. ffplay's
-        queue holds everything the pipe accepted ahead of playback, so the
-        remaining audio is fed-duration minus elapsed (plus a small pad)."""
-        if not self._streaming_was() or self._proc is None or self._proc.poll() is not None:
-            return
-        self.finish_stream()
-        remaining = self._fed_s - (time.monotonic() - self._started_at) + pad
-        if remaining > 0:
-            time.sleep(remaining)
-        self.stop()
-
-    def _streaming_was(self) -> bool:
-        return self._fed_s > 0 or self._streaming
+    def remaining_s(self) -> float:
+        """STREAM mode: how much of the fed stream has yet to play (the
+        paced estimate — ffplay's queue holds everything the pipe accepted
+        ahead of playback). The caller paces this out with a CANCELLABLE
+        async sleep: a thread-sleep here would join-block asyncio.run()
+        shutdown for the whole tail (the live ctrl+q hang)."""
+        if self._fed_s <= 0:
+            return 0.0
+        return max(0.0, self._fed_s - (time.monotonic() - self._started_at))
 
     def wait(self) -> None:
         """Block until playback finishes (call via to_thread)."""

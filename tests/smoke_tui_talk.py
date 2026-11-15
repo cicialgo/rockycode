@@ -364,6 +364,45 @@ async def test_talk_hotkey_barges_mid_turn():
     print("  hotkey mid-turn: manual barge keeps talk on; listening still pauses  ✓")
 
 
+async def test_talk_hotkey_barges_mid_speech():
+    # OPEN SPEAKERS, barge_speaking OFF (the default): the echo guard must
+    # silence only VOICE detections — a manual ctrl+t during the spoken tail
+    # still barges (the talk-on line advertises exactly that).
+    gate = asyncio.Event()
+
+    async def gated(text, **kw):
+        await gate.wait()
+        return b"RIFF" + b"\x00" * 60
+
+    asr_mod.transcribe = _fake_transcribe
+    asr_mod.home_key = lambda: ("sk-test", "T")
+    tts_mod.synthesize = gated
+    rec_mod.Recorder = TalkRec
+    voice_mod.STALL_S = 300.0
+    script = Script().text("收到。")
+    app, _, _ = build(script=script, voice_readback="on")  # barge_speaking OFF
+    try:
+        async with app.run_test() as pilot:
+            await wait_until(pilot, lambda: "ctrl+g" in txt(app))
+            await pilot.press(*"/voice talk on")
+            await pilot.press("enter")
+            await wait_until(pilot, lambda: app._talk.phase == "listening")
+            app._recorder.q.extend([TONE, SIL_300, SIL_900])
+            ok = await wait_until(pilot, lambda: app._talk.phase == "speaking")
+            assert ok, app._talk.phase
+            await pilot.press("ctrl+g")  # manual interrupt mid-speech
+            ok = await wait_until(pilot, lambda: "interrupted" in txt(app))
+            assert ok, txt(app)
+            assert app._talk.phase == "listening", app._talk.phase  # talk stays on
+            assert app._talk.barges == 1
+            gate.set()
+    finally:
+        asr_mod.home_key = REAL_HOME_KEY
+        tts_mod.synthesize = REAL_SYNTH
+        voice_mod.STALL_S = 3.0
+    print("  hotkey mid-speech: manual barge works with the echo guard on  ✓")
+
+
 async def test_talk_hotkey_pauses():
     asr_mod.transcribe = _fake_transcribe
     rec_mod.Recorder = TalkRec
@@ -393,6 +432,7 @@ def run():
     asyncio.run(test_talk_barge_during_speaking())
     asyncio.run(test_talk_no_echo_barge())
     asyncio.run(test_talk_hotkey_barges_mid_turn())
+    asyncio.run(test_talk_hotkey_barges_mid_speech())
     asyncio.run(test_config_readback_applies_live())
     asyncio.run(test_talk_hotkey_pauses())
 

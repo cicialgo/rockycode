@@ -1119,9 +1119,17 @@ class RockyCodeApp(App):
                 if done:
                     break
             if streaming:
-                # ffplay exits at pipe EOF without draining its queue — the
-                # drain paces out the buffered tail (fed-duration - elapsed)
-                await asyncio.to_thread(self._voice_player.drain)
+                # ffplay exits at pipe EOF without draining its queue — pace
+                # the buffered tail out with a CANCELLABLE async sleep (a
+                # thread-sleep here would join-block shutdown for the whole
+                # remaining tail — the live ctrl+q hang).
+                await asyncio.to_thread(self._voice_player.finish_stream)
+                try:
+                    await asyncio.sleep(self._voice_player.remaining_s() + 0.15)
+                except asyncio.CancelledError:
+                    self._voice_player.stop()  # exit/barge: cut the tail now
+                    raise
+                self._voice_player.stop()
             self._voice.spoken()
             self._render_voice_chip()
         except asyncio.CancelledError:
@@ -1322,13 +1330,18 @@ class RockyCodeApp(App):
         )
         self._talk_barge_task = asyncio.create_task(self._talk_barge_watch())
 
-    async def _talk_barge_now(self) -> None:
+    async def _talk_barge_now(self, *, auto: bool = False) -> None:
         """Interrupt rocky: cut the audio, cancel the turn (Esc's path),
-        listen. The watcher and the hotkey both land here. The echo guard
-        is enforced AT THE ACTION POINT too — a detection can start while
-        the phase still reads THINKING and land after the tail began (the
-        race that self-barged a few words in, found live)."""
-        if self._talk.phase == talk_mod.TalkPhase.SPEAKING and not self._voice_barge_speaking:
+        listen. The watcher and the hotkey both land here.
+
+        The echo guard applies ONLY to AUTO detections (auto=True): with
+        open speakers the mic hears rocky's own TTS — and a detection can
+        start while the phase still reads THINKING and land after the tail
+        began (the race that self-barged a few words in, found live). A
+        MANUAL hotkey press is the user's explicit interrupt — it always
+        barges, even mid-speech (the talk-on line advertises exactly that)."""
+        if auto and self._talk.phase == talk_mod.TalkPhase.SPEAKING \
+                and not self._voice_barge_speaking:
             return  # open speakers: that "speech" is rocky's own TTS
         action, _ = self._talk.speech()
         if action != talk_mod.BARGE:
@@ -1365,7 +1378,7 @@ class RockyCodeApp(App):
                 if data and self._talk_barge_vad is not None:
                     self._talk_barge_vad.feed(data)
                     if self._talk_barge_vad.state == "speech":
-                        await self._talk_barge_now()
+                        await self._talk_barge_now(auto=True)
                         return
                 if not rec.running:
                     return
