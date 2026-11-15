@@ -23,6 +23,8 @@ from rockycode.engine.recorder import ffmpeg_available, ffmpeg_input_args  # noq
 from rockycode.engine.tts import (  # noqa: E402
     Player,
     TtsError,
+    _ffplay_candidates,
+    _runs,
     pick_player,
     synthesize,
     wav_parts,
@@ -111,6 +113,30 @@ def test_player_missing():
     print("  player: no binary → honest hint, failed spawn is a clean no-op  ✓")
 
 
+def test_player_discovery():
+    # A pinned ROCKYCODE_FFMPEG implies its ffplay SIBLING first — a machine
+    # can carry a broken ffmpeg early on PATH with a broken ffplay beside it.
+    saved = os.environ.get("ROCKYCODE_FFMPEG")
+    try:
+        os.environ.pop("ROCKYCODE_FFMPEG", None)
+        assert _ffplay_candidates() == ["ffplay"]
+        os.environ["ROCKYCODE_FFMPEG"] = "/opt/homebrew/bin/ffmpeg"
+        assert _ffplay_candidates() == ["/opt/homebrew/bin/ffplay", "ffplay"]
+    finally:
+        if saved is None:
+            os.environ.pop("ROCKYCODE_FFMPEG", None)
+        else:
+            os.environ["ROCKYCODE_FFMPEG"] = saved
+    # the probe: a working binary passes, a missing/broken one does not
+    assert _runs([sys.executable, "-c", "pass"])
+    assert not _runs(["no-such-binary-xyz", "-version"])
+    # the pick is a tuple that actually runs, or None
+    picked = pick_player()
+    if picked is not None:
+        assert _runs([picked[0], "-version"]) or picked[0] == "afplay"
+    print("  discovery: sibling-first ffplay; the probe skips broken binaries  ✓")
+
+
 def test_wav_parts():
     # The stream player feeds ffplay raw PCM — concatenated WAVs would play
     # the second RIFF header as audio, so clips are stripped to (rate, PCM).
@@ -147,6 +173,7 @@ test_synthesize_shape()
 test_synthesize_errors()
 test_player_barge_in()
 test_player_missing()
+test_player_discovery()
 test_wav_parts()
 test_recorder_args()
-print("TTS SMOKE OK — shape · errors · barge-in player · wav_parts · recorder args. amaze!")
+print("TTS SMOKE OK — shape · errors · barge-in player · discovery · wav_parts · recorder args. amaze!")

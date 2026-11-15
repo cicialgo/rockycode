@@ -276,6 +276,26 @@ async def test_talk_barge_during_speaking():
     print("  barge mid-sentence: the tail is protected too  ✓")
 
 
+async def test_config_readback_applies_live():
+    # /config voice_readback on must flip the RUNNING app (it used to only
+    # write the file — "but it doesn't speak" was the app never learning).
+    app, _, _ = build()  # readback off
+    assert not app._voice_readback
+    async with app.run_test() as pilot:
+        await wait_until(pilot, lambda: "ctrl+g" in txt(app))
+        await pilot.press(*"/config voice_readback on")
+        await pilot.press("enter")
+        ok = await wait_until(pilot, lambda: "applied now" in txt(app))
+        assert ok, txt(app)
+        assert app._voice_readback          # the live flag flipped
+        assert "spoken" in txt(app)         # and the note says so
+        await pilot.press(*"/config voice_readback off")
+        await pilot.press("enter")
+        ok = await wait_until(pilot, lambda: not app._voice_readback)
+        assert ok
+    print("  config: /config voice_readback flips the live session  ✓")
+
+
 async def test_talk_hotkey_pauses():
     asr_mod.transcribe = _fake_transcribe
     rec_mod.Recorder = TalkRec
@@ -303,6 +323,7 @@ def run():
     asyncio.run(test_talk_barge_in())
     asyncio.run(test_talk_readback_error_resumes())
     asyncio.run(test_talk_barge_during_speaking())
+    asyncio.run(test_config_readback_applies_live())
     asyncio.run(test_talk_hotkey_pauses())
 
 

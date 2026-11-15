@@ -3265,6 +3265,32 @@ class RockyCodeApp(App):
                         note = "applies at next launch — /model switches this session"
                     elif parts[1] == "vision_models":
                         note = "applies from the next /model switch or launch"
+                    elif parts[1] == "voice_readback":
+                        self._voice_readback = (v == "on")
+                        note = ("applied now — replies will be spoken"
+                                if self._voice_readback else "applied now — replies stay on screen")
+                    elif parts[1] == "voice_id":
+                        self._voice_id = v
+                        note = "applied now — next spoken sentence uses it"
+                    elif parts[1] == "voice_hotkey":
+                        self._voice_hotkey = v
+                        self.query_one(ChatInput).voice_hotkey = v
+                        self.query_one(ChatInput).border_subtitle = (
+                            f"enter ↵ send · ctrl+j newline · {v} 🎙 voice · "
+                            f"shift+↑↓ / pgup·pgdn scroll history")
+                        note = f"applied now — the mic hotkey is {v}"
+                    elif parts[1] in ("voice_autosend", "voice_autoend"):
+                        setattr(self, f"_{parts[1]}", v == "on")
+                        note = "applied now"
+                    elif parts[1] == "voice_talk":
+                        note = ("applied now — talk on" if v == "on" else "applied now — talk off")
+                        await self._talk_set(v == "on")
+                    elif parts[1] in ("voice_end_silence_ms", "voice_threshold",
+                                      "voice_min_speech_ms"):
+                        setattr(self, f"_{parts[1]}", v)
+                        note = "applied now — next capture uses it"
+                    elif parts[1] == "voice_engine":
+                        note = "applies at next launch"
                     else:
                         note = "restart to apply"
                     await self._add(Static(

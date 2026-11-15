@@ -17,6 +17,7 @@ playback also means no audio-library dependency in the install.
 from __future__ import annotations
 
 import io
+import os
 import shutil
 import subprocess
 import tempfile
@@ -37,25 +38,45 @@ _ERRORS = {
     504: "DeepSeek TTS timed out — readback paused; the transcript keeps the text",
 }
 
-# Candidate players (argv prefix, resolved with which()). ffplay FIRST:
-# it's the only one that can stream raw PCM over a pipe (gapless multi-
-# sentence playback — the whole point of stream mode); afplay (macOS) and
-# sox's `play` fall back to one-process-per-clip file mode.
-_PLAYERS = (
-    ("ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet"),
-    ("afplay",),
-    ("play", "-q"),
-)
+def _ffplay_candidates() -> list[str]:
+    """ffplay lives BESIDE ffmpeg — a pinned ROCKYCODE_FFMPEG implies its
+    sibling first (a machine can carry a broken ffmpeg early on PATH, and
+    the ffplay next to it is broken too; the probe in pick_player skips
+    both, and afplay takes over)."""
+    out = ["ffplay"]
+    pinned = (os.getenv("ROCKYCODE_FFMPEG") or "").strip()
+    if pinned and Path(pinned).name == "ffmpeg":
+        sibling = str(Path(pinned).with_name("ffplay"))
+        if sibling not in out:
+            out.insert(0, sibling)
+    return out
 
 
-class TtsError(Exception):
-    """TTS failed. Message is user-facing. `permanent` = retrying won't help
-    (no key, no player binary) — the app turns readback off for the session;
-    transient errors (429/503/504) only pause the current turn."""
+def _runs(argv: list[str]) -> bool:
+    """Does this candidate actually execute? A broken binary (dyld errors)
+    must not win and then fail silently mid-sentence."""
+    try:
+        return subprocess.run(
+            argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=3.0,
+        ).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
-    def __init__(self, message: str, *, permanent: bool = False) -> None:
-        super().__init__(message)
-        self.permanent = permanent
+
+def pick_player() -> Optional[tuple[str, ...]]:
+    """The first player that ACTUALLY RUNS. ffplay first (the only one
+    that can stream raw PCM over a pipe — gapless multi-sentence
+    playback); afplay (macOS) and sox's `play` fall back to
+    one-process-per-clip file mode."""
+    for cand in _ffplay_candidates():
+        path = shutil.which(cand)
+        if path and _runs([path, "-version"]):
+            return (path, "-nodisp", "-autoexit", "-loglevel", "quiet")
+    for cand in ("afplay", "play"):
+        if shutil.which(cand):
+            return (cand, "-q") if cand == "play" else (cand,)
+    return None
 
 
 def wav_parts(wav: bytes) -> tuple[int, bytes]:
@@ -70,12 +91,14 @@ def wav_parts(wav: bytes) -> tuple[int, bytes]:
         return 24_000, b""
 
 
-def pick_player() -> Optional[tuple[str, ...]]:
-    """The first installed player argv, or None (readback cannot sound)."""
-    for argv in _PLAYERS:
-        if shutil.which(argv[0]):
-            return argv
-    return None
+class TtsError(Exception):
+    """TTS failed. Message is user-facing. `permanent` = retrying won't help
+    (no key, no player binary) — the app turns readback off for the session;
+    transient errors (429/503/504) only pause the current turn."""
+
+    def __init__(self, message: str, *, permanent: bool = False) -> None:
+        super().__init__(message)
+        self.permanent = permanent
 
 
 async def synthesize(
@@ -146,8 +169,9 @@ class Player:
         return self._argv is not None
 
     def streamable(self) -> bool:
-        """ffplay (and only ffplay) can take a raw-PCM pipe."""
-        return self._argv is not None and self._argv[0] == "ffplay"
+        """ffplay (and only ffplay) can take a raw-PCM pipe. The argv head
+        may be a full path — compare the basename."""
+        return self._argv is not None and os.path.basename(self._argv[0]) == "ffplay"
 
     def missing_hint(self) -> str:
         return ("no audio player installed — afplay (macOS), ffplay (ffmpeg) or sox "
