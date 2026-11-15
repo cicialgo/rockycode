@@ -79,6 +79,7 @@ class FakeRecorder:
     stop_requested = False
     keep_running = False  # True → stays RECORDING until stop_requested
     silent = False        # True → never delivers, process "dies" instantly
+    stall = False         # True → delivers once per start(), then goes silent
     device = "fake"
 
     def __init__(self):
@@ -94,11 +95,14 @@ class FakeRecorder:
     def running(self):
         if self.silent:
             return False
+        if self.stall:
+            return True  # alive but not delivering — the stall signature
         if self.keep_running:
             return not self.stop_requested
         return not self._delivered
 
     async def start(self):
+        self._delivered = False  # a fresh device per start
         return None
 
     def mark(self):
@@ -106,6 +110,10 @@ class FakeRecorder:
         self._vad_cur = max(self._vad_cur, self._mark)
 
     def read_new(self):
+        if self.silent:
+            return b""  # the dead process: no bytes, ever
+        if self.stall and self._delivered:
+            return b""  # the stalled device: alive, zero bytes
         if not self._delivered:
             self._delivered = True
             self._buf.extend(b"\x00\x00" * 1600)  # 100 ms of "audio"
@@ -237,6 +245,32 @@ async def test_silent_mic_reports_why():
     print("  silent mic: reports the death + ffmpeg path, inserts nothing  ✓")
 
 
+async def test_stall_restarts_the_mic():
+    # A live mic delivers bytes even in silence — zero bytes = a stall
+    # (Bluetooth switch, unplug, dead reader). The capture restarts the mic
+    # once and keeps the clip captured so far; if it stays silent the line
+    # says so and the partial clip is still delivered.
+    import rockycode.engine.voice as voice_mod
+    asr_mod.transcribe = _fake_transcribe
+    FakeRecorder.stall = True
+    rec_mod.Recorder = FakeRecorder
+    voice_mod.STALL_S = 0.3  # fast-forward the stall window
+    app, _, _ = build()
+    async with app.run_test() as pilot:
+        await wait_until(pilot, lambda: "ctrl+g" in txt(app))
+        await pilot.press("ctrl+g")
+        ok = await wait_until(pilot, lambda: "mic stalled" in txt(app))
+        assert ok, txt(app)  # the restart happened
+        # (the "stayed silent" second-stall line is transient — it updates the
+        # same Static the "heard" receipt then replaces — so the stable
+        # assertions are: restart happened, clip survived, transcript landed.)
+        ok = await wait_until(pilot, lambda: app.query_one(ChatInput).text == "把测试跑一遍")
+        assert ok, (txt(app), app.query_one(ChatInput).text)  # the clip survived
+    FakeRecorder.stall = False
+    voice_mod.STALL_S = 3.0
+    print("  stall: silent mic restarts once and the clip survives  ✓")
+
+
 async def test_busy_while_transcribing():
     gate = asyncio.Event()
 
@@ -283,6 +317,7 @@ def run():
     asyncio.run(test_autosend_runs_a_turn())
     asyncio.run(test_barge_in_then_stop())
     asyncio.run(test_silent_mic_reports_why())
+    asyncio.run(test_stall_restarts_the_mic())
     asyncio.run(test_busy_while_transcribing())
     asyncio.run(test_readback_no_key())
 

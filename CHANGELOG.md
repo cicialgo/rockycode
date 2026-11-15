@@ -41,7 +41,11 @@ change between minor versions.
   session after the first capture — the hotkey pays the warm-up once
   (the line says "mic warming…"), every later capture starts instantly,
   and segments are cut from a pipe-fed rolling buffer instead of process
-  restarts. The orange mic dot stays on until /exit, like any call app.
+  restarts. A mic that STALLS mid-capture (Bluetooth switch, USB unplug,
+  a dead reader task — the signature is a live process with zero bytes,
+  since even silence delivers digital zeros) restarts itself once and
+  keeps the clip captured so far; a second stall is reported with the
+  device fix. The orange mic dot stays on until /exit, like any call app.
   `ROCKYCODE_FFMPEG` pins the ffmpeg binary (a machine can carry a broken
   one early on PATH), `ROCKYCODE_VOICE_DEVICE` pins the mic when
   `:default` doesn't resolve (falls back to device `0` once; an explicit

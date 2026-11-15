@@ -26,6 +26,10 @@ from typing import Callable, Optional
 # DeepSeek ASR caps: ≤120 s per clip, ≤8 MiB. Stop short of the cap so a slow
 # stop never pushes the clip over.
 MAX_RECORD_S = 115.0
+# A live mic delivers bytes even in silence (digital zeros ARE bytes) — so
+# zero bytes for this long means the device stalled (Bluetooth switch, USB
+# unplug, a dead reader task), not quiet. The capture restarts the mic once.
+STALL_S = 3.0
 SAMPLE_RATE = 16_000        # the recorder's raw PCM rate (ASR accepts 8k–48k)
 FRAME_S = 0.010             # VAD frame length — 10 ms (160 samples @16k)
 

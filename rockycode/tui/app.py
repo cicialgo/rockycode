@@ -896,34 +896,69 @@ class RockyCodeApp(App):
             min_speech_ms=self._voice_min_speech_ms,
         )
         t0 = time.monotonic()
-        while rec.running:
+        last_data = time.monotonic()
+        accumulated = b""   # the clip so far, across a stall-restart
+        stalled = False     # the mic gets ONE restart per capture
+        while True:
             await asyncio.sleep(0.05)
             data = await asyncio.to_thread(rec.read_new)  # read BEFORE the
             if data:                                      # stop check: a stop
                 vad.feed(data)                            # never loses audio
+                last_data = time.monotonic()
+            elif rec.running and (time.monotonic() - last_data) > voice_mod.STALL_S:
+                # Alive but zero BYTES for STALL_S — a live mic delivers
+                # digital zeros in silence, so this is a stall: Bluetooth
+                # switch, USB unplug, a dead reader task. Restart once; the
+                # clip keeps everything captured so far.
+                if stalled:
+                    line.update(f"[{MUTED}]· the mic stayed silent after the restart — "
+                                f"check the device (unplugged? bluetooth?)[/]")
+                    break
+                stalled = True
+                accumulated += rec.finish_segment()
+                await rec.stop()
+                line.update(f"[{MUTED}]🎙 mic stalled — restarting it…[/]")
+                try:
+                    await rec.start()
+                except RecorderError as e:
+                    self._voice.transcribed()
+                    self._render_voice_chip()
+                    if accumulated:
+                        await self._voice_deliver(accumulated, line)
+                    else:
+                        line.update(f"[{MUTED}]🎙 mic stalled and did not come back — "
+                                    f"{escape(str(e))}[/]")
+                    return
+                rec.mark()
+                last_data = time.monotonic()
             if rec.stop_requested:
                 break
             if self._voice_autoend and vad.ended:
                 break
             if time.monotonic() - t0 >= voice_mod.MAX_RECORD_S:
                 break
-        seg = rec.finish_segment()
+            if not rec.running:
+                break  # died — _voice_deliver's empty branch names the reason
+        await self._voice_deliver(accumulated + rec.finish_segment(), line)
+
+    async def _voice_deliver(self, seg: bytes, line: Static) -> None:
+        """The capture's tail: WAV wrap → ASR → input box. Empty segments say
+        WHY (dead process vs silent device), naming the ffmpeg binary — the
+        first thing to check when a machine carries a broken one early on
+        PATH (ROCKYCODE_FFMPEG pins a healthy one)."""
+        from rockycode.engine import asr as asr_mod
         if len(seg) == 0:
-            # Say WHY, not just that it failed: a dead ffmpeg process, or a
-            # warm device that stopped delivering. Either way the binary
-            # path is the first thing to check (a machine can carry a broken
-            # ffmpeg early on PATH — ROCKYCODE_FFMPEG pins a healthy one).
             from rockycode.engine.recorder import ffmpeg_bin
             self._voice.transcribed()
             self._render_voice_chip()
-            if not rec.running:
-                tail = rec.stderr_tail()
+            if self._recorder is not None and not self._recorder.running:
+                tail = self._recorder.stderr_tail()
                 line.update(f"[{MUTED}]· nothing recorded — the mic process died"
                             f"{f' (ffmpeg: {tail})' if tail else ''} · ffmpeg used: {ffmpeg_bin()}[/]")
             else:
                 line.update(f"[{MUTED}]· nothing recorded — the mic delivered no audio "
-                            f"(device {rec.device or 'default'} · ffmpeg {ffmpeg_bin()}) — "
-                            f"check the input device[/]")
+                            f"(device {self._recorder.device if self._recorder else 'default'} · "
+                            f"ffmpeg {ffmpeg_bin()}) — check the input device[/]")
             return
         self._voice.transcribing()
         self._render_voice_chip()
