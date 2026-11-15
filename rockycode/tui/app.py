@@ -678,6 +678,7 @@ class RockyCodeApp(App):
         voice_id: str = "stella", voice_hotkey: str = "ctrl+g",
         voice_end_silence_ms: int = 700, voice_threshold: int = 700,
         voice_min_speech_ms: int = 200, voice_talk: str = "off",
+        voice_barge_speaking: str = "off",
         initial_text: str = "",
     ) -> None:
         super().__init__()
@@ -747,6 +748,7 @@ class RockyCodeApp(App):
         self._voice_end_silence_ms = voice_end_silence_ms
         self._voice_threshold = voice_threshold
         self._voice_min_speech_ms = voice_min_speech_ms
+        self._voice_barge_speaking = voice_barge_speaking == "on"
         self._voice_feeder = voice_mod.SentenceFeeder()   # per turn — reset in _drive_turn
         self._voice_player = None          # tts.Player, lazy — first sentence spoken
         self._voice_queue: asyncio.Queue | None = None
@@ -868,7 +870,11 @@ class RockyCodeApp(App):
     @on(ChatInput.VoiceToggleRequested)
     async def _on_voice_toggle(self, _event: ChatInput.VoiceToggleRequested) -> None:
         if self._talk.phase != talk_mod.TalkPhase.PAUSED:
-            await self._talk_set(False)  # the hotkey pauses a running talk
+            if self._talk.phase in (talk_mod.TalkPhase.THINKING,
+                                    talk_mod.TalkPhase.SPEAKING):
+                await self._talk_barge_now()  # manual interrupt — talk stays on
+            else:
+                await self._talk_set(False)   # listening → the hotkey pauses talk
             return
         action, msg = self._voice.hotkey()
         if action == voice_mod.HINT or action == voice_mod.BUSY:
@@ -1178,8 +1184,14 @@ class RockyCodeApp(App):
             self._render_voice_chip()
             self._talk_begin_listen()
             if self._voice_readback:  # readback is OPTIONAL — config voice_readback
-                reply_note = ("rocky answers aloud and listens again. Say anything "
-                              "while he thinks or speaks to interrupt.")
+                if self._voice_barge_speaking:
+                    reply_note = ("rocky answers aloud and listens again — say "
+                                  "anything while he thinks or speaks to interrupt.")
+                else:
+                    reply_note = ("rocky answers aloud. Interrupt him while he WORKS "
+                                  "by speaking, or press ctrl+t mid-speech. (Headphones? "
+                                  "/config voice_barge_speaking on → voice interrupts "
+                                  "mid-speech too — open speakers would echo-barge.)")
             else:
                 reply_note = ("rocky's replies stay on screen (voice_readback off — "
                               "/config voice_readback on to hear him). He listens "
@@ -1310,28 +1322,50 @@ class RockyCodeApp(App):
         )
         self._talk_barge_task = asyncio.create_task(self._talk_barge_watch())
 
+    async def _talk_barge_now(self) -> None:
+        """Interrupt rocky: cut the audio, cancel the turn (Esc's path),
+        listen. The watcher and the hotkey both land here. The echo guard
+        is enforced AT THE ACTION POINT too — a detection can start while
+        the phase still reads THINKING and land after the tail began (the
+        race that self-barged a few words in, found live)."""
+        if self._talk.phase == talk_mod.TalkPhase.SPEAKING and not self._voice_barge_speaking:
+            return  # open speakers: that "speech" is rocky's own TTS
+        action, _ = self._talk.speech()
+        if action != talk_mod.BARGE:
+            return
+        await self._add(Static(
+            f"[{VIOLET}]🎙 interrupted — listening…[/]", classes="tool-line"))
+        self._voice_cut()  # cut the audio instantly
+        w = self._turn_worker
+        if w is not None and w.is_running:
+            w.cancel()
+        self._talk_begin_listen()
+
     async def _talk_barge_watch(self) -> None:
         rec = self._recorder
         if rec is None:
             return
         try:
-            while self._talk.phase in (talk_mod.TalkPhase.THINKING,
-                                       talk_mod.TalkPhase.SPEAKING):
+            while True:
+                phase = self._talk.phase
+                if phase not in (talk_mod.TalkPhase.THINKING,
+                                 talk_mod.TalkPhase.SPEAKING):
+                    return
+                if phase == talk_mod.TalkPhase.SPEAKING and not self._voice_barge_speaking:
+                    # OPEN SPEAKERS: the mic hears rocky's own TTS and would
+                    # self-barge a few words in (the live "only a few words
+                    # then it stops" report). Voice interrupts mid-speech are
+                    # a headphones-only setting (voice_barge_speaking on);
+                    # the hotkey still barges manually. THINKING is safe —
+                    # rocky is silent, so any speech is the user.
+                    await asyncio.sleep(0.05)
+                    continue
                 await asyncio.sleep(0.05)
                 data = await asyncio.to_thread(rec.read_new)
                 if data and self._talk_barge_vad is not None:
                     self._talk_barge_vad.feed(data)
                     if self._talk_barge_vad.state == "speech":
-                        action, _ = self._talk.speech()
-                        if action != talk_mod.BARGE:
-                            continue
-                        await self._add(Static(
-                            f"[{VIOLET}]🎙 interrupted — listening…[/]", classes="tool-line"))
-                        self._voice_cut()  # cut the audio instantly
-                        w = self._turn_worker
-                        if w is not None and w.is_running:
-                            w.cancel()  # …then cancel the turn (Esc's path)
-                        self._talk_begin_listen()
+                        await self._talk_barge_now()
                         return
                 if not rec.running:
                     return
@@ -3282,6 +3316,11 @@ class RockyCodeApp(App):
                     elif parts[1] in ("voice_autosend", "voice_autoend"):
                         setattr(self, f"_{parts[1]}", v == "on")
                         note = "applied now"
+                    elif parts[1] == "voice_barge_speaking":
+                        self._voice_barge_speaking = (v == "on")
+                        note = ("applied now — voice interrupts mid-speech"
+                                if self._voice_barge_speaking
+                                else "applied now — mid-speech interrupts need the hotkey")
                     elif parts[1] == "voice_talk":
                         note = ("applied now — talk on" if v == "on" else "applied now — talk off")
                         await self._talk_set(v == "on")
@@ -4237,6 +4276,7 @@ def run_app(
     voice_id: str = "stella", voice_hotkey: str = "ctrl+g",
     voice_end_silence_ms: int = 700, voice_threshold: int = 700,
     voice_min_speech_ms: int = 200, voice_talk: str = "off",
+    voice_barge_speaking: str = "off",
     initial_text: str = "",
 ):
     """Run the chat TUI. /goal runs in its own screen inside the app and pops back,
@@ -4252,6 +4292,6 @@ def run_app(
         voice_id=voice_id, voice_hotkey=voice_hotkey,
         voice_end_silence_ms=voice_end_silence_ms, voice_threshold=voice_threshold,
         voice_min_speech_ms=voice_min_speech_ms,
-        voice_talk=voice_talk,
+        voice_talk=voice_talk, voice_barge_speaking=voice_barge_speaking,
         initial_text=initial_text,
     ).run()

@@ -94,10 +94,14 @@ DEFAULTS: dict[str, Any] = {
     # Talk mode (/voice talk — engine/talk.py): the conversation turns
     # itself. An utterance auto-submits (no Enter), the reply is spoken
     # (readback on for the session), then the warm mic listens again; speech
-    # while rocky thinks or speaks barges in. Assumes headphones so the mic
-    # never hears rocky's own TTS. Long replies cap the spoken part (~1500
-    # chars) — the transcript keeps everything.
+    # while rocky thinks or speaks barges in. Long replies cap the spoken
+    # part (~1500 chars) — the transcript keeps everything.
     "voice_talk": "off",          # on | off — hands-free voice conversation
+    # Voice-interrupt DURING the spoken tail. OPEN SPEAKERS: the mic hears
+    # rocky's own TTS and self-barges — keep this OFF (the hotkey still
+    # interrupts; speech interrupts work while he thinks/works silently).
+    # HEADPHONES: turn ON for voice interrupts mid-speech too.
+    "voice_barge_speaking": "off",  # on | off
 }
 
 _ALLOWED = {
@@ -110,6 +114,7 @@ _ALLOWED = {
     "image_route": {"auto", "ask", "provider", "cli", "off"},
     "voice_engine": {"off", "deepseek"},
     "voice_talk": {"on", "off"},
+    "voice_barge_speaking": {"on", "off"},
     "voice_readback": {"on", "off"},
     "voice_autosend": {"on", "off"},
     "voice_autoend": {"on", "off"},
