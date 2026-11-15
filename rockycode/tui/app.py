@@ -766,6 +766,7 @@ class RockyCodeApp(App):
         self._talk_spoken = 0              # spoken chars this turn (the cap)
         self._talk_capped_noted = False    # one muted line per turn at the cap
         self._talk_cfg = voice_talk == "on"
+        self._shutting_down = False  # set in on_unmount — no respawns after it
 
 
     # animate=False on purpose: instant, snappy scroll (the default animation
@@ -1132,6 +1133,8 @@ class RockyCodeApp(App):
     def _talk_begin_listen(self) -> None:
         """Start the hands-free listen worker (idempotent — a barge and a
         cancel can both ask)."""
+        if self._shutting_down:
+            return
         if self._talk.phase != talk_mod.TalkPhase.LISTENING:
             return
         if self._voice_rec_worker is not None and self._voice_rec_worker.is_running:
@@ -2397,6 +2400,13 @@ class RockyCodeApp(App):
             pass
 
     async def on_unmount(self) -> None:
+        # Voice teardown FIRST: pause talk so a cancelled speak task's
+        # finally can never hand the conversation back and respawn a listen
+        # worker mid-shutdown (found live: exiting while readback played
+        # respawned one, whose transcript mount crashed and held the process).
+        self._shutting_down = True
+        self._talk.stop()
+        self._voice_cut_flag = True
         mgr = getattr(self.engine, "mcp_manager", None)
         if mgr is not None:
             try:
