@@ -7,6 +7,63 @@ change between minor versions.
 
 ## [Unreleased]
 
+### Added
+- **Voice input** (phase 1): `ctrl+g` records the mic (ffmpeg — no new
+  dependencies; `avfoundation` on macOS, `pulse`/`dshow` elsewhere), an
+  energy VAD does the endpointing (trailing-silence auto-end, noise-floor
+  calibration, 115 s cap under the ASR limit), DeepSeek ASR
+  (`/v1/tools/asr`, rides `ROCKYCODE_API_KEY`, 21 languages auto-detected)
+  transcribes, and the text lands in the input box — Enter still sends.
+  The status bar carries a 🎙 chip through listening → transcribing → idle;
+  `/config voice_autosend on` submits without Enter. `voice_engine off`
+  disables it (the hotkey then prints the one-line fix). Recording and
+  ASR never touch the message pump (worker + `to_thread`), so the TUI
+  stays live throughout.
+- **Voice readback** (`/config voice_readback on`): rocky's replies are
+  spoken aloud via DeepSeek TTS (`/v1/tools/tts`, voices `stella`/`tide`,
+  markdown filtered server-side) — one POST per sentence, cut from the
+  reply stream by a pure sentence feeder (enders, newlines, code fences
+  dropped, 240-char cap), played by afplay/ffplay/sox, one subprocess per
+  sentence. **Barge-in**: pressing the hotkey during speech cuts the audio
+  instantly and starts listening — like talking over a person; the turn
+  keeps streaming silently (Esc still cancels it). A missing key or player
+  is one permanent muted line; transient TTS errors pause the current
+  turn only. The transcript always keeps the exact text.
+- `rockycode chat --audio <file>`: transcribe a WAV/Ogg Opus clip before
+  the TUI starts — the transcript is printed on the console and placed in
+  the input box, Enter sends it.
+- Config keys: `voice_engine off|deepseek` · `voice_readback on|off` ·
+  `voice_autosend` · `voice_autoend` · `voice_id stella|tide` ·
+  `voice_hotkey ctrl+<letter|digit>` · `voice_end_silence_ms` ·
+  `voice_threshold` · `voice_min_speech_ms`.
+- Recorder design settled on live hardware (avfoundation's first device
+  open measures ~10 s on a real Mac): the mic process stays WARM for the
+  session after the first capture — the hotkey pays the warm-up once
+  (the line says "mic warming…"), every later capture starts instantly,
+  and segments are cut from a pipe-fed rolling buffer instead of process
+  restarts. A mic that STALLS mid-capture (Bluetooth switch, USB unplug,
+  a dead reader task — the signature is a live process with zero bytes,
+  since even silence delivers digital zeros) restarts itself once and
+  keeps the clip captured so far; a second stall is reported with the
+  device fix. The orange mic dot stays on until /exit, like any call app.
+  `ROCKYCODE_FFMPEG` pins the ffmpeg binary (a machine can carry a broken
+  one early on PATH), `ROCKYCODE_VOICE_DEVICE` pins the mic when
+  `:default` doesn't resolve (falls back to device `0` once; an explicit
+  pin never does), and a mic that stays silent past the warm-up window —
+  the macOS microphone-permission stall — fails fast with the exact fix.
+  Verified end-to-end on hardware: TTS → speakers → mic → VAD endpoint →
+  ASR transcribes the sentence back through the air.
+
+### Notes
+- ASR is whole-file (no streaming — DeepSeek docs, 2026-11-13): the VAD
+  makes each clip one utterance; per-clip pricing is ¥0.39/hr (promo), so
+  a command is ~¥0.001. TTS is ¥1.5/10k chars (promo, a Chinese char
+  counts 2). Both ride the home key — zero extra setup where chat works.
+- The pure core (`engine/voice.py`) is I/O-free and fully smoke-tested —
+  the recorder/ASR/TTS workers drive it, same split as `cron.py`. A local
+  streaming ASR backend (MLX Whisper) and the TTS WebSocket streaming
+  variant are the natural phase-2 slots.
+
 ## [0.2.0] — models are data, loops, approval switch
 
 ### Added
