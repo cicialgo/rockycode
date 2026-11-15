@@ -123,7 +123,7 @@ HELP_TEXT = f"""\
   [{LAVENDER}]/learn[/]   learn mode — rocky tutors you through a paper, a codebase, or a concept
   [{LAVENDER}]/model[/]   switch provider + model (deepseek · glm · kimi · minimax · stepfun · qwen · mimo · ollama = local, $0)
   [{LAVENDER}]/paste[/]   attach a clipboard image (or ctrl+v in the input). a vision model sees it raw (deepseek-flash does); a text-only model gets it described by deepseek-flash or your own CLI (/config image_cli)
-  [{LAVENDER}]ctrl+g[/]   🎙 speak — DeepSeek ASR transcribes and puts it in the input box (Enter still sends). /config voice_readback on makes rocky speak back; ctrl+g during speech barges in
+  [{LAVENDER}]{{voice}}[/]   🎙 speak — DeepSeek ASR transcribes and puts it in the input box (Enter still sends). /config voice_readback on makes rocky speak back; the hotkey during speech barges in
   [{LAVENDER}]/sandbox[/]  sandbox on | off | status — isolate tools in a container
   [{LAVENDER}]/lsp[/]     language-server status (diagnostics ride along read_file)
   [{LAVENDER}]/artifact[/]  list | open | stop | live on/off — manage this session's artifacts
@@ -2835,7 +2835,9 @@ class RockyCodeApp(App):
         elif cmd == "/clear":
             await self._transcript().remove_children()
         elif cmd == "/help":
-            await self._add(Static(HELP_TEXT, classes="tool-line"))
+            # the voice line shows the CONFIGURED hotkey (HELP_TEXT has a {voice}
+            # placeholder) — the default is ctrl+g, /config voice_hotkey changes it
+            await self._add(Static(HELP_TEXT.format(voice=self._voice_hotkey), classes="tool-line"))
         elif cmd == "/paste":
             self._paste_worker(text_fallback=False)
         elif cmd in ("/research", "/learn"):
