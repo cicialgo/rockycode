@@ -37,6 +37,9 @@ _ERRORS = {
     503: "DeepSeek TTS is busy — readback paused; the transcript keeps the text",
     504: "DeepSeek TTS timed out — readback paused; the transcript keeps the text",
 }
+# A 400 is ONE sentence refused, not a turn-level failure — the flag lets
+# the speak loop skip it and keep reading the rest.
+_SKIPPABLE = {400}
 
 def _ffplay_candidates() -> list[str]:
     """ffplay lives BESIDE ffmpeg — a pinned ROCKYCODE_FFMPEG implies its
@@ -94,11 +97,15 @@ def wav_parts(wav: bytes) -> tuple[int, bytes]:
 class TtsError(Exception):
     """TTS failed. Message is user-facing. `permanent` = retrying won't help
     (no key, no player binary) — the app turns readback off for the session;
-    transient errors (429/503/504) only pause the current turn."""
+    transient errors (429/503/504) only pause the current turn; `skippable`
+    = the content filter refused THIS ONE sentence — skip it and keep
+    reading (never a reason to drop the tail)."""
 
-    def __init__(self, message: str, *, permanent: bool = False) -> None:
+    def __init__(self, message: str, *, permanent: bool = False,
+                 skippable: bool = False) -> None:
         super().__init__(message)
         self.permanent = permanent
+        self.skippable = skippable
 
 
 async def synthesize(
@@ -135,7 +142,8 @@ async def synthesize(
             await client.aclose()
     if resp.status_code != 200:
         raise TtsError(_ERRORS.get(resp.status_code,
-                                   f"DeepSeek TTS failed ({resp.status_code}) — readback paused this turn"))
+                                   f"DeepSeek TTS failed ({resp.status_code}) — readback paused this turn"),
+                       skippable=resp.status_code in _SKIPPABLE)
     if not resp.content or len(resp.content) < 44:
         raise TtsError("DeepSeek TTS returned an empty clip — readback paused this turn")
     return resp.content

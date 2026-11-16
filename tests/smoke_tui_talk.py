@@ -297,6 +297,87 @@ async def test_config_readback_applies_live():
     print("  config: /config voice_readback flips the live session  ✓")
 
 
+class FakePlayer:
+    """Records feeds; the speak loop's player in the filter-skip test."""
+
+    def __init__(self):
+        self.feeds = 0
+
+    def available(self):
+        return True
+
+    def missing_hint(self):
+        return "fake"
+
+    def streamable(self):
+        return True
+
+    def speak(self, wav):
+        return True
+
+    def feed(self, pcm, rate):
+        self.feeds += 1
+
+    def finish_stream(self):
+        pass
+
+    def remaining_s(self):
+        return 0.0
+
+    def wait(self):
+        pass
+
+    def stop(self):
+        pass
+
+    @property
+    def playing(self):
+        return False
+
+
+async def test_filtered_sentence_skips_not_kills():
+    # A 400 (content filter) on ONE sentence must skip it and keep reading
+    # the rest of the tail — the live "that sentence is skipped" line used
+    # to drop everything after it (the tail died with the first refusal).
+    calls = {"n": 0}
+
+    async def filtered_then_ok(text, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise tts_mod.TtsError(
+                "the text was empty or refused by the content filter — that sentence is skipped",
+                skippable=True)
+        return b"RIFF" + b"\x00" * 60
+
+    asr_mod.transcribe = _fake_transcribe
+    asr_mod.home_key = lambda: ("sk-test", "T")
+    tts_mod.synthesize = filtered_then_ok
+    real_player, tts_mod.Player = tts_mod.Player, FakePlayer
+    rec_mod.Recorder = TalkRec
+    voice_mod.STALL_S = 300.0
+    script = Script().text("第一句。第二句。")
+    app, _, _ = build(script=script, voice_readback="on")
+    try:
+        async with app.run_test() as pilot:
+            await wait_until(pilot, lambda: "ctrl+g" in txt(app))
+            await pilot.press(*"/voice talk on")
+            await pilot.press("enter")
+            await wait_until(pilot, lambda: app._talk.phase == "listening")
+            app._recorder.q.extend([TONE, SIL_300, SIL_900])
+            ok = await wait_until(pilot, lambda: "skipped" in txt(app))
+            assert ok, txt(app)                       # the skip line appeared
+            assert app._voice_player is not None and app._voice_player.feeds >= 1, \
+                "the SECOND sentence must still be spoken"
+            ok = await wait_until(pilot, lambda: app._talk.phase == "listening")
+            assert ok, app._talk.phase                # and the turn completed
+    finally:
+        asr_mod.home_key = REAL_HOME_KEY
+        tts_mod.synthesize = REAL_SYNTH
+        tts_mod.Player = real_player
+        voice_mod.STALL_S = 3.0
+    print("  filtered sentence: skipped with one line; the tail keeps reading  ✓")
+
+
 async def test_talk_no_echo_barge():
     # OPEN SPEAKERS (the default): speech during the spoken tail must NOT
     # barge — the mic hears rocky's own TTS and would self-interrupt a few
@@ -430,6 +511,7 @@ def run():
     asyncio.run(test_talk_barge_in())
     asyncio.run(test_talk_readback_error_resumes())
     asyncio.run(test_talk_barge_during_speaking())
+    asyncio.run(test_filtered_sentence_skips_not_kills())
     asyncio.run(test_talk_no_echo_barge())
     asyncio.run(test_talk_hotkey_barges_mid_turn())
     asyncio.run(test_talk_hotkey_barges_mid_speech())
@@ -439,4 +521,4 @@ def run():
 
 if __name__ == "__main__":
     run()
-    print("TUI TALK SMOKE OK — auto-turn · barge · tts-error resume · tail barge · no echo-barge · hotkey barge · config · pause/resume. amaze!")
+    print("TUI TALK SMOKE OK — auto-turn · barge · tts-error resume · tail barge · filter-skip · no echo-barge · hotkey barge · config · pause/resume. amaze!")

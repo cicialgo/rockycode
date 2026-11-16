@@ -756,6 +756,7 @@ class RockyCodeApp(App):
         self._voice_cut_flag = False       # set on barge/cancel/new turn → drain, stop
         self._voice_failed = ""            # permanent readback blocker (no key / no player)
         self._voice_turn_failed = False    # this turn's transient TTS error — stop retrying
+        self._voice_skip_noted = False     # one muted line per turn for filtered sentences
         self._recorder = None              # the active recorder while the mic is hot
         self._voice_rec_worker: Worker | None = None
         self._initial_text = initial_text  # --audio transcript: sits in the input box
@@ -1049,12 +1050,14 @@ class RockyCodeApp(App):
     async def _voice_synth(self, text: str, key: str) -> bytes:
         """Synthesize with ONE retry on transient errors — a 429/503 after a
         few rounds must not drop the sentence (and with it the rest of the
-        tail, which is exactly the live 'only one sound' report)."""
+        tail, which is exactly the live 'only one sound' report). Permanent
+        and skippable (content filter) errors raise at once — a retry
+        changes nothing."""
         from rockycode.engine import tts as tts_mod
         try:
             return await tts_mod.synthesize(text, key=key, voice_id=self._voice_id)
         except tts_mod.TtsError as e:
-            if e.permanent:
+            if e.permanent or e.skippable:
                 raise
             await asyncio.sleep(1.0)
             return await tts_mod.synthesize(text, key=key, voice_id=self._voice_id)
@@ -1084,20 +1087,33 @@ class RockyCodeApp(App):
             streaming = self._voice_player.streamable()
             started = False
             while True:
-                if pending is None:
-                    text = await self._voice_queue.get()
-                    if text is None:  # the turn's sentinel — nothing more to say
-                        break
-                    if self._voice_cut_flag:
-                        continue
-                    if not started:
-                        started = True
-                        self._voice.speaking()
-                        self._render_voice_chip()
-                    data = await self._voice_synth(text, key)
-                else:
-                    data = await pending
+                try:
+                    if pending is None:
+                        text = await self._voice_queue.get()
+                        if text is None:  # the turn's sentinel — nothing more to say
+                            break
+                        if self._voice_cut_flag:
+                            continue
+                        if not started:
+                            started = True
+                            self._voice.speaking()
+                            self._render_voice_chip()
+                        data = await self._voice_synth(text, key)
+                    else:
+                        data = await pending
+                        pending = None
+                except tts_mod.TtsError as e:
+                    if not e.skippable:
+                        raise
+                    # the content filter refused ONE sentence — skip it and
+                    # keep reading (one muted line per turn; the transcript
+                    # keeps everything)
                     pending = None
+                    if not self._voice_skip_noted:
+                        self._voice_skip_noted = True
+                        await self._add(Static(
+                            f"[{MUTED}]🔊 {escape(str(e))}[/]", classes="tool-line"))
+                    continue
                 if self._voice_cut_flag:
                     continue
                 # start the NEXT synth while this clip plays; a sentinel in
@@ -4011,6 +4027,7 @@ class RockyCodeApp(App):
         self._talk_spoken = 0
         self._talk_capped_noted = False
         self._voice_turn_failed = False  # per turn — a transient TTS error stops the tail
+        self._voice_skip_noted = False   # per turn — filtered sentences, one muted line
 
         async for ev in self.engine.run_turn(text, images=images):
             if isinstance(ev, StateChanged):
