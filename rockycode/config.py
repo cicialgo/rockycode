@@ -10,6 +10,7 @@ hand-rolled emit (the config is flat, so no toml-writer dependency needed).
 """
 from __future__ import annotations
 
+import re
 import tomllib
 from pathlib import Path
 from typing import Any, Optional
@@ -74,6 +75,33 @@ DEFAULTS: dict[str, Any] = {
     # image appended as the last argument. kimi's CLI has no verified image
     # input and stepfun ships no CLI — those go via image_provider.
     "image_cli": "",        # e.g. "mmx"
+    # Voice (engine/voice.py + asr/tts/recorder.py). `deepseek` = the hotkey
+    # records the mic, DeepSeek ASR transcribes it on the home key, the text
+    # lands in the input box — Enter still sends (typing stays safe by
+    # default; voice_autosend on submits right away). readback speaks rocky's
+    # replies aloud (DeepSeek TTS); pressing the hotkey during playback
+    # barges in — the audio cuts and recording starts, like talking over a
+    # person. The turn keeps streaming silently (Esc still cancels it).
+    "voice_engine": "deepseek",  # off | deepseek — speech input
+    "voice_readback": "off",     # on | off — speak replies aloud
+    "voice_autosend": "off",     # on | off — submit the transcript without Enter
+    "voice_autoend": "on",       # on | off — trailing silence ends the recording
+    "voice_id": "stella",        # stella (女声) | tide (男声)
+    "voice_hotkey": "ctrl+g",    # any ctrl+<letter|digit> (ctrl+v paste · ctrl+j newline · ctrl+q quit)
+    "voice_end_silence_ms": 700,  # how much trailing silence ends an utterance
+    "voice_threshold": 700,       # RMS×32768 floor (calibrates up to 3× the noise floor)
+    "voice_min_speech_ms": 200,   # shorter utterances are blips — ignored
+    # Talk mode (/voice talk — engine/talk.py): the conversation turns
+    # itself. An utterance auto-submits (no Enter), the reply is spoken
+    # (readback on for the session), then the warm mic listens again; speech
+    # while rocky thinks or speaks barges in. Long replies cap the spoken
+    # part (~1500 chars) — the transcript keeps everything.
+    "voice_talk": "off",          # on | off — hands-free voice conversation
+    # Voice-interrupt DURING the spoken tail. OPEN SPEAKERS: the mic hears
+    # rocky's own TTS and self-barges — keep this OFF (the hotkey still
+    # interrupts; speech interrupts work while he thinks/works silently).
+    # HEADPHONES: turn ON for voice interrupts mid-speech too.
+    "voice_barge_speaking": "off",  # on | off
 }
 
 _ALLOWED = {
@@ -84,7 +112,18 @@ _ALLOWED = {
     "exit_sheet": {"auto", "on", "off"},
     "dream": {"auto", "manual"},
     "image_route": {"auto", "ask", "provider", "cli", "off"},
+    "voice_engine": {"off", "deepseek"},
+    "voice_talk": {"on", "off"},
+    "voice_barge_speaking": {"on", "off"},
+    "voice_readback": {"on", "off"},
+    "voice_autosend": {"on", "off"},
+    "voice_autoend": {"on", "off"},
+    "voice_id": {"stella", "tide"},
 }
+# A hotkey must be a plain ctrl+<letter|digit> — the kitty keyboard protocol
+# is disabled for IME support, so only ctrl-keys arrive reliably. The terminal
+# never forwards ctrl+space (the macOS IME toggle), which is why it is absent.
+_HOTKEY_RE = re.compile(r"^ctrl\+[a-z0-9]$")
 # Integer keys where 0 is meaningful ("follow the model"), not a bad value.
 _ZERO_OK = {"context_window", "max_tokens"}
 
@@ -124,6 +163,8 @@ def _sanitize(raw: dict, base: dict) -> dict:
             if v < 0 or (v == 0 and k not in _ZERO_OK):  # window / output: positive, or 0 = auto
                 continue
         if k in _ALLOWED and v not in _ALLOWED[k]:
+            continue
+        if k == "voice_hotkey" and not _HOTKEY_RE.match(str(v)):
             continue
         out[k] = v
     return out
@@ -197,6 +238,8 @@ def set_value(key: str, raw: str) -> tuple[Any, Optional[str]]:
     value = _coerce(key, raw)
     if key in _ALLOWED and value not in _ALLOWED[key]:
         return None, f"invalid value for {key}: {value!r}. allowed: {', '.join(sorted(_ALLOWED[key]))}"
+    if key == "voice_hotkey" and not _HOTKEY_RE.match(str(value)):
+        return None, f"invalid hotkey {value!r} — use ctrl+<letter|digit> (e.g. ctrl+g)"
     GLOBAL_PATH.parent.mkdir(parents=True, exist_ok=True)
     current = _read(GLOBAL_PATH)
     current[key] = value
@@ -212,6 +255,8 @@ def set_project_value(workdir: Path, key: str, raw: str) -> tuple[Any, Optional[
     value = _coerce(key, raw)
     if key in _ALLOWED and value not in _ALLOWED[key]:
         return None, f"invalid value for {key}: {value!r}. allowed: {', '.join(sorted(_ALLOWED[key]))}"
+    if key == "voice_hotkey" and not _HOTKEY_RE.match(str(value)):
+        return None, f"invalid hotkey {value!r} — use ctrl+<letter|digit> (e.g. ctrl+g)"
     path = Path(workdir) / PROJECT_REL
     try:
         path.parent.mkdir(parents=True, exist_ok=True)

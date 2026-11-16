@@ -263,6 +263,13 @@ def chat(
              "by context compaction; cancel anytime by sending a new message). Set a "
              "number for a hard ceiling. env: ROCKYCODE_CHAT_MAX_STEPS.",
     ),
+    audio: Optional[Path] = typer.Option(
+        None, "--audio",
+        help="Transcribe an audio file (16-bit PCM WAV or Ogg Opus, ≤120 s) via "
+             "DeepSeek ASR and start chat with the transcript as your first message "
+             "— printed on the console and placed in the input box (Enter sends). "
+             "Rides ROCKYCODE_API_KEY.",
+    ),
 ) -> None:
     """Talk to rocky: the interactive agent TUI. amaze!"""
     from rockycode.onboarding import run_setup
@@ -581,11 +588,36 @@ def chat(
 
     # /goal now runs INSIDE the app in its own screen (plan → confirm → work →
     # summary), then pops back to chat — no exit, no bare terminal, no subprocess.
+    # --audio: transcribe first (sync, before the TUI takes the terminal) —
+    # the transcript is printed AND sits in the input box, Enter sends it.
+    initial_text = ""
+    if audio is not None:
+        from rockycode.engine.asr import AsrError, transcribe_path_sync
+        if not audio.is_file():
+            fail(console, f"--audio: {audio} is not a file (WAV / Ogg Opus)")
+            raise typer.Exit(1)
+        info(console, f"audio: transcribing {audio.name}…")
+        try:
+            initial_text = transcribe_path_sync(audio)
+        except AsrError as e:
+            fail(console, f"--audio: {e}")
+            raise typer.Exit(1)
+        info(console, f"heard: {initial_text}")
+
     run_app(
         engine, resume=resume_pick, resume_session=resume_info, sandbox=sb,
         currency=cfg["currency"], theme=cfg["theme"],
         permission=perm, permission_weakened=perm_weakened,
         exit_sheet=cfg["exit_sheet"], dream=cfg["dream"],
+        voice_engine=cfg["voice_engine"], voice_readback=cfg["voice_readback"],
+        voice_autosend=cfg["voice_autosend"], voice_autoend=cfg["voice_autoend"],
+        voice_id=cfg["voice_id"], voice_hotkey=cfg["voice_hotkey"],
+        voice_end_silence_ms=cfg["voice_end_silence_ms"],
+        voice_threshold=cfg["voice_threshold"],
+        voice_min_speech_ms=cfg["voice_min_speech_ms"],
+        voice_talk=cfg["voice_talk"],
+        voice_barge_speaking=cfg["voice_barge_speaking"],
+        initial_text=initial_text,
     )
     engine.finalize_outcome()  # heuristic outcome record (self-evolve phase 0)
     _print_exit_card(engine)

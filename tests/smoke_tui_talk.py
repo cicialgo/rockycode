@@ -1,0 +1,524 @@
+"""Talk mode in the TUI (headless Textual pilot, scripted mic + fake ASR,
+no mic, no ffmpeg, no key, no network).
+
+Paths driven through the real RockyCodeApp:
+  A) /voice talk on → chip lights; a spoken utterance (scripted PCM) ends →
+     transcribes → AUTO-SUBMITS (no Enter) → the fake engine answers →
+     the conversation auto-listens again.
+  B) speech during the reply → BARGE: the audio path cuts, the turn is
+     cancelled, listening starts; the machine counts the barge.
+  C) the hotkey pauses a running talk; /voice talk on resumes it.
+"""
+import asyncio
+import os
+import sys
+import tempfile
+import types
+from collections import deque
+from pathlib import Path
+
+_HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(_HERE))
+os.environ["ROCKYCODE_HOME"] = tempfile.mkdtemp(prefix="rockyhome-")
+os.environ.pop("ROCKYCODE_API_KEY", None)  # hermetic: no ambient key
+os.chdir(tempfile.mkdtemp(prefix="rockytuitalk-"))
+
+from textual.widgets import Static  # noqa: E402
+
+import rockycode.engine.asr as asr_mod  # noqa: E402
+import rockycode.engine.recorder as rec_mod  # noqa: E402
+import rockycode.engine.tts as tts_mod  # noqa: E402
+import rockycode.engine.voice as voice_mod  # noqa: E402
+from rockycode.engine.loop import Engine  # noqa: E402
+from rockycode.tui.app import ChatInput, RockyCodeApp  # noqa: E402
+
+REAL_HOME_KEY = asr_mod.home_key  # saved — the speak loop reads these attrs
+REAL_SYNTH = tts_mod.synthesize
+
+WD = Path.cwd()
+TONE = voice_mod.tone_samples(220, 500, amp=8000)   # 0.5 s of "voice"
+SIL_300 = b"\x00\x00" * (160 * 30)                  # 0.3 s of silence
+SIL_900 = b"\x00\x00" * (160 * 90)                  # 0.9 s — ends an utterance
+
+
+def chunk(content=None, usage=None):
+    d = types.SimpleNamespace(reasoning_content=None, content=content, tool_calls=None)
+    return types.SimpleNamespace(usage=usage, choices=[types.SimpleNamespace(delta=d)])
+
+
+class U:
+    def model_dump(self):
+        return {"prompt_tokens": 30, "completion_tokens": 6}
+
+
+async def stream(chunks):
+    for c in chunks:
+        yield c
+
+
+class Script:
+    """One scripted model response per API call; stall(ev) holds the reply
+    open until the test releases the event."""
+    def __init__(self):
+        self.q = deque()
+
+    def text(self, s):
+        self.q.append([chunk(content=s), chunk(usage=U())])
+        return self
+
+    def stall(self, event):
+        self.q.append(("stall", event))
+        return self
+
+    async def create(self, **kwargs):
+        if not self.q:
+            return stream([chunk(content="ok."), chunk(usage=U())])
+        item = self.q.popleft()
+        if isinstance(item, tuple):
+            await item[1].wait()
+            return stream([chunk(content="ok."), chunk(usage=U())])
+        return stream(item)
+
+
+class TalkRec:
+    """The scripted warm mic: read_new drains whatever the test pushed (the
+    bytes flow through mark()/finish_segment() like the real buffer);
+    `hot` holds the device alive, like a live ffmpeg process."""
+
+    stop_requested = False
+    device = "fake"
+    hot = True
+
+    def __init__(self):
+        self.q = deque()
+        self._buf = bytearray()
+        self._mark = 0
+        self._vad_cur = 0
+
+    @property
+    def running(self):
+        return self.hot
+
+    async def start(self):
+        return None
+
+    def mark(self):
+        self._mark = len(self._buf)
+        self._vad_cur = max(self._vad_cur, self._mark)
+
+    def read_new(self):
+        while self.q:
+            self._buf.extend(self.q.popleft())
+        if self._vad_cur >= len(self._buf):
+            return b""
+        data = bytes(self._buf[self._vad_cur:])
+        self._vad_cur = len(self._buf)
+        return data
+
+    def finish_segment(self):
+        seg = bytes(self._buf[self._mark:])
+        self._mark = len(self._buf)
+        return seg
+
+    async def stop(self):
+        self.q.clear()
+
+    def stderr_tail(self):
+        return ""
+
+
+def build(script=None, *, voice_readback="off", voice_barge_speaking="off"):
+    script = script or Script()
+    client = types.SimpleNamespace(chat=types.SimpleNamespace(completions=script))
+    engine = Engine(model="fake", client=client, workdir=WD, registry={})
+    app = RockyCodeApp(engine, voice_readback=voice_readback,
+                       voice_barge_speaking=voice_barge_speaking)
+    return app, engine, script
+
+
+def txt(app):
+    return " ".join(str(w.render()) for w in app.query(Static))
+
+
+async def wait_until(pilot, cond, timeout=8.0, step=0.05):
+    for _ in range(int(timeout / step)):
+        await pilot.pause(step)
+        if cond():
+            return True
+    return bool(cond())
+
+
+async def _fake_transcribe(wav, **_kw):
+    return "把测试跑一遍", 1500.0
+
+
+async def test_talk_conversation():
+    asr_mod.transcribe = _fake_transcribe
+    rec_mod.Recorder = TalkRec
+    voice_mod.STALL_S = 300.0  # the scripted mic idles — no stall interference
+    script = Script().text("收到，继续。")
+    app, _, _ = build(script=script)
+    async with app.run_test() as pilot:
+        await wait_until(pilot, lambda: "ctrl+g" in txt(app))
+        await pilot.press(*"/voice talk on")
+        await pilot.press("enter")
+        ok = await wait_until(pilot, lambda: "talk · listening" in txt(app))
+        assert ok, txt(app)
+        assert app._talk.phase == "listening"
+        # speak: utterance → end-silence → ASR → AUTO-SUBMIT (no Enter)
+        app._recorder.q.extend([TONE, SIL_300, SIL_900])
+        ok = await wait_until(pilot, lambda: "把测试跑一遍" in txt(app))
+        assert ok, txt(app)                       # the user turn auto-added
+        ok = await wait_until(pilot, lambda: "收到，继续。" in txt(app))
+        assert ok, txt(app)                       # the engine answered
+        ok = await wait_until(pilot, lambda: app._talk.phase == "listening")
+        assert ok, app._talk.phase                # and listened again
+    voice_mod.STALL_S = 3.0
+    print("  talk: utterance auto-sends, reply lands, the mic listens again  ✓")
+
+
+async def test_talk_barge_in():
+    asr_mod.transcribe = _fake_transcribe
+    rec_mod.Recorder = TalkRec
+    voice_mod.STALL_S = 300.0
+    gate = asyncio.Event()
+    script = Script().stall(gate)  # the reply hangs open — rocky is "thinking"
+    app, _, _ = build(script=script)
+    async with app.run_test() as pilot:
+        await wait_until(pilot, lambda: "ctrl+g" in txt(app))
+        await pilot.press(*"/voice talk on")
+        await pilot.press("enter")
+        await wait_until(pilot, lambda: app._talk.phase == "listening")
+        app._recorder.q.extend([TONE, SIL_300, SIL_900])
+        ok = await wait_until(pilot, lambda: app._talk.phase == "thinking")
+        assert ok, app._talk.phase                # the turn is running…
+        app._recorder.q.append(TONE)              # …and the user speaks over it
+        ok = await wait_until(pilot, lambda: "interrupted" in txt(app))
+        assert ok, txt(app)                       # BARGE
+        assert app._talk.phase == "listening", app._talk.phase
+        assert app._talk.barges == 1
+        gate.set()                                # release the reply — no hang
+        ok = await wait_until(pilot, lambda: "turn cancelled" in txt(app))
+        assert ok, txt(app)
+    voice_mod.STALL_S = 3.0
+    print("  barge: speech during the turn cuts it, cancels, and listens  ✓")
+
+
+async def test_talk_readback_error_resumes():
+    # THE live bug: a transient TTS error (429/503 — plausible after a few
+    # rounds) exited the speak loop without handing the conversation back,
+    # stranding talk in SPEAKING forever. The finally now always resumes.
+    async def boom(text, **kw):
+        raise tts_mod.TtsError("DeepSeek TTS is busy — readback paused", permanent=False)
+
+    asr_mod.transcribe = _fake_transcribe
+    asr_mod.home_key = lambda: ("sk-test", "T")
+    tts_mod.synthesize = boom
+    rec_mod.Recorder = TalkRec
+    voice_mod.STALL_S = 300.0
+    script = Script().text("收到，继续。")
+    app, _, _ = build(script=script, voice_readback="on")
+    try:
+        async with app.run_test() as pilot:
+            await wait_until(pilot, lambda: "ctrl+g" in txt(app))
+            await pilot.press(*"/voice talk on")
+            await pilot.press("enter")
+            await wait_until(pilot, lambda: app._talk.phase == "listening")
+            app._recorder.q.extend([TONE, SIL_300, SIL_900])
+            ok = await wait_until(pilot, lambda: "busy" in txt(app))
+            assert ok, txt(app)  # the transient error is surfaced
+            ok = await wait_until(pilot, lambda: app._talk.phase == "listening")
+            assert ok, app._talk.phase  # …and NEVER strands in speaking
+    finally:
+        asr_mod.home_key = REAL_HOME_KEY
+        tts_mod.synthesize = REAL_SYNTH
+        voice_mod.STALL_S = 3.0
+    print("  tts error: one line, and the conversation listens again  ✓")
+
+
+async def test_talk_barge_during_speaking():
+    # The barge watcher must stay armed through the spoken tail — speech
+    # mid-sentence interrupts too (the watcher used to be cancelled at turn
+    # end, leaving the tail without protection).
+    gate = asyncio.Event()
+
+    async def gated(text, **kw):
+        await gate.wait()
+        return b"RIFF" + b"\x00" * 60
+
+    asr_mod.transcribe = _fake_transcribe
+    asr_mod.home_key = lambda: ("sk-test", "T")
+    tts_mod.synthesize = gated
+    rec_mod.Recorder = TalkRec
+    voice_mod.STALL_S = 300.0
+    script = Script().text("收到。")
+    app, _, _ = build(script=script, voice_readback="on", voice_barge_speaking="on")
+    try:
+        async with app.run_test() as pilot:
+            await wait_until(pilot, lambda: "ctrl+g" in txt(app))
+            await pilot.press(*"/voice talk on")
+            await pilot.press("enter")
+            await wait_until(pilot, lambda: app._talk.phase == "listening")
+            app._recorder.q.extend([TONE, SIL_300, SIL_900])
+            ok = await wait_until(pilot, lambda: app._talk.phase == "speaking")
+            assert ok, app._talk.phase  # the tail is playing (synth gated)
+            app._recorder.q.append(TONE)  # the user speaks over it
+            ok = await wait_until(pilot, lambda: "interrupted" in txt(app))
+            assert ok, txt(app)
+            assert app._talk.phase == "listening", app._talk.phase
+            assert app._talk.barges == 1
+            gate.set()
+            ok = await wait_until(pilot, lambda: app._talk.phase == "listening")
+            assert ok, app._talk.phase
+    finally:
+        asr_mod.home_key = REAL_HOME_KEY
+        tts_mod.synthesize = REAL_SYNTH
+        voice_mod.STALL_S = 3.0
+    print("  barge mid-sentence: the tail is protected too  ✓")
+
+
+async def test_config_readback_applies_live():
+    # /config voice_readback on must flip the RUNNING app (it used to only
+    # write the file — "but it doesn't speak" was the app never learning).
+    app, _, _ = build()  # readback off
+    assert not app._voice_readback
+    async with app.run_test() as pilot:
+        await wait_until(pilot, lambda: "ctrl+g" in txt(app))
+        await pilot.press(*"/config voice_readback on")
+        await pilot.press("enter")
+        ok = await wait_until(pilot, lambda: "applied now" in txt(app))
+        assert ok, txt(app)
+        assert app._voice_readback          # the live flag flipped
+        assert "spoken" in txt(app)         # and the note says so
+        await pilot.press(*"/config voice_readback off")
+        await pilot.press("enter")
+        ok = await wait_until(pilot, lambda: not app._voice_readback)
+        assert ok
+    print("  config: /config voice_readback flips the live session  ✓")
+
+
+class FakePlayer:
+    """Records feeds; the speak loop's player in the filter-skip test."""
+
+    def __init__(self):
+        self.feeds = 0
+
+    def available(self):
+        return True
+
+    def missing_hint(self):
+        return "fake"
+
+    def streamable(self):
+        return True
+
+    def speak(self, wav):
+        return True
+
+    def feed(self, pcm, rate):
+        self.feeds += 1
+
+    def finish_stream(self):
+        pass
+
+    def remaining_s(self):
+        return 0.0
+
+    def wait(self):
+        pass
+
+    def stop(self):
+        pass
+
+    @property
+    def playing(self):
+        return False
+
+
+async def test_filtered_sentence_skips_not_kills():
+    # A 400 (content filter) on ONE sentence must skip it and keep reading
+    # the rest of the tail — the live "that sentence is skipped" line used
+    # to drop everything after it (the tail died with the first refusal).
+    calls = {"n": 0}
+
+    async def filtered_then_ok(text, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise tts_mod.TtsError(
+                "the text was empty or refused by the content filter — that sentence is skipped",
+                skippable=True)
+        return b"RIFF" + b"\x00" * 60
+
+    asr_mod.transcribe = _fake_transcribe
+    asr_mod.home_key = lambda: ("sk-test", "T")
+    tts_mod.synthesize = filtered_then_ok
+    real_player, tts_mod.Player = tts_mod.Player, FakePlayer
+    rec_mod.Recorder = TalkRec
+    voice_mod.STALL_S = 300.0
+    script = Script().text("第一句。第二句。")
+    app, _, _ = build(script=script, voice_readback="on")
+    try:
+        async with app.run_test() as pilot:
+            await wait_until(pilot, lambda: "ctrl+g" in txt(app))
+            await pilot.press(*"/voice talk on")
+            await pilot.press("enter")
+            await wait_until(pilot, lambda: app._talk.phase == "listening")
+            app._recorder.q.extend([TONE, SIL_300, SIL_900])
+            ok = await wait_until(pilot, lambda: "skipped" in txt(app))
+            assert ok, txt(app)                       # the skip line appeared
+            assert app._voice_player is not None and app._voice_player.feeds >= 1, \
+                "the SECOND sentence must still be spoken"
+            ok = await wait_until(pilot, lambda: app._talk.phase == "listening")
+            assert ok, app._talk.phase                # and the turn completed
+    finally:
+        asr_mod.home_key = REAL_HOME_KEY
+        tts_mod.synthesize = REAL_SYNTH
+        tts_mod.Player = real_player
+        voice_mod.STALL_S = 3.0
+    print("  filtered sentence: skipped with one line; the tail keeps reading  ✓")
+
+
+async def test_talk_no_echo_barge():
+    # OPEN SPEAKERS (the default): speech during the spoken tail must NOT
+    # barge — the mic hears rocky's own TTS and would self-interrupt a few
+    # words in (the live "only a few words then it stops" report). The
+    # synth hangs (tail "playing"), the user "speaks", nothing barges.
+    gate = asyncio.Event()
+
+    async def gated(text, **kw):
+        await gate.wait()
+        return b"RIFF" + b"\x00" * 60
+
+    asr_mod.transcribe = _fake_transcribe
+    asr_mod.home_key = lambda: ("sk-test", "T")
+    tts_mod.synthesize = gated
+    rec_mod.Recorder = TalkRec
+    voice_mod.STALL_S = 300.0
+    script = Script().text("收到。")
+    app, _, _ = build(script=script, voice_readback="on")  # barge_speaking OFF
+    try:
+        async with app.run_test() as pilot:
+            await wait_until(pilot, lambda: "ctrl+g" in txt(app))
+            await pilot.press(*"/voice talk on")
+            await pilot.press("enter")
+            await wait_until(pilot, lambda: app._talk.phase == "listening")
+            app._recorder.q.extend([TONE, SIL_300, SIL_900])
+            ok = await wait_until(pilot, lambda: app._talk.phase == "speaking")
+            assert ok, app._talk.phase
+            app._recorder.q.append(TONE)  # echo / "speech" during the tail
+            await pilot.pause(0.8)
+            assert app._talk.phase == "speaking", app._talk.phase  # no self-barge
+            assert app._talk.barges == 0
+            assert "interrupted" not in txt(app)
+    finally:
+        asr_mod.home_key = REAL_HOME_KEY
+        tts_mod.synthesize = REAL_SYNTH
+        voice_mod.STALL_S = 3.0
+    print("  no echo-barge: open speakers never self-interrupt the tail  ✓")
+
+
+async def test_talk_hotkey_barges_mid_turn():
+    # The hotkey during THINKING/SPEAKING = manual barge (talk stays on);
+    # during LISTENING it pauses (covered in the pause test).
+    asr_mod.transcribe = _fake_transcribe
+    rec_mod.Recorder = TalkRec
+    voice_mod.STALL_S = 300.0
+    gate = asyncio.Event()
+    script = Script().stall(gate)  # the reply hangs — rocky "works silently"
+    app, _, _ = build(script=script, voice_readback="on")
+    async with app.run_test() as pilot:
+        await wait_until(pilot, lambda: "ctrl+g" in txt(app))
+        await pilot.press(*"/voice talk on")
+        await pilot.press("enter")
+        await wait_until(pilot, lambda: app._talk.phase == "listening")
+        app._recorder.q.extend([TONE, SIL_300, SIL_900])
+        ok = await wait_until(pilot, lambda: app._talk.phase == "thinking")
+        assert ok, app._talk.phase
+        await pilot.press("ctrl+g")  # manual barge — not a pause
+        ok = await wait_until(pilot, lambda: "interrupted" in txt(app))
+        assert ok, txt(app)
+        assert app._talk.phase == "listening", app._talk.phase  # talk still on
+        assert app._talk.barges == 1
+        gate.set()
+        await wait_until(pilot, lambda: "turn cancelled" in txt(app))
+    voice_mod.STALL_S = 3.0
+    print("  hotkey mid-turn: manual barge keeps talk on; listening still pauses  ✓")
+
+
+async def test_talk_hotkey_barges_mid_speech():
+    # OPEN SPEAKERS, barge_speaking OFF (the default): the echo guard must
+    # silence only VOICE detections — a manual ctrl+t during the spoken tail
+    # still barges (the talk-on line advertises exactly that).
+    gate = asyncio.Event()
+
+    async def gated(text, **kw):
+        await gate.wait()
+        return b"RIFF" + b"\x00" * 60
+
+    asr_mod.transcribe = _fake_transcribe
+    asr_mod.home_key = lambda: ("sk-test", "T")
+    tts_mod.synthesize = gated
+    rec_mod.Recorder = TalkRec
+    voice_mod.STALL_S = 300.0
+    script = Script().text("收到。")
+    app, _, _ = build(script=script, voice_readback="on")  # barge_speaking OFF
+    try:
+        async with app.run_test() as pilot:
+            await wait_until(pilot, lambda: "ctrl+g" in txt(app))
+            await pilot.press(*"/voice talk on")
+            await pilot.press("enter")
+            await wait_until(pilot, lambda: app._talk.phase == "listening")
+            app._recorder.q.extend([TONE, SIL_300, SIL_900])
+            ok = await wait_until(pilot, lambda: app._talk.phase == "speaking")
+            assert ok, app._talk.phase
+            await pilot.press("ctrl+g")  # manual interrupt mid-speech
+            ok = await wait_until(pilot, lambda: "interrupted" in txt(app))
+            assert ok, txt(app)
+            assert app._talk.phase == "listening", app._talk.phase  # talk stays on
+            assert app._talk.barges == 1
+            gate.set()
+    finally:
+        asr_mod.home_key = REAL_HOME_KEY
+        tts_mod.synthesize = REAL_SYNTH
+        voice_mod.STALL_S = 3.0
+    print("  hotkey mid-speech: manual barge works with the echo guard on  ✓")
+
+
+async def test_talk_hotkey_pauses():
+    asr_mod.transcribe = _fake_transcribe
+    rec_mod.Recorder = TalkRec
+    voice_mod.STALL_S = 300.0
+    app, _, _ = build()
+    async with app.run_test() as pilot:
+        await wait_until(pilot, lambda: "ctrl+g" in txt(app))
+        await pilot.press(*"/voice talk on")
+        await pilot.press("enter")
+        await wait_until(pilot, lambda: app._talk.phase == "listening")
+        await pilot.press("ctrl+g")               # the hotkey pauses talk
+        ok = await wait_until(pilot, lambda: "talk paused" in txt(app))
+        assert ok, txt(app)
+        assert app._talk.phase == "paused"
+        await pilot.press(*"/voice talk on")      # resume by command
+        await pilot.press("enter")
+        ok = await wait_until(pilot, lambda: app._talk.phase == "listening")
+        assert ok, app._talk.phase
+    voice_mod.STALL_S = 3.0
+    print("  pause: the hotkey pauses talk; /voice talk on resumes  ✓")
+
+
+def run():
+    asyncio.run(test_talk_conversation())
+    asyncio.run(test_talk_barge_in())
+    asyncio.run(test_talk_readback_error_resumes())
+    asyncio.run(test_talk_barge_during_speaking())
+    asyncio.run(test_filtered_sentence_skips_not_kills())
+    asyncio.run(test_talk_no_echo_barge())
+    asyncio.run(test_talk_hotkey_barges_mid_turn())
+    asyncio.run(test_talk_hotkey_barges_mid_speech())
+    asyncio.run(test_config_readback_applies_live())
+    asyncio.run(test_talk_hotkey_pauses())
+
+
+if __name__ == "__main__":
+    run()
+    print("TUI TALK SMOKE OK — auto-turn · barge · tts-error resume · tail barge · filter-skip · no echo-barge · hotkey barge · config · pause/resume. amaze!")
