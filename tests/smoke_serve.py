@@ -43,7 +43,7 @@ _FAKE_ENV = {**os.environ, "ROCKYCODE_API_KEY": "sk-test-fake", "ROCKYCODE_MODEL
 
 def _serve(tmpdir: str) -> subprocess.Popen:
     return subprocess.Popen(
-        [sys.executable, "rockycode/cli.py", "serve", "--workdir", tmpdir],
+        [sys.executable, "-m", "rockycode.cli", "serve", "--workdir", tmpdir],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, cwd=REPO_ROOT, env=_FAKE_ENV,
     )
@@ -66,7 +66,7 @@ def test_serve_jsonrpc_handshake():
             proc.stdin.write(_request("initialize"))
             proc.stdin.flush()
             resp = _read_line(proc)
-            assert resp.get("result", {}).get("version") == "0.2.0", \
+            assert resp.get("result", {}).get("version") == "1.0.0", \
                 f"unexpected init response: {resp}"
             sid = resp.get("result", {}).get("session_id")
             assert sid
@@ -82,6 +82,26 @@ def test_serve_jsonrpc_handshake():
                 "server_url": None,
                 "artifacts": [],
             }, artifacts
+
+            # Planning is a host protocol state; no model call for an empty chat.
+            def plan_action(action, **extra):
+                proc.stdin.write(_request(f"plan/{action}", {"session_id": sid, **extra}, msg_id=4))
+                proc.stdin.flush()
+                return _read_line(proc)
+
+            state = plan_action("start")["result"]
+            assert state["status"] == "planning" and not state["text"]
+            plan_path = Path(tmpdir) / state["path"]
+            plan_path.write_text("## Scope\nKeep changes small.\n## Verify\n- run tests")
+            review = plan_action("review")["result"]
+            assert review["status"] == "review" and review["revision"]
+            assert "Keep changes small" in review["text"]
+            assert plan_action("approve", revision="stale")["error"]["code"] == -32602
+            assert plan_action("discuss")["result"]["status"] == "planning"
+            assert plan_action("review")["result"]["revision"] == review["revision"]
+            assert plan_action("leave")["result"]["status"] == "off"
+            assert plan_action("status")["result"]["status"] == "off"
+            assert plan_action("approve", revision=review["revision"])["error"]["code"] == -32602
 
             # Send shutdown
             proc.stdin.write(_request("shutdown", msg_id=3))
@@ -107,7 +127,7 @@ def test_serve_survives_malformed_messages():
             proc.stdin.write(_request("initialize"))
             proc.stdin.flush()
             resp = _read_line(proc)
-            assert resp.get("result", {}).get("version") == "0.2.0", \
+            assert resp.get("result", {}).get("version") == "1.0.0", \
                 f"server did not survive malformed input: {resp}"
             proc.stdin.write(_request("shutdown", msg_id=2))
             proc.stdin.flush()
@@ -124,7 +144,7 @@ def test_serve_jsonrpc_protocol():
     2. The server code parses JSON-RPC messages correctly
     3. The _response/_error/_notify helpers work
     """
-    from rockycode.engine.server import _notify, _response, _error
+    from rockycode.server import _notify, _response, _error
 
     # Test notification format
     n = _notify("session/state_changed", {"session_id": "abc", "state": "thinking"})
@@ -149,7 +169,7 @@ def test_serve_jsonrpc_protocol():
 
 def test_event_to_notification():
     """Test that all engine event types serialize cleanly."""
-    from rockycode.engine.server import _event_to_notification
+    from rockycode.server import _event_to_notification
     from rockycode.engine.events import (
         StateChanged, ThinkingDelta, TextDelta, ToolStarted, ToolFinished,
         TurnFinished,
@@ -175,6 +195,50 @@ def test_event_to_notification():
         assert n["params"]["session_id"] == sid
 
 
+def test_approval_note_notification():
+    """A decision the pipeline takes without asking — a static block, or the
+    verifier's auto allow/deny — reaches the client as session/approval_note,
+    the serve twin of the TUI's transcript note (tui/approval.py)."""
+    import asyncio
+    import tempfile
+    from pathlib import Path
+    from rockycode import server as srv
+
+    lines = []
+    original = srv._write_line
+    srv._write_line = lambda msg: lines.append(msg)
+    try:
+        workdir = Path(tempfile.mkdtemp())
+
+        class ServerStub:   # the pieces _make_approver touches
+            _workdir = workdir
+            _perm_events: dict = {}
+            _perm_results: dict = {}
+            _perm_sessions: dict = {}
+
+            def _cleanup_perm(self, eid):
+                pass
+
+        class EngineStub:
+            registry: dict = {}
+            allowed_roots = ()
+            read_grants: set = set()
+
+        approver = srv.SessionManager._make_approver(ServerStub(), "s1", EngineStub())
+        allowed = asyncio.run(approver("bash", {"command": "sudo rm -rf /"}))
+    finally:
+        srv._write_line = original
+    assert allowed is False, "a block-tier command is refused in every mode"
+    notes = [m for m in lines if m.get("method") == "session/approval_note"]
+    assert notes, lines
+    params = notes[0]["params"]
+    assert params["session_id"] == "s1" and params["kind"] == "blocked" and params["tool"] == "bash", params
+    assert "rm -rf" in params["detail"], params
+    assert not [m for m in lines if m.get("method") == "session/request_permission"], "a static block never asks"
+    assert approver.refused and approver.refused[0]["reason"], approver.refused
+    print("  approval_note: a static block reaches the client as a notification ✓")
+
+
 def test_cli_version_flag():
     """`rockycode --version` prints the SAME version the serve handshake
     reports — both derive from package metadata, and this literal is part of
@@ -183,7 +247,7 @@ def test_cli_version_flag():
 
     from rockycode.cli import app
     result = CliRunner().invoke(app, ["--version"])
-    assert result.exit_code == 0 and "rockycode 0.2.0" in result.output, result.output
+    assert result.exit_code == 0 and "rockycode 1.0.0" in result.output, result.output
 
 
 if __name__ == "__main__":
@@ -199,6 +263,7 @@ if __name__ == "__main__":
     test_event_to_notification()
     print("PASS test_event_to_notification")
 
+    test_approval_note_notification()
     test_cli_version_flag()
     print("PASS test_cli_version_flag")
 

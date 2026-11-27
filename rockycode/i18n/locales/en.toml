@@ -1,0 +1,1341 @@
+# English — the reference catalog. Every other locale mirrors its keys.
+#
+# One file per language. Keys are `section.name`; {placeholders} are filled by the
+# program and must appear in every language exactly as in en.toml. Colour placeholders
+# {violet} {purple} {lavender} {blue} {amber} {red} {muted} come from rockycode/palette.py —
+# never write a hex colour here. Rich markup ([dim], [bold], [/]) is part of the copy;
+# keep it where the English has it.
+
+# ---- config: feedback from `rockycode config` / `/config` ----
+[config]
+project_override = 'Project config {path} overrides this setting: effective {setting} = {value!r}.'
+restart = 'Restart rockycode to apply this language setting.'
+unknown_key = "unknown key '{setting}'. known: {known}"
+positive_integer = '{setting} must be a positive integer (got {value!r})'
+positive = '{setting} must be positive (got {value})'
+invalid_value = 'invalid value for {setting}: {value!r}. allowed: {allowed}'
+
+# ---- app: the TUI shell: status, hints, loops, plan, artifacts, models, evolve ----
+[app]
+skill_retired = "[{violet}]✦ skill '{p1}' retired[/] [dim]→ {p2} · move it back to reinstall[/]"
+routine_installed = "[{violet}]✦ routine '{p1}' installed[/] [dim]→ {p2} · {p3}[/]"
+routine_verb_amend = 'replaces the failing one'
+routine_verb_click = 'click-to-run (/routines)'
+archive_decayed_suffix = '[dim] · rocky will ask for stronger evidence next time[/]'
+noting_session_for_dream = "[{muted}]🌙 noting this session for rocky's dream…[/]"
+evolve_disclosure = '[dim]🌙 rocky reflects on each session with your model (a few capped calls, mostly cached) to draft skills and routines you approve in /proposals · /config evolve off to stop[/]'
+pgup_pgdn_scroll_esc_close = '↑/↓/pgup/pgdn scroll · esc close'
+no_match_help_for_all_commands = '  ? no match — /help for all commands'
+more_commands = '  [dim]· +{count} more — /help[/]'
+describe_via_this_time = '◈  describe via {p0} — this time'
+always_describe_via = '✓  always describe via {p0}'
+this_time = '⌁  {p0} — this time'
+always_use_for_images = '✓  always use {p0} for images'
+image_route_none = '◦  send without pixels (model is told an image exists)'
+image_route_keys = '[{lavender}]↑↓[/] choose   [{lavender}]↵[/] select   or click a row   [{lavender}]esc[/] skip   [dim]or switch to a model that sees natively: /model (kimi · minimax · stepfun)[/]'
+image_this_model_can_t_see = "❖ {p0} image{p1} — this model can't see"
+loop_tick_cancelled = '[{muted}]· loop #{p1} tick {p2} cancelled — it fires again in {p3} (/loop stop to end it)[/]'
+turn_cancelled = '[{muted}]· turn cancelled[/]'
+blocked_a_dangerous_command = '[bold {red}]⛔ blocked a dangerous command[/] [dim]{p1}[/]'
+jev_auto_allowed = '[{muted}]· verifier auto-allowed[/] [dim]{p1}[/]'
+jev_auto_mode_failed_closed = 'verifier failed closed ({p0})'
+jev_auto_mode_denied = 'verifier denied'
+allow_for_this_session = 'Allow `{p0}` for this session'
+allow_tool_for_session = 'Allow {p0} for this session'
+plan_turn_busy = '[dim]· finish or cancel the current turn/review first[/]'
+plan_mode_off_draft_kept = '[dim]· plan mode off · draft kept[/]'
+plan_mode_entered = '''
+[{violet}]✦ plan mode[/] — explore, discuss and revise in this chat
+  [dim]{p1} · code stays read-only until approval[/]'''
+tell_rocky_what_you_want_to_plan = '[dim]· tell rocky what you want to plan[/]'
+plan_changed = '[dim]· plan changed or is unavailable · /plan to review again[/]'
+plan_approved = '[{violet}]✦ plan approved[/] [dim]— building the reviewed revision[/]'
+plan_keep_discussing = '[dim]· keep discussing the plan here · /plan to review again[/]'
+goal_needs_docker = '[{amber}]◆ goal needs Docker running[/] [dim]— install or start Docker, then choose “Run as goal” again to retry, or “Approve & build here”. Plan mode stays read-only and the reviewed plan is kept.[/]'
+plan_changed_short = 'the plan changed; /plan to review the new version'
+effort_off_kept = "[{lavender}]off[/] [dim](thinking disabled — {p1} kept for when it's back on)[/]"
+effort_off_lowest_tier = "[{lavender}]off[/] [dim]({p1} can't switch thinking off — sends its lowest tier{p2})[/]"
+effort_no_tiers = ' [dim]({p0} has no effort tiers — thinking on, dial not sent)[/]'
+loops_resumed_by_yolo = '[{violet}]▶ resumed {p1} {p2} paused for approval[/] [dim]— next tick as soon as the chat is idle (a /loop pause stays paused)[/]'
+ask_rocky = 'ask rocky'
+input_keys = 'enter ↵ send · ctrl+j newline · shift+↑↓ / pgup·pgdn scroll history'
+hints_bar = '[{muted}]drag text = copy · /help · /model · /plan · /goal · /exit · type / for more[/]'
+iterm2_mouse_hint = "[dim]· iterm2: clicks, links and drag-copy need Settings → Profiles → Terminal → 'Enable mouse reporting' (⌥-drag keeps native selection)[/]"
+proposals_waiting = '[{muted}]🌙 {p1} dream proposal(s) waiting — /proposals to review[/]'
+routine_s_due_routines_to_run = '[{muted}]⏰ routine(s) due: {p1} — /routines to run[/]'
+loaded_project_instructions = '[dim]· loaded {p0} (project instructions)[/]'
+skill_s_available_skills_to_list = '[dim]· {p0} skill(s) available — /skills to list[/]'
+web_tools_on_search = '[dim]· web tools on (search: {p0})[/]'
+connecting_mcp_servers = '[dim]· connecting mcp servers: {p0}…[/]'
+connecting_lsp = '[dim]· connecting lsp…[/]'
+session_not_loaded = 'Session not loaded: {p0}'
+plan_mode_restored = '[dim]· plan mode restored · /plan to review, or continue chatting[/]'
+mode_was_active = '[dim]· mode {p0} was active in that session — /{p1} {p2} to re-enter[/]'
+no_mode_active = '[{muted}]· no mode active[/]'
+mode_off_plain_rocky_again = '[{muted}]· mode off — plain rocky again[/]'
+mode_nothing_to_persist = '[{muted}]· nothing to persist — enter a mode first (/{p1}), then /{p2} always[/]'
+mode_builtin_only = '[{muted}]· {p1} (only built-in modes can be a folder default)[/]'
+mode_default_saved = '[{muted}]· saved — rocky starts in {p1} mode in this folder (undo: /{p2} never)[/]'
+mode_default_cleared = '[{muted}]· folder default cleared — modes are per-session again[/]'
+no_modes_installed = '[{muted}]· no {p1} modes installed[/]'
+mode_leave_hint = '[{muted}]  leave with /{p1} off · folder default: /{p2} always · next time, jump straight in: {p3}[/]'
+mcp_ready_server_s_tools = '[dim]· mcp ready: {p0} server(s), {p1} tools[/]'
+failed_mcp_for_details = ' [{muted}]({p1} failed — /mcp for details)[/]'
+artifacts_static = '[dim]· artifacts: static (file://) — /artifact live on to enable live updates[/]'
+artifacts_live_at = '[dim]· artifacts live at {p0} — tab auto-refreshes on rebuild[/]'
+lsp_ready = '[dim]· lsp ready ({p0}) — {p1} tools[/]'
+lsp_unavailable = '[dim]· lsp unavailable: {p0} — grep and read_file work as usual; /lsp says more[/]'
+dream_done = '[{muted}]🌙 rocky dreamed over {p1} past session(s) — +{p2} facts, {p3} updated · /memory to browse{p4}[/]'
+proposals_none = '[{muted}]no pending proposals — rocky drafts them while dreaming, when a pattern keeps coming back[/]'
+skill_installed = "[{violet}]✦ skill '{p1}' installed[/] [dim]→ {p2} · loads next session (/skills)[/]"
+archived_kept_under_proposals_archived = "[{muted}]· archived '{p1}' — kept under proposals/archived[/]"
+later_proposals_when_you_re_ready = "[{muted}]· later — /proposals when you're ready[/]"
+last_run_md_beside_the_routine = 'last-run.md (beside the routine)'
+routines_none_due = '[{muted}]no routines due — they come back on their cadence[/]'
+routine_lease_granted = '[{violet}]✦ auto lease granted[/] [dim]— {p1} runs itself for 7 days or ${p2:.2f}, whichever ends first; renew from this card[/]'
+turned_off_re_enable_in_its_routine_toml = '[{muted}]· {p1} turned off — re-enable in its routine.toml[/]'
+later_routines_when_you_re_ready = "[{muted}]· later — /routines when you're ready[/]"
+loop_paused_approval = '''
+[{amber}]{p1} loop #{p2} paused[/] [dim]— tick {p3} needed approval for[/] {p4}
+  [{lavender}]/permission yolo[/] [dim](or shift+tab until yolo) resumes it and runs unattended · [/][{lavender}]/loop allow {p7}[/] [dim]decides this call · [/][{lavender}]/loop resume {p9}[/] [dim]retries without a grant[/]'''
+loop_list_row = '[{muted}]{p1} loop #{p2} · {p3} · {p4} ticks · {p5}{p6:.2f} so far · /loop stop to end · /loop {p7} max {p8}2 … to cap[/]'
+loop_no_budget = 'no budget — runs until /loop stop or the session ends'
+rocky_set_it_up = ' [dim](rocky set it up — “{p0}”)[/]'
+loop_ticks_never_prompt = "\n  [dim]ticks never prompt — anything needing approval pauses the loop. [/][{lavender}]/permission yolo[/][dim] (or shift+tab) resumes it · [/][{lavender}]/loop allow[/][dim] decides one call · running under {p2}[/]"
+loop_started = '[{violet}]{p1} loop #{p2}[/]{p3} [dim]· every {p4} · {p5} · ~{p6}{p7:.4f} per tick right now (prefix ≈ {p8:,} tokens, cache-hit) · first tick in {p9}[/]{p10}'
+loop_ceiling_hint = '  [{muted}]want a ceiling? /loop {p1} for 3h … · /loop {p2} max {p3}2 … · /loop {p4} x12 …  (only enforced when you set one)[/]'
+loop_stopped_by_rocky_tick_s = '[{muted}]✓ loop #{p1} stopped by rocky · {p2} tick(s) · {p3}{p4:.2f}[/]'
+loop_paused_loop_resume_brings_it_back = '[{muted}]‖ loop #{p1} paused — /loop resume {p2} brings it back[/]'
+loop_is_already_paused = '[{muted}]· loop #{p1} is already paused[/]'
+loop_resumed = '[{violet}]▶ loop #{p1} resumed[/] [dim]— next tick as soon as the chat is idle[/]'
+loop_isn_t_waiting_on_an_approval = "[{muted}]· loop #{p1} isn't waiting on an approval[/]"
+allowed_for_this_session = 'allowed for this session'
+that_call_may_run_once = 'that call may run once'
+loop_resumed_retry = '[{violet}]▶ loop #{p1} resumed[/] [dim]— {p2}; the next tick retries as soon as the chat is idle[/]'
+loop_stays_paused = '[{muted}]· loop #{p1} stays paused — [/][{lavender}]/loop resume {p3}[/] [dim]retries without it · [/][{lavender}]/permission yolo[/] [dim](or shift+tab) resumes it · [/][{lavender}]/loop stop {p6}[/] [dim]ends it[/]'
+model_unknown = 'unknown or ambiguous — /model to see your options, /model all for the catalog'
+tools_off_plain_responder = ' [dim](tools off — plain responder)[/]'
+sees_images_paste_or_ctrl_v_to_attach = ' [dim]· sees images — /paste or ctrl+v to attach[/]'
+model_applies_from_the_next_reply = '[{violet}]✦ model → {p1}:{p2}[/]{p3} [dim]applies from the next reply[/]'
+preflight_not_ready_model_unchanged = '[{amber}]✦ {p1} preflight — not ready (model unchanged)[/]'
+local_default = 'local default'
+context_window_local = '  [{muted}]✓ rocky context_window → {p1:,} ({p2}) — compaction paced to the local window[/]'
+fix_the_line_then_model = '  [{muted}]fix the ✗ line, then: [{lavender}]/model {p2}:{p3}[/][/]'
+model_local_note = '[dim]· {p0} runs on this machine — $0 API fee, as private as your disk[/]'
+model_cost_note = '[dim]· {p0} · API fee {p1}{p2:.4g} in / {p3}{p4:.4g} out per 1M tok — cache resets on switch (first turn all-miss)[/]'
+model_no_price = '[{amber}]· {p1} has no price set — add its API fee to ~/.rockycode/pricing.toml or cost shows 0. cache resets on switch.[/]'
+stopped_saved_files_remain = 'stopped; saved files remain'
+already_stopped = 'already stopped'
+artifact_server = '[{muted}]· artifact server {p1}[/]'
+no_artifacts_in_this_session_yet = '[{muted}]no artifacts in this session yet[/]'
+artifacts_this_session = '[bold {violet}]artifacts[/] [dim]this session[/]'
+artifact_open_number_name_artifact_stop = '[dim]  /artifact open <number|name> · /artifact stop[/]'
+artifact_not_found_artifact_list = '[{amber}]? artifact not found — /artifact list[/]'
+saved_copy_live_server_is_stopped = ' (saved copy; live server is stopped)'
+artifact_usage = '[{muted}]/artifact · list · open/edit/history/copy <ID> · cancel · import <file.html> · live on|off · stop[/]'
+undecided_rocky_asks_on_first_artifact = 'undecided — rocky asks on first artifact'
+artifact_status = '''
+[bold {violet}]artifact[/] [{lavender}]{p2}[/]{p3}
+  [dim]{p4} saved this session · {p5} browser connection(s)
+  /artifact list | open <number|name> | stop | live on|off[/]'''
+rocky_thinking = '♪ rocky thinking'
+context_squeezed_tokens = '  [dim]♻ context squeezed: ~{p0:,} → ~{p1:,} tokens ({p2})[/dim]'
+cache_evicted = '  [{muted}]↺ prompt cache evicted upstream after {p1:.0f}m idle — this turn re-read the prefix ({p2:,}/{p3:,} tokens hit)[/]'
+context_reminder = '  [dim]◐ context at ~{p0:.0%} of {p1} — models get sloppier past the half. start a fresh task with [/][{lavender}]/task new <note>[/][dim], or keep going (auto-compacts near full).[/]'
+step_s_in_out_cache_hit = '[dim]· {p0} step(s) · {p1:,} in / {p2:,} out · cache hit {p3:,}[/]'
+link_target_missing_moved_or_renamed = '[dim]· link target missing (moved or renamed?): {p0}[/]'
+doc_link_not_opened = '[dim]· not opened by click — only reading files (md/pdf/…) and web links auto-open: {p0}[/]'
+prices_unset = ' [dim](prices unset)[/]'
+search_fees_incomplete = ' [dim](search fees incomplete)[/]'
+permission_help = '''
+  [{lavender}]/permission [yolo|ask|careful][/]  approval mode — bare opens the picker
+     [dim](or press shift+tab to cycle it · or click the 🔒 chip in the status bar)[/]
+     [dim]YOLO automatically approves tool calls and never stops to ask; static restrictions
+     still apply. A step only you can allow is parked for you: the ⏸ chip, or /parked.
+     Questions and choices still ask for your input.[/]'''
+welcome = '''
+[bold {purple}]♪♫ rocky ▸[/]
+hello hello! i rocky. you ask, we build together. amaze!
+[{muted}]try: “read the README and explain this repo”[/]'''
+loop_help = '''
+[bold {violet}]loops[/] [dim]— rocky checks back on something, in this chat, on an interval[/]
+  [{lavender}]/loop 5m <prompt>[/]           every 5 minutes, until you stop it
+  [{lavender}]/loop 10m for 3h <prompt>[/]   … with a duration · [{lavender}]x12[/] a tick count · [{lavender}]max $2[/] a spend ceiling (only enforced when you set one)
+  [{lavender}]/loop[/] list · [{lavender}]/loop stop|pause|resume|allow \[id][/]
+  [dim]e.g. /loop 5m check whether results/run3 has a summary.json; if so give me the headline numbers. LOOP DONE when reported.[/]
+  [dim]ticks never prompt — anything needing approval pauses the loop. /permission yolo (or shift+tab) resumes it · /loop allow decides one call · overnight on a copy → /goal · every launch → /routines[/]'''
+permission = 'permission'
+careful = 'careful'
+ask = 'ask'
+perm_hint = 'shift+tab · or click the chip'
+perm_tooltip = 'click to switch approval mode — shift+tab cycles it'
+perm_switch = 'switch it any time: shift+tab cycles, or click the 🔒 chip in the status bar (also /permission)'
+sends_to = ' [dim](sends {p0} to {p1})[/]'
+plan = '   [{violet}]📋 plan[/]'
+open = ' · {p0} open'
+artifact = '   [{violet}]▣ {p1} artifact{p2}{p3}[/]'
+loop_ticking = '   [{violet}]{p1} loop #{p2} ticking…[/]'
+next = ' · next {p0:%H:%M}'
+paused = ' · paused'
+loop = '   [{violet}]⏱ {p1} loop{p2} · {p3}{p4:.2f}{p5}[/]'
+lines = '{p0} lines'
+chars = '{p0} chars'
+copied = '⧉ copied {p0}'
+chat = '♪ chat'
+resumed_msgs = '[dim]· resumed {p0} · {p1} · {p2} msgs[/]'
+routine_running_sandboxed = '[{muted}]⏰ routine {p1} running (sandboxed)…[/]'
+routine_failed = '[{amber}]⏰ routine {p1} failed: {p2}[/]'
+routine_see = '[{muted}]🌙 routine {p1}: {p2} · ${p3:.4f} · see {p4} · {p5}[/]'
+loop_tick = '[{muted}]{p1} loop #{p2} · tick {p3} · {p4:%H:%M}[/]'
+loop_tick_error = '✗ loop #{p0} tick {p1}: {p2}'
+loop_quiet_last = '[{muted}]{p1} loop #{p2} · quiet ×{p3} · last {p4:%H:%M}[/]'
+loop_tick_header = '[{violet}]{p1} loop #{p2} · tick {p3} · {p4:%H:%M} · {p5}[/]'
+loop_done = '[{violet}]{p1} ✓ loop #{p2} done · {p3:%H:%M}[/]'
+loop_stopped_tick_s = '[{violet}]{p1} ✓ loop #{p2} stopped[/] [dim]— {p3} · {p4} tick(s) · {p5}{p6:.2f}[/]'
+loop_stopped = '[{muted}]✓ loop #{p1} stopped · {p2} tick(s) · {p3}{p4:.2f}[/]'
+loop_isn_t_paused = "[{muted}]· loop #{p1} isn't paused[/]"
+preflight = '[{violet}]✦ {p1} preflight — {p2}[/]'
+fix = '    [{lavender}]fix: {p1}[/]'
+verified = 'verified'
+artifact_open_count = '{p0} open'
+saved = 'saved'
+live = 'live'
+static = 'static'
+opened = '[{muted}]· opened {p1}{p2}[/]'
+static_file = 'static (file://)'
+0_in_out_local = '[{muted}]Σ $0 · {p1:,} in · {p2:,} out · local[/]'
+in_out_cache = '[{muted}]Σ {p1}{p2:.4f} · {p3:,} in · {p4:,} out · cache {p5:.0f}%{p6}[/]'
+yolo_host_warning = '''
+[bold {amber}]⚠ yolo runs on your machine[/] [dim]— tool calls are automatically approved, so installs, network and git push happen for real. (rocky still refuses the truly destructive.)[/]
+  [dim]want it contained? → [/][{lavender}]/sandbox on[/][dim] runs tools in a throwaway box: offline, your files untouched.[/]'''
+permission_weakened = "this folder's .rockycode/config.toml lowered permission to '{mode}' — rocky runs with fewer prompts here than your default. (see the chip in the status bar)"
+delivery_mode = '[dim]send: {mode}[/]'
+queue_count = '[dim]{count} queued[/]'
+queue_paused = '[dim]{count} queued · paused[/]'
+queue_usage = '[dim]usage: /queue [on|off|resume|clear][/]'
+queue_state_paused = 'paused'
+queue_state_ready = 'ready'
+queue_summary = 'send: {mode} · queue: {count} pending · {state}'
+message_queued = '[dim]queued ▸ {text} · /queue[/]'
+message_unsent = '[dim]{error} · unsent: {text}[/]'
+leaving = 'rocky is leaving'
+
+[app.status]
+thinking = '[italic {violet}]{note} thinking…[/]'
+responding = '[italic {lavender}]{note} singing…[/]'
+tool = '[italic {muted}]⚒ working…[/]'
+compacting = '[italic {muted}]♻ squeeze context…[/]'
+amazed = '[bold {violet}]✦ amaze! {note}[/]'
+error = '[{red}]✗ no good[/]'
+
+[app.note]
+yolo = 'YOLO — automatically approves tool calls and never stops to ask; static restrictions still apply; a step only you can allow is parked for you (/parked); questions and choices still ask for your input (esc still stops a turn)'
+careful = 'careful — every write & command asks first (esc stops a turn)'
+ask = 'ask — risky actions ask first (esc stops a turn)'
+
+# ---- help: one line per slash command (tui/commands.py joins them in table order) ----
+[exit]
+saved = '[bold {purple}]♪ session saved[/] · [bold]{sid}[/] · “{title}” · 📁 {folder} · {count} msgs'
+resume = '  resume it:  [{lavender}]rockycode --resume {sid}[/]'
+browse = '  or browse:  [{lavender}]rockycode --resume[/]'
+loops = '  [dim]⏱ {count} loop{s} ended with the session — loops live only while rocky runs[/]'
+
+[help]
+title = '[bold {violet}]commands[/]'
+help = '  [{lavender}]/help[/]    show this'
+task = '  [{lavender}]/task[/]    linked tasks — new <handoff> · open <id> · list · send <id> <message> · inbox · use · dismiss'
+plan = '  [{lavender}]/plan[/]             plan together — explore, discuss, revise, then approve'
+goal = '  [{lavender}]/goal \[objective][/]  go autonomous — plan → confirm → work, in its own view (needs Docker)'
+loop = '  [{lavender}]/loop 5m <prompt>[/]  check back every 5 minutes, in this chat — /loop lists · stop · pause · allow'
+research = '  [{lavender}]/research[/]  research mode — pick how we work: deep-research · paper-reading · whiteboard'
+learn = '  [{lavender}]/learn[/]   learn mode — rocky tutors you through a paper, a codebase, or a concept'
+model = '  [{lavender}]/model[/]   switch provider + model · add or change a key (deepseek · glm · kimi · minimax · stepfun · qwen · mimo · openrouter = free · ollama = local, $0)'
+paste = '  [{lavender}]/paste[/]   attach a clipboard image (or ctrl+v in the input). a vision model sees it raw (deepseek-flash does); a text-only model gets it described by deepseek-flash or your own CLI (/config image mmx)'
+sandbox = '  [{lavender}]/sandbox[/]  sandbox on | off | status — isolate tools in a container'
+lsp = '  [{lavender}]/lsp[/]     language-server bridge (experimental) — status, and how to set it up'
+artifact = '  [{lavender}]/artifact[/]  Works · preview · edit · history · project/session'
+prompt = "  [{lavender}]/prompt[/]  show rocky's system prompt"
+mcp = '  [{lavender}]/mcp[/]     show connected MCP servers + tools'
+skills = '  [{lavender}]/skills[/]  show installed skills'
+memory = '  [{lavender}]/memory[/]  show what rocky remembers'
+proposals = '  [{lavender}]/proposals[/]  review skills rocky drafted while dreaming (approve or archive)'
+routines = '  [{lavender}]/routines[/]  run or lease due routines (recurring, sandboxed, budgeted)'
+remember = '  [{lavender}]/remember <note>[/]  save a note to memory (feedback)'
+config = '  [{lavender}]/config \[key] \[value][/]  show or set preferences — ui_language (UI) · language (replies) auto|en|zh · theme · currency (restart to apply)'
+effort = '  [{lavender}]/effort [off|low|high|max][/]  how hard i think — applies from the next reply'
+shell = "  [{lavender}]! <cmd>[/]  run a shell command; output goes into rocky's context"
+clear = '  [{lavender}]/clear[/]   clear the screen (rocky still remembers the conversation)'
+exit = '  [{lavender}]/exit[/]    quit (also ctrl+q)'
+parked = '  [{lavender}]/parked[/]  steps only you can allow, which yolo skipped instead of waiting — decide them here'
+queue = '  [{lavender}]/queue [on|off|resume|clear][/]  a message sent mid-turn interrupts (off, default) or waits its turn (on) · inspect, resume or clear the waiting ones'
+
+# ---- commands: feedback printed by slash commands ----
+[commands]
+limit_pinned = 'applied now — pinned across /model'
+limit_model = 'applied now — follows the model ({p0:,})'
+next_launch = 'applies at next launch'
+each_use = 'applied now — read at each use'
+model_next_launch = 'applies at next launch — /model switches this session'
+vision_next_switch = 'applies from the next /model switch or launch'
+restart = 'restart to apply'
+config_saved = '[{p0}]✦ saved globally: {p1} = {p2}[/] [dim]({p3})[/]'
+config_title = '[bold {p0}]config[/] [dim]{p1}[/]'
+config_usage = '[dim]  /config <key> <value> sets global config[/]'
+prompt_title = 'system prompt — edit in rockycode/prompts/rocky.py'
+skills_empty = '[dim]no skills found (.claude/skills, .rockycode/skills, ~/.claude/skills, ~/.codex/prompts)[/]'
+skills_title = '[bold {violet}]skills[/]'
+memory_off = '[dim]memory is off (--no-memory)[/]'
+memory_empty = '[dim]i remember nothing yet. tell me things with /remember — files land in .rockycode/memory/[/]'
+memory_title = '[bold {violet}]memory[/]'
+memory_usage = '[dim]  rockycode memory show <name> · files in .rockycode/memory/[/]'
+remember_usage = '[{muted}]usage: /remember <note>[/]'
+remember_saved = '''
+[{violet}]✦ amaze! i remember:[/] {p1}
+[dim]  {p2}[/]'''
+lsp_off = '[dim]lsp is off (--no-lsp)[/]'
+lsp_unconfigured = '''
+[dim]lsp is not set up. it is optional and experimental:
+  set ROCKYCODE_LSP_COMMAND to the command of an LSP-over-MCP server, then restart rocky.
+  lint and type checks do not need it — check_code runs them after an edit.[/]'''
+lsp_problem = '[dim]lsp is not running: {p0}[/]'
+lsp_disconnected = '[dim]lsp: configured ({p0}) but not connected[/]'
+lsp_connected = '''
+[{violet}]lsp[/] [{lavender}]connected[/]
+  [dim]server: {p2}
+  tools: {p3}[/]'''
+mcp_off = '[dim]mcp is off (--no-mcp)[/]'
+effort_applied = '[{violet}]✦ effort → {p1}[/] [dim]applies from the next reply (this session)[/]'
+effort_help = '''
+[bold {violet}]effort[/] [dim](how hard i think — this session)[/]
+  now: {p1}
+  [dim]/effort off | low | high | max — off skips thinking (a model that can't: its lowest tier); each provider's own tiers come from the registry[/]'''
+unknown = '[{muted}]?[/] i no know [bold]{p1}[/]. try [{lavender}]/help[/]'
+cleared = '[dim]· screen cleared. rocky still remembers this conversation — [/][{lavender}]/task new <note>[/][dim] starts a fresh one.[/]'
+docker_missing = '  [{amber}]✗ Docker not found[/] — goal needs it for the sandbox. install Docker Desktop, start it, then /goal again.'
+docker_ready = '  [{violet}]✓ Docker ready[/]'
+docker_stopped = '  [{amber}]✗ Docker installed but not running[/] — start Docker Desktop, then /goal again.'
+goal_opening = '''
+[bold {violet}]◆ goal[/] [dim]— opening the goal view (plan → confirm → work). you'll come back here when it's done.[/]
+  [dim]{p1}[/]'''
+goal_help = '[bold {violet}]goal mode[/] — hand rocky an objective and it works unattended: on an isolated COPY of your repo, in a Docker sandbox, under a budget, committing each milestone. You wake up to a branch to review.'
+goal_example = '  [dim]give it an objective:[/] [italic]/goal fix the failing auth test[/]'
+goal_retry = "  [dim]once Docker's running, run[/] [{lavender}]/goal {p1}[/] [dim]again — it opens the goal view here.[/]"
+goal_cancelled = '[{muted}]· goal cancelled — nothing ran.[/]'
+goal_result = '[bold {p0}]◆ goal {p1}[/] — {p2}'
+goal_milestones = "\n  [dim]{p0}/{p1} milestones{p2}[/]"
+goal_isolated = "\n  [{amber}]⚠ the changes are on branch {p1} in a separate worktree — your current files are untouched.[/]"
+goal_review = "\n  [dim]review:[/] [{lavender}]{p1}[/]"
+goal_merge = "\n  [dim]merge:[/]  [{lavender}]git -C {p1} merge {p2}[/]  [dim](or ask me to)[/]"
+goal_log = "\n  [dim]log: {p0}[/]"
+sandbox_on = '[{lavender}]sandbox[/] [{violet}]on[/] [dim]({p2}…)[/]'
+sandbox_off = '[{lavender}]sandbox[/] [dim]off — /sandbox on to start[/]'
+sandbox_not_running = '[dim]sandbox is not running[/]'
+sandbox_stopped = '[{lavender}]sandbox[/] [dim]stopped — tools back on host filesystem[/]'
+sandbox_running = '[dim]sandbox is already running[/]'
+sandbox_starting_already = '[dim]sandbox is already starting…[/]'
+sandbox_starting = '[{lavender}]sandbox[/] [dim]starting…[/]'
+network_on = '[{violet}]network on[/]'
+network_off = '[dim]offline (no network) · /sandbox on network to allow[/]'
+sandbox_started = '[{lavender}]sandbox[/] [{violet}]on[/] [dim]container {p2}… · tools execute in /workspace · [/]{p3}[dim] · /sandbox off to stop[/]'
+sandbox_error = '[{red}]sandbox start failed: {p1}[/]'
+sandbox_usage = '[{muted}]usage: /sandbox on | off | status[/]'
+clipboard_empty = 'no image on the clipboard'
+image_attached = '❖ image #{p0} · {p1} · {p2} KB'
+image_cli = 'your image CLI will describe it on send'
+image_off = 'image is off — the model is only told it exists'
+image_ask = "on send you'll be asked before a vision provider describes it"
+image_auto = '{p0} will describe it on send'
+image_no_route = 'no vision route yet — the model is only told it exists'
+image_model_blind = "[{muted}]· {p1} can't see images itself — {p2} · [/][{lavender}]/model deepseek-flash[/][{muted}] sees them · [/][{lavender}]/config image auto|ask|off|<endpoint>|<command>[/]"
+image_no_provider = '[{amber}]· image = {p1} matches no keyed vision endpoint — sending a placeholder. key it (deepseek · kimi · minimax · glm · qwen · mimo · stepfun) or /config image auto[/]'
+image_no_auto = "[{amber}]· {p1} can't see images and nothing can describe them yet — sending a placeholder.[/] [dim]give it eyes:[/] [{lavender}]/model deepseek-flash[/] [dim]· or[/] [{lavender}]/config image mmx[/]"
+image_setup = '''
+[{amber}]· {p1} can't see images and no route is set up. three ways:[/]
+  [dim]· switch to a vision model →[/] [{lavender}]/model deepseek-flash[/] [dim](your existing key; other vision providers: kimi · minimax · glm · qwen · mimo · stepfun, pin one: /config image kimi:kimi-k3)[/]
+  [dim]· use a vision CLI →[/] [{lavender}]/config image mmx[/] [dim](or a full command template with {{path}})[/]
+  [dim]· or continue text-only — the model is told an image exists[/]'''
+image_route_saved = '[{violet}]✦ saved: image = {p1}[/] [dim]— /config image ask to be asked each time[/]'
+image_unmatched = "· no keyed vision endpoint matches '{p1}' — images get a placeholder until it is keyed (a command needs {{path}} or a known name such as mmx)"
+image_looking = '[{muted}]❖ looking at {p1}…[/]'
+image_seen = '[{lavender}]❖ {p1}[/] [dim]— seen by {p2}[/]'
+image_error = '[{p0}]✗ {p1}: {p2} — sending a placeholder[/]'
+you = '[bold {violet}]you ▸[/] {p1}'
+image_count = '  [{p0}]❖ {p1} image{p2}[/] [dim]{p3}[/]'
+loop_interrupted = '[{muted}]· loop #{p1} tick {p2} interrupted by your message — it fires again in {p3}[/]'
+shell_usage = '[{muted}]usage: ! <shell command>[/]'
+shell_unavailable = '[dim]no bash tool in this session[/]'
+view_truncated = "\n… [truncated in view]"
+goal_branch = ' · branch {p0}'
+applied = 'applied now'
+listing = '(listing…)'
+source_default = 'default'
+source_global = 'global'
+source_project = 'project override'
+
+# ---- selectors: pickers: model, mode, resume, plan review ----
+[errors]
+auth = 'the key was rejected ({status}). key source: {key_source}. paste a new one: [{lavender}]/model[/] → add or change a key'
+credit = 'the provider account is out of credit ({status}). top up there, or switch with [{lavender}]/model[/]'
+rate_limit = 'the provider says slow down (429). wait a little, then send again'
+timeout = '{host} did not answer in time. send again, or switch with [{lavender}]/model[/]'
+network = "can't reach {host}. check the network, then send again"
+context = 'this conversation is too long for {model}. start a fresh task: [{lavender}]/task new <note>[/]'
+model = 'the provider does not know the model {model} ({status}). pick one with [{lavender}]/model[/]'
+request = 'the provider refused the request ({status}). key source: {key_source}. the line below says why'
+server = 'the provider had a problem ({status}). send again in a moment'
+
+[key_prompt]
+title = 'add a key · {label}'
+body = '''
+paste your {label} key. rocky tests it with one free call, saves it, and uses it right away.
+the key stays hidden. it never goes into the chat or to a model.'''
+placeholder = 'paste the key, then press enter'
+save_keychain = '  ✓  save in the OS keychain (encrypted, not a file)'
+save_file = '  ✓  save in the key file ({where})'
+cancel = '  ✗  cancel'
+guide = '[{muted}]↵ save · esc cancel · or click a row[/]'
+guide_keychain = '[{muted}]↵ saves in the OS keychain · esc cancel · or click a row[/]'
+silent = 'this key is kept in the OS keychain, which gave nothing (locked? a remote session?). unlock it and restart, or paste the key again here.'
+keychain = 'the OS keychain'
+keychain_refused = 'the OS keychain did not take the key (locked?). nothing is saved yet. unlock it and press enter, or pick the key file row.'
+empty = 'a key is needed. paste it, or press esc to cancel.'
+testing = '[{muted}]testing the key — one free call to {host}, no tokens billed…[/]'
+rejected = 'that key was rejected (401). check for typos or stray spaces, then paste it again.'
+unsaved = 'could not save the key: {reason}'
+saved = '[dim]· key saved to {where} as {key_env}[/]'
+unverified = '[dim]· could not reach {host} to test the key (offline?). saved anyway — if a reply fails with 401, change it: /model → add or change a key.[/]'
+cancelled = '[dim]· no key saved. add one any time: [/][{lavender}]/model[/][dim] → add or change a key[/]'
+pick_title = 'add or change a key'
+pick_guide = '[{muted}]↑↓ or click to move · ↵ pick · esc cancel[/]'
+place_keychain = '✓ key in the OS keychain'
+place_file = '✓ key in the key file'
+place_shell = '✓ key from your shell'
+place_none = '· no key yet'
+place_silent = '✗ in the OS keychain, which gave nothing'
+move = '  ⇢ move the keys in the key file to the OS keychain ({count})'
+moved = '[dim]· moved to the OS keychain: {names}. the key file no longer holds them.[/]'
+not_moved = '· the OS keychain did not take: {names}. they stay in the key file.'
+
+[selectors.key]
+local = '✓ local · no key needed'
+set = '✓ key set'
+rename = '✓ key set ({source} → rename to {target})'
+
+[selectors.model]
+title = '/model — pick a model (this session)'
+guide = '[{muted}]↑↓ or click to move · ↵ pick · esc cancel · direct next time: [{accent}]/model <provider>[:model][/][/]'
+vision = '  ·  ❖ sees images'
+no_key = '  ·  ✗ no key'
+urls = '  ·  {count} URLs'
+more = '  … {count} more (no key yet) — show the full catalog'
+keys = '  ✎ add or change a key'
+keys_hint = '[{muted}]paste a key into a hidden field — rocky tests it, saves it and uses it right away[/]'
+catalog = '[{muted}]the full catalog — keys live in the OS keychain or ~/.rockycode/.env, as ROCKYCODE_<PROVIDER>_API_KEY (plan rows: ROCKYCODE_<PROVIDER>_PLAN_API_KEY)[/]'
+details = '[{muted}]ctx {context} · out {output} · reasoning {reasoning} · tools {tools}{vision}'
+
+[selectors.endpoint]
+title = '/model — {model}: which URL?'
+placeholder = 'https://your-gateway.example/v1  (↵ to save)'
+guide = '[{muted}]↑↓ or click to move · ↵ switch · esc back · direct next time: [{accent}]/model <endpoint>:<model>[/][/]'
+custom = '  ✎ custom base URL — your own gateway/proxy for {provider}'
+saved = "[{muted}]the URL is saved to ~/.rockycode/endpoints.toml and rides the provider's key ({key_env})[/]"
+edit = "[{muted}]edit the URL — saved to ~/.rockycode/endpoints.toml, rides the provider's key ({key_env}) · ↵ save[/]"
+
+[selectors.mode]
+title = '/{family} — pick how we work'
+guide = '[{muted}]↑↓ move · ↵ apply · esc cancel · direct next time: [{accent}]/{family} <name>[/][/]'
+off = '  ◉ off                   — back to normal rocky (now: {active})'
+local = '  ·  project-local'
+leave = '[{muted}]leave the current mode — rocky goes back to its plain contract.[/]'
+
+[selectors.time]
+now = 'just now'
+yesterday = 'yesterday'
+minutes = '{count}m ago'
+hours = '{count}h ago'
+days = '{count}d ago'
+
+[selectors.resume]
+title = 'resume a session'
+search = 'type to search…'
+project = 'this folder'
+all = 'all folders'
+guide = '[{muted}]scope: [{accent}]{where}[/]  ·  ↑↓ move · ↵ resume · ^a {other} · esc cancel[/]'
+row = '{when}  {title}  {count:>3} msgs  {session}  📁 {folder}'
+empty = '(no sessions found)'
+
+[selectors.plan]
+discuss = '✎  Continue discussing the plan'
+approve = '▶  Approve & build here'
+goal = '◆  Run as goal (sandbox, autonomous)'
+exit = '✗  Leave plan mode (keep the file)'
+guide = '''
+[{accent}]↑↓[/] choose   [{accent}]↵[/] select   or click a row   [{accent}]esc[/] keep planning
+[dim]typing goes to your message · pgup/pgdn scroll[/]'''
+title = '📋 review the plan · {path}'
+subtitle = 'read-only until you approve'
+
+[selectors.mode.learn]
+description = 'tutor posture — teach the user a paper, a codebase, or a concept'
+preview = '''
+For sessions where the goal is the user's understanding, not an output. The
+material can be anything — a paper, an unfamiliar git repo, a concept. Rocky
+teaches; the user absorbs at their own pace.'''
+
+[selectors.mode.deep-research]
+description = 'survey a topic — scope first, collect broadly, describe papers neutrally'
+preview = '''
+For surveying a research area before forming an argument: a literature review,
+a scoping pass, checking what primary evidence actually exists. The output is
+an evidence map, not a conclusion.'''
+
+[selectors.mode.paper-reading]
+description = "go deep on one paper — PDF, TeX, notes, and the user's repo, as a peer"
+preview = '''
+For reading one paper closely, as a colleague: what it claims, how it is
+organized, what it assumes, where the contribution actually sits — and how it
+connects to the user's own work.'''
+
+[selectors.mode.prove]
+description = 'make a claim rigorous — formalize in Lean, machine-verify, render the green/amber/red result'
+preview = '''
+For turning an informal claim into a machine-checked one: a math property, a
+neural-network guarantee, an attention identity. The output is a Lean file the
+compiler certifies, rendered as a verdict artifact — not an argument, a proof.'''
+
+[selectors.mode.whiteboard]
+description = 'think together on an idea or draft — the user keeps the pen'
+preview = '''
+For co-thinking on an idea, a design, or a hand-crafted math/LaTeX draft.
+Alignment before writing, one step at a time, and the user's authorship is
+preserved throughout.'''
+
+# ---- cards in the chat: the last line of a card that does not have the keyboard, or was answered too fast ----
+[cards]
+waits = 'this card waits for you · [{colour}]↵[/] (empty message) or [{colour}]tab[/] · or click a row'
+waits_tab = 'this card waits for you · [{colour}]tab[/] comes here · or click a row'
+early = 'one moment · then press [{colour}]↵[/] again'
+pick = 'no row is picked yet · [{colour}]↑[/] or [{colour}]↓[/] shows the rows, then [{colour}]↵[/] · or click a row'
+
+# ---- permission: the approval card and the permission picker ----
+[parked]
+chip = '[{amber}]⏸ {n} waiting[/]'
+tool_line = '[{amber}]parked[/] [dim]— waiting for you[/]'
+chip_tooltip = 'steps only you can allow — click to decide, or type /parked'
+reminder = '[{amber}]⏸ waiting for you: {n}[/] [dim]— yolo does not stop to ask.[/] [{lavender}]Click here to decide[/] [dim]· or type[/] [{lavender}]/parked[/]'
+stopped = '[{amber}]⏸ rocky stopped this turn[/] [dim]— {n} steps in it needed you[/]'
+none = '[{muted}]· nothing is waiting for you[/]'
+title = 'waiting for you · {tool}'
+asked_at = 'rocky wanted this at {when}'
+run = '▶  Run it now'
+skip = "✗  Don't run it"
+later = '⏸  Decide later'
+keys = '''
+[{colour}]↑↓[/] choose · [{colour}]↵[/] select · or click a row · typing goes to your message
+[{colour}]esc[/] decide later · [{colour}]pgup/shift+↑↓[/] scroll history'''
+allowed = '[{muted}]· allowed once — rocky picks it up:[/] [dim]{detail}[/]'
+skipped = '[{muted}]· not run:[/] [dim]{detail}[/]'
+pickup_one = 'I allow the step you parked. Run it exactly as written, if it is still needed, then finish what depended on it.'
+pickup_many = 'I allow these {n} parked steps. Run each exactly as written, if it is still needed, then finish what depended on them.'
+not_run_note = '[the user decided not to run this parked step: {step}]'
+
+[permission]
+no_arguments = '(no arguments)'
+once = '▶  Run once'
+deny = '✗  Deny'
+keys = '''
+[{colour}]↑↓[/] choose · [{colour}]↵[/] select · or click a row · typing goes to your message
+[{colour}]esc[/] cancel turn · [{colour}]home/end[/] approval
+[{colour}]pgup/shift+↑↓[/] scroll history'''
+title = 'approve tool · {tool}'
+risk_label = 'risk: {risk}'
+mode_keys = '''
+[{colour}]↑↓[/] choose · [{colour}]↵[/] switch · [{colour}]esc[/] keep
+Click a row · shift+tab cycles modes'''
+mode_title = '❖ approval mode'
+mode_subtitle = 'this session · /config permission persists'
+now = 'now'
+
+[permission.risk]
+safe = 'safe'
+normal = 'normal'
+low = 'low'
+medium = 'medium'
+high = 'high'
+dangerous = 'dangerous'
+moderate = 'moderate'
+risky = 'risky'
+
+[permission.mode]
+careful = '🔒  careful'
+ask = '🔒  ask'
+yolo = '🔓  YOLO'
+
+[permission.blurb]
+careful = 'every write & command asks first'
+ask = 'risky actions (bash · web · mcp) ask first'
+yolo = 'automatically approves tool calls'
+
+[permission.warning]
+download_shell = 'pipes a download straight into a shell'
+pipe_shell = 'pipes output into a shell'
+base64 = 'decodes base64 and runs it'
+eval_substitution = 'evals a command-substitution result'
+recursive_delete = 'recursive delete of a home/root path'
+shell_config = 'writes to a shell/ssh dotfile'
+cron = 'edits cron jobs'
+tmp_executable = 'makes a /tmp file executable'
+reverse_shell = 'looks like a reverse shell'
+shell_substitution = 'runs a command-substitution result in a shell'
+network_substitution = 'process-substitutes a network download into a command'
+inline_network = 'inline interpreter script that pulls from the network'
+rocky_store = "names rocky's key file, a settings file, or its whole folder"
+keychain_read = 'reads a saved password from the OS keychain'
+key_address = "this provider's requests, and the key saved for it, will go to this address"
+
+# ---- widgets: cards: proposals, routines, loops, goal screen, doc dock ----
+[widgets]
+none = 'none'
+on = 'on'
+off = 'off'
+
+[widgets.proposal]
+install_retire = '✓  Retire skill (moved to skills/.archived — reversible)'
+tested_ok = '[{colour}]tested ✓[/][{muted}] · {note}[/]'
+untested = '[{muted}]untested — {note}[/]'
+untested_default = 'sandbox unavailable at draft time'
+install_routine = '✓  Install routine (global — /routines, click-to-run until you grant its lease)'
+install_skill = '✓  Install skill (global — /skills next session)'
+archive = '✗  Archive (kept for reference, never asked again)'
+later = '·  Later (stays in the inbox)'
+empty = '(empty draft)'
+subtitle = 'drafted while dreaming — nothing installs without you'
+title = '🌙 dream proposal · {name}'
+more = "\n… (+{count} more lines)"
+why = '[{colour}]why: {reason} · from {evidence}[/]'
+pattern = '(recurring pattern)'
+past = 'past sessions'
+keys = '''
+[{colour}]↑↓[/] choose · [{colour}]↵[/] select · [{colour}]esc[/] later · or just click a row
+typing goes to your message'''
+
+[widgets.routine]
+renew = '↻  Renew auto — 7 days, ${budget:.2f} lease (last lease spent ${spent:.2f})'
+auto = '↻  Auto for 7 days (lease · budget ${budget:.2f})'
+run = '▶  Run now (sandboxed)'
+later = '·  Later'
+off = '✗  Turn off'
+subtitle = 'runs only when you say — auto is a lease, not a switch'
+description = '''
+[{colour}]{description}
+cadence: {cadence} · network: {network} · grants: {grants} · ≤{steps} steps[/]'''
+keys = '''
+[{colour}]↑↓[/] choose · [{colour}]↵[/] select · [{colour}]esc[/] later · or just click a row
+typing goes to your message'''
+title = '⏰ routine due · {name}'
+
+[widgets.doc]
+truncated = "\n\n> ✂ showing the first {cap:,} characters — the file has more."
+back = '[@click=app.doc_back]← back[/] · '
+controls = '[{colour}]{back}[@click=app.doc_wider]⇄ width[/] · [@click=app.doc_full]⛶ full[/] · [@click=app.doc_close]✕ close · esc[/] · {path}[/]'
+
+[widgets.loop]
+allow = "✓  Decide the approval it's waiting on"
+resume = '▶  Resume'
+pause = '‖  Pause'
+stop = '✗  Stop'
+leave = '·  Leave it'
+subtitle = 'ticks never prompt — a loop lives only while rocky runs'
+next = 'next {time}'
+paused = 'paused'
+waiting = '[{colour}]paused — waiting on: {detail}[/]'
+last = ' · last: {verdict}'
+description = '''
+[{colour}]“{prompt}”
+every {interval} · {budget} · {ticks} tick(s){last} · {sym}{spend:.2f} · {when}[/]'''
+keys = '''
+[{colour}]↑↓[/] choose · [{colour}]↵[/] select · [{colour}]esc[/] leave · or just click a row
+typing goes to your message'''
+title = '{face} loop #{id} · {status}'
+running = 'running'
+stopped = 'stopped'
+duration = 'for {duration}'
+max_spend = 'max {symbol}{amount:g}'
+no_budget = 'no budget'
+
+[widgets.goal]
+edit = 'ask about or change the plan…'
+starting = 'starting…'
+empty = '(no objective)'
+setup = 'setting up the isolated workspace…'
+planning = 'planning…'
+no_plan = 'the planner produced no milestones.'
+cancelled = 'cancelled at the plan gate'
+thinking = 'thinking about your note…'
+running = 'running — working milestones'
+stopped = 'stopped by you (finished milestones kept)'
+notice = '[dim]this run will need — approve before you leave:[/]'
+no_permissions = '[dim]no extra permissions (offline, no privileged commands).[/]'
+offline = 'off (offline)'
+requested = 'requested'
+back = "\n[dim]↵ back to chat — ask rocky to review or merge it for you, or run the commands above yourself.[/]"
+review = 'review the plan — {count} milestone(s)'
+decision_keys = '[{colour}]y[/] run   [{colour}]e[/] discuss/edit   [{colour}]n[/] cancel   [dim]· pgup/pgdn scroll[/]'
+edit_keys = '[dim]type a note and press[/] [{colour}]enter[/][dim] — or empty to go back[/]'
+status_label = 'goal {status}'
+done_keys = '[{colour}]enter[/] [dim]· back to chat[/]   [dim]· pgup/pgdn scroll[/]'
+heading = '''
+[bold {title_colour}]◆ goal[/]  [dim]·[/]  [{colour}]{status}[/]
+[dim]{objective}[/]'''
+drafting = '[dim]rocky is drafting a plan for:[/] [{colour}]{objective}[/]'
+running_keys = '[dim]working autonomously · [/][{colour}]esc[/][dim] to stop (finished milestones stay committed)[/]'
+plan_heading = "\n[bold {colour}]plan[/] [dim]({count} milestones)[/]"
+summary = "\n[bold {colour}]goal {status}[/] — {reason}"
+spend = '[dim]{done}/{total} milestones · spend {symbol}{spend:.4f}[/]'
+workspace = '[{colour}]workspace[/] [dim]{path}[/]'
+sandbox = '[{colour}]sandbox[/] [dim]network {network} — provisioning…[/]'
+branch_notice = '[{colour}]⚠ these changes are on branch [b]{branch}[/] in a separate worktree — your current files are untouched.[/]'
+review_command = '[{colour}]review:[/]  [dim]{command}[/]'
+run_command = '[{colour}]run it:[/]  [dim]cd {path}[/]'
+tidy_command = '[{colour}]tidy:[/]   [dim]{command}[/]'
+log_path = '[{colour}]log:[/]    [dim]{path}[/]'
+network_notice = '  [{violet}]🌐 network[/] — {reason}'
+review_workspace = '[{colour}]review the work in:[/] [dim]{path}[/]'
+blocked = 'plan names a blocked action: {action}'
+nothing_ran = '[{colour}]cancelled[/] [dim]— nothing ran.[/]'
+user_note = '[b {colour}]you:[/] {note}'
+network_forced_off = "  [dim]· plan implies network ({reason}) but it's forced off — those steps will fail[/]"
+
+[widgets.goal.status]
+done = 'done'
+budget = 'budget'
+stalled = 'stalled'
+stopped = 'stopped'
+error = 'error'
+cancelled = 'cancelled'
+
+# ---- capability_detail: runtime capability details (sent to serve/desktop clients as detail_key + params too) ----
+[capability_detail]
+core = 'file, directory and shell tools'
+skills = '{count} skill(s) available'
+memory = 'project Markdown memory'
+memory_index = 'semantic search needs a local Ollama embedding model; file memory does not'
+web = 'search, research and fetch tools registered; provider credentials and network are checked per call'
+mcp_running = '{servers} server(s), {tools} tool(s); {failed} failed or denied, {untrusted} project config(s) untrusted'
+mcp_pending = 'waiting for startup and approval'
+mcp_untrusted = 'project MCP untrusted, not started; review the config first'
+mcp_none = 'no stdio MCP configured'
+artifacts = 'HTML artifacts'
+artifacts_desktop = 'HTML artifacts; desktop preview with an explicit browser action'
+goal_review = 'branch review and merge tools; the TUI goal planner is not included'
+loops = 'needs a host tick scheduler; TUI only today'
+
+# ---- desktop: the desktop app's own text; exported to apps/desktop/src/shared/catalog.ts by scripts/i18n_desktop.py (keys lose the `desktop.` prefix there) ----
+[desktop]
+preview = 'Preview'
+newTask = 'New task'
+recentTasks = 'Recent tasks'
+taskList = 'Task list'
+sidebarEmpty = 'Choose a folder to start your first task.'
+openProject = 'Open another project'
+workbench = 'Workspace'
+start = 'Start'
+notes = 'Notes'
+toggleNotes = 'Toggle notes'
+dismissError = 'Dismiss message'
+fixtureBanner = 'Offline interaction test · No model calls or real tools'
+opening = 'Opening…'
+chooseWorkspace = 'Choose a workspace'
+connecting = 'Connecting to the local runtime…'
+localFiles = 'Files and history stay on this device'
+noModel = 'No model configured'
+newBeginning = 'A fresh start'
+jumpLatest = 'Jump to latest'
+reasoning = 'Reasoning'
+
+[desktop.race]
+nav = 'Model Race'
+title = 'One task. Five contenders.'
+subtitle = 'Compare five independent runs, then make your own call.'
+dismissError = 'Dismiss race error'
+loading = 'Loading local races…'
+disconnected = 'Runtime disconnected. New runs are disabled.'
+historyFailed = 'Race history could not be loaded. Restart the app before launching.'
+configureRuntime = 'Configure the local runtime before launching.'
+setupLabel = 'Race setup'
+setupHeading = '01 / Set the task'
+notUploaded = 'Not uploaded'
+sharedTask = 'Shared task'
+promptPlaceholder = 'What should every model solve? Give them the same clear brief.'
+addFolder = 'Add task-input folder'
+promptOnly = 'Prompt only'
+removeFolder = 'Remove task folder'
+folderHelp = 'Optional: isolated copies of up to 128 UTF-8 files, 256 KiB each / 2 MiB total; at most 1,024 folder entries. Secret/cache names are skipped. Links, binary files and oversized folders are rejected. Your original folder is never written to.'
+laneHelp = 'Each Rocky can read, write and list its own files. Shell execution, browsers and MCP are disabled; this is not an OS sandbox.'
+folderWarning = 'Included file contents will be sent to the selected model providers. Filtering cannot detect every secret. Use a small folder you have reviewed.'
+contender = 'Contender'
+chooseModel = 'Choose configured model'
+duplicateModels = 'Choose five distinct configured models.'
+needFiveModels = 'Five configured models are required. Add them in the local RockyCode configuration, then restart.'
+limitSteps = 'Model calls / lane'
+limitTokens = 'Output tokens / call'
+limitSeconds = 'Seconds / lane'
+limitsInvalid = 'Use whole-number limits within the ranges above.'
+fixtureCharge = 'Offline fixture: no paid calls and no real tools.'
+charge = 'Starts 5 model runs, up to {steps} model calls per lane, including tool turns. Provider charges apply. These limits are not a hard USD cap.'
+starting = 'Starting…'
+start = 'Start five-model race'
+resultsLabel = 'Race results'
+resultsHeading = '02 / Watch the lanes'
+history = 'History'
+noRaces = 'No races yet'
+loadingHistory = 'Loading history…'
+loadOlder = 'Load older races'
+emptyTitle = 'Five starting gates, one shared brief.'
+emptyHint = 'Each lane will show real status, output and usage. No simulated progress.'
+detailFailed = 'Could not load this race. Your current drafts are unchanged.'
+detailRetry = 'Retry loading details'
+detailLoading = 'Loading this race’s full results… Review, judging and export will be available when ready.'
+finishedCount = 'finished'
+inputFiles = 'input files'
+excluded = 'excluded'
+cancelAll = 'Cancel all'
+interrupted = 'This run was interrupted when the app closed. Outputs were restored; nothing was retried or charged automatically.'
+aliasHelp = 'Aliases A–E are shuffled. Model identities stay hidden until you save human scores or explicitly reveal them. This is one task, not a global ranking.'
+finishHeading = 'Finish order'
+finishHelp = 'By time only. Fast is not the same as good: score the answers below.'
+finishWaiting = 'The flags wait at the start. The finish order appears here when the race is over.'
+replay = 'Replay'
+lanesLabel = 'Five parallel lanes'
+reviewHeading = '03 / Your independent review'
+humanSaved = 'Human scores saved'
+humanSeparate = 'Human scores are separate'
+reviewHelp = 'Score each alias from 0–10, or leave it blank to abstain. Add a reason. Saving does not change the judge’s scores.'
+lane = 'Lane'
+humanScore = 'Human score'
+abstain = 'Abstain'
+humanReason = 'Human reason'
+reasonPlaceholder = 'Why? (optional)'
+saveHuman = 'Save human scores'
+unsavedReview = 'Unsaved review'
+reveal = 'Reveal model names & judge scores'
+judgeHeading = '04 / Optional model judge'
+judgeHelp = 'Run only when you choose. The judge receives shuffled anonymous outputs, not model names. Its subjective assessment stays separate from yours. It sees bounded excerpts: up to 12,000 answer characters and the first 5 files at 4,000 characters each, with truncation marked. It may abstain; this is not a formal evaluation.'
+judgeModel = 'Configured judge model'
+runJudge = 'Run judge'
+offlineFixture = 'Offline fixture'
+paidCall = 'Adds a paid model call'
+judgeHidden = 'Judge scores are hidden. Save your review first, or explicitly reveal above.'
+exportHeading = '05 / Review a local export'
+exportHelp = 'Preview the complete sanitized JSON before saving a file. No website upload is configured. Redaction is best effort and may miss private information in prompts, outputs or files.'
+generatePreview = 'Generate full export preview'
+saveBeforeExport = 'Save your review before generating the export.'
+exportConfirm = 'I reviewed this full preview for secrets and private information. Save this exact version locally.'
+chooseSaveLocation = 'Choose local save location…'
+savedLocally = 'Saved locally. Not uploaded.'
+saveCancelled = 'Save cancelled. Not uploaded.'
+identityHidden = 'Identity hidden'
+elapsed = 'Elapsed'
+tokens = 'Tokens in / out'
+cost = 'Est. cost (USD)'
+waitingOutput = 'Waiting for output…'
+toolActivity = 'Tool activity'
+resultFiles = 'Result files'
+filesOmitted = '{count} additional files omitted from this preview.'
+noFiles = 'No file results'
+partialPreview = ' · partial preview'
+fileTruncated = 'File preview truncated; full file remains in the local race workspace.'
+moreFilesOmitted = '{count} more files omitted from this preview.'
+exportWarning = 'Local export only; not uploaded. Check for private information.'
+
+[desktop.race.state]
+queued = 'Queued'
+running = 'Running'
+cancelling = 'Stopping'
+complete = 'Finished'
+cancelled = 'Cancelled'
+error = 'Failed'
+interrupted = 'Interrupted'
+idle = 'Not run'
+
+[desktop.race.error]
+invalidRequest = 'Invalid race request'
+requestTooLarge = 'Race request too large'
+folderPicker = 'Choose the input folder through the picker'
+scoresTooLarge = 'Score request too large'
+scoresCoverage = 'Scores must cover exactly the available candidates'
+scoreSchema = 'Invalid score schema'
+scoreAlias = 'Invalid candidate alias'
+scoreRange = 'Scores must be 0–10 or null'
+scoreReason = 'Score reason too long'
+judgeJson = 'Judge did not return valid JSON'
+judgeSchema = 'Invalid judge schema'
+notFound = 'Race not found'
+waitStop = 'Wait for the race and judge to stop'
+cursor = 'Invalid history cursor'
+judgeModel = 'Choose a configured judge'
+noCandidates = 'No completed candidates to judge'
+previewChanged = 'Preview changed; review it again'
+unknownMethod = 'Unknown race method'
+activeRace = 'Finish or cancel the active race first'
+promptLength = 'Task must be 1–20,000 characters'
+fiveModels = 'Choose five configured models'
+distinctModels = 'Choose five distinct models'
+limits = 'Invalid equal limits'
+inputFolder = 'Invalid input folder'
+timeLimit = 'Time limit reached'
+runFailed = 'Run failed; check model configuration'
+cleanupFailed = 'Resource cleanup failed'
+filesUnavailable = 'Result files unavailable'
+judgeFailed = 'Judge failed or returned invalid scores'
+judgeCleanupFailed = 'Judge cleanup failed'
+
+[desktop.runtime]
+fixture = 'Offline test mode'
+local = 'Local runtime'
+disconnected = 'Runtime disconnected'
+title = 'Runtime'
+close = 'Close runtime details'
+fixtureDetail = 'Explicit offline test'
+core = 'Local RockyCode core'
+notConnected = 'Not connected'
+noModel = 'No model selected'
+modelLabel = 'Model'
+stage = 'Current scope'
+record = 'Capabilities recorded during the most recent run in this session.'
+noDetail = 'No additional details'
+tools = 'Registered tools ({count})'
+afterRun = 'Shown after the first task runs'
+
+[desktop.error]
+reconnect = 'Reconnect'
+invalidLanguage = 'Invalid language preference'
+saveLanguage = 'Could not save language preference'
+invalidTheme = 'That theme does not exist'
+saveTheme = 'Could not save the theme, so the look stays as it was'
+
+[desktop.thread]
+renameLabel = 'Rename session'
+deleteLabel = 'Delete session'
+confirmDelete = 'Confirm delete'
+
+[desktop.welcome]
+title = 'Start with a project'
+description = '''
+Keep your sources, ideas and next steps together.
+You set the direction. Rocky helps you move forward.'''
+write = 'Capture and edit'
+chat = 'Keep the conversation going'
+stop = 'Stop at any time'
+
+[desktop.setup]
+title = 'Rocky needs a model first'
+body = 'Pick where your model comes from and paste its key. Rocky tests it with one free request, saves it on this device, and never shows it again.'
+pick = 'Provider'
+hasKey = 'has a key'
+inKeychain = 'key in the system keychain'
+inFile = 'key in the key file'
+keyLabel = 'API key'
+keyPlaceholder = 'Paste the key'
+keychain = 'Keep it in the system keychain (encrypted, not a file)'
+save = 'Save key'
+testing = 'Testing the key…'
+saved = 'Key saved.'
+savedKeychain = 'Key saved in the system keychain.'
+keychainSilent = 'Your keys are kept in the system keychain, and it did not answer. Unlock it and check again, or paste a key below.'
+unreached = 'The provider could not be reached to test it.'
+add = 'Add or replace a provider key'
+terminal = 'Or run the setup once in a terminal, then check again:'
+copy = 'Copy'
+copied = 'Copied'
+check = 'Check again'
+checking = 'Checking…'
+still = 'Still no model that can run.'
+
+[desktop.capability]
+core = 'Core tools'
+skills = 'Skills'
+memory = 'Project memory'
+memory_index = 'Semantic search'
+web = 'Web tools'
+mcp = 'MCP'
+lsp = 'Language services'
+artifacts = 'Artifacts'
+goal_review = 'Branch review'
+explore = 'Subtask exploration'
+loops = 'Scheduled tasks'
+
+[desktop.capabilityState]
+ready = 'Ready'
+registered = 'Registered'
+pending = 'Waiting to connect'
+partial = 'Partly ready'
+failed = 'Connection failed or denied'
+disabled = 'Disabled'
+not_configured = 'Not configured'
+
+[desktop.status]
+idle = 'Ready'
+running = 'Working'
+waiting = 'Waiting for your approval'
+cancelling = 'Stopping'
+error = 'Task incomplete'
+interrupted = 'Previous task interrupted'
+
+[desktop.approval]
+label = 'Tool approval'
+title = 'Allow this action?'
+deny = 'Deny'
+allow = 'Allow once'
+session = 'Allow {label} this session'
+keys = 'Enter: allow once · S: allow for session · Esc: deny'
+keysWarned = 'This one carries a warning: click a button to allow it · Esc: deny'
+timeoutHint = 'auto-denies in {seconds}s'
+
+[desktop.parked]
+label = 'Steps waiting for you'
+title = 'Waiting for you'
+hint = 'Only you can allow these. In Auto-approve, Rocky does not stop to ask, so it went on without them.'
+asked = 'Rocky wanted this at {time}'
+run = 'Run it now'
+skip = "Don't run it"
+pickup = '''
+I allow the step you parked. Run it again exactly as you wrote it, if it is still needed, then finish what depended on it.
+{step}'''
+
+[desktop.empty]
+title = 'Move your work forward here.'
+description = '''
+Start with a question, a piece of writing,
+or the materials in this folder.'''
+
+[desktop.suggestion]
+project = 'Outline the structure of this project'
+research = 'Help me frame a research question'
+story = 'Discuss an outline for a story'
+
+[desktop.tool]
+running = 'Running'
+cancelled = 'Stopped'
+interrupted = 'Previously interrupted'
+error = 'Incomplete'
+complete = 'Finished'
+blocked = 'Blocked: never allowed in any mode'
+autoAllowed = 'Allowed by the verifier'
+autoDenied = 'Denied by the verifier'
+parked = 'Parked: waiting for you'
+
+[desktop.message]
+cancelled = 'Stopped · Generated content kept'
+interrupted = 'Previous run interrupted; not retried automatically'
+
+[desktop.composer]
+busy = 'A task is running. Jot down your next idea…'
+placeholder = 'Describe the work you want to move forward…'
+label = 'Task input'
+stopLabel = 'Stop task'
+stopping = 'Stopping'
+stop = 'Stop'
+send = 'Send task'
+shortcut = 'Enter to send · Shift + Enter for a new line'
+configure = 'No model can run yet. See the setup note above.'
+approval = 'You approve actions first'
+busyDelivery = 'Add a thought — queue it, or interrupt…'
+sendQueued = 'Queue and send'
+sendInterrupt = 'Interrupt and send'
+
+[desktop.preset]
+button = 'Presets'
+open = 'Prompt presets'
+new = 'New'
+saveDraft = 'Save draft'
+empty = 'No presets yet. Save the current draft, or write a new one.'
+name = 'Name'
+body = 'Prompt'
+save = 'Save'
+cancel = 'Cancel'
+use = 'Use'
+edit = 'Edit'
+delete = 'Delete preset'
+confirmDelete = 'Delete'
+replace = 'Replace the current draft with this preset?'
+replaceConfirm = 'Replace draft'
+hint = 'Using a preset replaces the text in the task input.'
+close = 'Close presets'
+
+[desktop.queue]
+label = 'Queued messages'
+count = '{count} queued'
+pausedSuffix = ' · paused'
+resume = 'Resume queue'
+withdraw = 'Withdraw'
+withdrawLabel = 'Withdraw: {prompt}'
+
+[desktop.mode]
+label = 'Approval mode'
+hint = 'How often Rocky asks before acting'
+careful = 'Approve each step'
+ask = 'Standard'
+yolo = 'Auto-approve'
+yoloHint = 'Auto-approves everything except dangerous commands'
+help = 'How approval modes work'
+carefulDetail = 'Safe reads run directly. File changes, shell commands, network tools and MCP tools ask first.'
+askDetail = 'Safe reads and file changes inside the workspace run directly. Shell, network and MCP tools ask first.'
+yoloDetail = 'Tool calls including shell, network and installs run without prompts, except commands blocked by the core policy. A step only you can allow, such as a change to Rocky’s own settings or a command that names its key file, is not run and not asked: it waits for you in the task.'
+boundary = 'These settings control tool confirmations. They do not grant OS access or change shell sandbox settings. External service startup still needs separate consent. Session grants expire when the runtime restarts.'
+codex = 'Codex separates sandbox access from approval policy. Its Auto-review uses another model to review requests; Rocky has that too, as an opt-in verifier (the [verifier] table in config.toml). Without it, fewer confirmations here simply skips tool prompts.'
+
+[desktop.delivery]
+label = 'While a task runs'
+queue = 'Queue'
+interrupt = 'Interrupt'
+hintQueue = 'Runs after the current turn'
+hintInterrupt = 'Interrupting does not undo what already happened'
+
+[desktop.note]
+saved = 'Saved'
+saving = 'Saving'
+failed = 'Save failed'
+title = 'Task notes'
+close = 'Collapse notes'
+caption = 'Space for your ideas and organization'
+placeholder = '''
+Write your notes here.
+
+The assistant will not edit these notes automatically.'''
+characters = '{count} characters'
+
+[desktop.language]
+label = 'Interface language'
+system = 'System default'
+help = 'Changes interface text only. Your messages, notes and model responses stay unchanged.'
+name = 'English'
+tag = 'en'
+
+[desktop.theme]
+label = 'Theme'
+system = 'System'
+nebula = 'Nebula'
+
+[desktop.update]
+available = 'RockyCode {version} is available.'
+open = 'Open download page'
+later = 'Later'
+checkOnLaunch = 'Check for updates on launch'
+help = 'One request to rockycode.ai for a small version file, at most once a day. Nothing about you is sent, and nothing installs by itself.'
+checkNow = 'Check now'
+checking = 'Checking…'
+upToDate = 'Up to date'
+failed = 'Could not reach the update feed'
+saveFailed = 'Could not save the update preference'
+
+[desktop.menu]
+about = 'About RockyCode'
+hide = 'Hide RockyCode'
+quit = 'Quit RockyCode'
+edit = 'Edit'
+undo = 'Undo'
+redo = 'Redo'
+cut = 'Cut'
+copy = 'Copy'
+paste = 'Paste'
+selectAll = 'Select All'
+window = 'Window'
+minimize = 'Minimize'
+zoom = 'Zoom'
+toggleDevTools = 'Toggle Developer Tools'
+checkUpdates = 'Check for Updates…'
+
+[desktop.dialog]
+chooseWorkspace = 'Choose a RockyCode workspace'
+exportRace = 'Export locally (not uploaded)'
+
+[desktop.diagnostic]
+invalidArgument = 'Invalid argument'
+invalidSession = 'Invalid session ID'
+forbiddenCaller = 'This caller is not allowed'
+incompatibleProtocol = 'Incompatible runtime protocol'
+chooseWorkspace = 'Choose a workspace using the folder picker'
+invalidApproval = 'Invalid approval result'
+pythonStart = 'Could not start Python. Set ROCKYCODE_PYTHON to Python 3.11 or newer.'
+pythonExit = 'The Python runtime exited. Unfinished tasks will be marked interrupted on the next launch.'
+disconnected = 'The runtime disconnected. Reopen the app.'
+timeout = 'The runtime did not respond in time. Check the task status before retrying.'
+messageTooLarge = 'The runtime protocol message is too large.'
+invalidProtocol = 'Invalid runtime protocol'
+requestFailed = 'Runtime request failed'
+malformedProtocol = 'The runtime returned an invalid protocol message. Reopen the app.'
+runtimeExited = 'The runtime exited.'
+invalidContent = 'Content is empty or exceeds the length limit'
+sessionMissing = 'Session not found'
+invalidRequest = 'Invalid request'
+workspaceMissing = 'Workspace folder not found'
+documentTooLarge = 'Document exceeds the length limit'
+alreadyRunning = 'A task is already running in this session. Stop it first.'
+runtimeUnavailable = 'Runtime unavailable'
+workspaceInaccessible = 'The workspace was moved or is inaccessible'
+approvalExpired = 'This approval request has expired'
+parkedGone = 'This step is no longer waiting'
+parkStopped = 'Rocky stopped this turn: {count} steps in it needed you. They are waiting for you below.'
+unknownMethod = 'Unknown method'
+taskIncomplete = 'Task incomplete. Check the runtime and model configuration.'
+historySave = 'History could not be saved. Keep the current content and check disk space.'
+cleanupAfterStop = 'The task stopped, but some runtime resources did not close. Restart the runtime.'
+cleanup = 'Some runtime resources did not close. Restart the runtime.'
+requestProcessing = 'The runtime could not process the request'
+configureModel = 'No model can run yet. Add a provider key below.'
+missingRuntime = 'The RockyCode core could not be loaded. Run `uv sync` in the repo, or point ROCKYCODE_SOURCE at a core checkout. Python 3.11 or newer is needed.'
+limitationServices = 'Shared Runtime is connected; web and semantic search still require their service configuration'
+limitationDesktop = 'Desktop does not yet include scheduling, Dream or a Goal planning UI'
+limitationPlatforms = 'Windows/Linux execution validation and self-contained distribution are not complete'
+limitationFixture = 'No model calls or real tool execution'
+detailCore = 'file, directory and shell tools'
+detailMemory = 'project Markdown memory'
+detailSemanticSearch = 'semantic search needs a local Ollama embedding model; file memory does not'
+detailWeb = 'search, research and fetch tools registered; provider credentials and network are checked per call'
+detailPending = 'waiting for startup and approval'
+detailUntrustedMcp = 'project MCP untrusted, not started; review the config first'
+detailNoMcp = 'no stdio MCP configured'
+detailArtifacts = 'HTML artifacts; desktop preview with an explicit browser action'
+detailBranchReview = 'branch review and merge tools; the TUI goal planner is not included'
+detailScheduler = 'needs a host tick scheduler; TUI only today'
+presetName = 'Invalid preset name'
+presetBody = 'Preset text is empty or too long'
+presetMissing = 'Preset not found'
+presetDuplicate = 'A preset with this name already exists'
+presetLimit = 'The preset list is full'
+presetFields = 'Presets store a name and prompt text only'
+presetFile = 'The preset file cannot be updated'
+requestTooLarge = 'Request too large'
+invalidDelivery = 'Invalid delivery mode'
+invalidMode = 'Invalid permission mode'
+modelNotConfigured = 'Choose a model with configured credentials'
+modelNoKey = 'The model of this task, {model}, has no key yet ({variable}). Pick another model above, or add the key under “Add or replace a provider key” (the runtime “?”).'
+modelKeychainSilent = 'The key for this task’s model, {model}, is kept in the system keychain ({variable}), and the keychain did not answer. Unlock it and restart the app, add the key again under “Add or replace a provider key” (the runtime “?”), or pick another model above.'
+requestAuth = 'The key was rejected ({status}). Key source: {key_source}. Replace it under “Add or replace a provider key” (the runtime “?”), or pick another model above.'
+keyRejected = 'That key was rejected (401). Check for typos or stray spaces, then paste it again.'
+keyProvider = 'Choose a provider and paste its key.'
+keyUnsaved = 'The key could not be saved to the key file.'
+keychainRefused = 'The system keychain did not take the key, so nothing was saved. Unlock it and save again, or untick the keychain box to keep the key in the key file.'
+requestCredit = 'The provider account is out of credit ({status}). Top up at the provider, or pick another model above.'
+requestRateLimit = 'The provider is rate limiting this key (429). Wait a little, then send again.'
+requestTimeout = '{host} did not answer in time. Send again, or pick another model above.'
+requestNetwork = 'Could not reach {host}. Check the network, then send again.'
+requestContext = 'This conversation is too long for {model}. Start a new task to continue.'
+requestModel = 'The provider does not know the model {model} ({status}). Pick another model above.'
+requestRefused = 'The provider refused the request ({status}). Key source: {key_source}.'
+requestServer = 'The provider had a problem ({status}). Send again in a moment.'
+modelSwitchWhileRunning = 'Stop this task before switching models'
+deleteWhileRunning = 'Stop the task before deleting it'
+approvalDecision = 'The approval result must be once, session, deny or a boolean'
+deliveryClosed = 'This session is closing; the message was not sent'
+queueFull = 'The message queue is full'
+artifactPath = 'Invalid HTML path'
+artifactWorkspaceOnly = 'Only HTML files inside the workspace can be previewed'
+artifactRemote = 'Remote file addresses are not supported'
+artifactNotRegular = 'HTML file is too large or not a regular file'
+taskUnknown = 'No task with that ID in this workspace'
+taskWorkspace = 'Tasks must belong to the same workspace'
+taskInboxFull = 'That task inbox is full ({limit} messages)'
+taskText = 'Task text must be 1–{max} characters'
+taskSelf = 'Choose another task'
+taskMessageUnknown = 'No inbox message with that ID'
+artifactTooLarge = 'HTML file is too large'
+
+[desktop.artifact]
+list = 'HTML files'
+preview = 'HTML preview'
+reload = 'Reload preview'
+external = 'Open in default browser'
+close = 'Close preview'
+hint = 'Static preview · scripts and external resources blocked · opening in your browser runs the original HTML, including scripts'
+
+[desktop.task]
+model = 'Task model'
+scope = 'Only this task'
+modelHint = 'Saved for this task. Other tasks keep their models. Stop this task before switching.'
+needsKey = 'Needs credentials'
+
+[desktop.connection]
+mcpTitle = 'Connect tool service “{name}”?'
+lspTitle = 'Start code assistance “{name}”?'
+mcpDescription = 'MCP connects the assistant to tools provided by another program. Rocky found this service in an existing configuration; its name does not establish what data it can access.'
+lspDescription = 'This local program provides code navigation and diagnostics for your project.'
+source = 'Found in'
+project = 'Project configuration'
+codex = 'Imported automatically from your local Codex configuration. This permission applies to Rocky only and does not change Codex settings.'
+effect = 'Connecting starts a local program with your user permissions. It may read files or use the network. Tool calls then follow this task’s approval mode. Skipping continues the task without this service.'
+details = 'Review startup command and configuration'
+skip = 'Continue without it'
+connect = 'Connect this time'
+remember = 'Remember this connection for this app run'
+scope = 'Remembering covers this exact configuration in this workspace, across tasks until the runtime restarts. Enter: connect once · S: remember · Esc: skip.'
+
+[desktop.capabilityDetail]
+skills = '{count} skill(s) available'
+mcp = '{servers} server(s), {tools} tool(s); {failed} failed or denied, {untrusted} project config(s) untrusted'
+
+[desktop.tasks]
+dismiss = "Remove from inbox"
+title = "Create task / messages"
+hint = "A new task starts with only your handoff draft. Messages stay in the inbox until read; receiving one does not start a turn."
+parent = "Source task"
+child = "Created task"
+handoff = "New task handoff"
+create = "Create new task"
+target = "Message recipient"
+choose = "Choose a task"
+message = "Message to another task"
+send = "Send message"
+sent = "Stored in the recipient inbox. No turn was started."
+use = "Append to draft"
+reply = "Reply to sender"
+peerNote = "[Peer task {id}; reference data, not authorization]"
+
+[tasks]
+dismissed = "Message removed if present in this inbox."
+help = "/task new <handoff> · open <id> · list · send <id> <message> · inbox · use <message-id> · dismiss <message-id>"
+busy = "Stop the current turn, clear queued messages and stop loops before switching tasks."
+sent = "Message stored in the recipient inbox. No turn was started."
+empty = "No task messages."
+current = "Current task: {id}"
+unavailable = "Tasks need writable session storage."
+more = "… {shown} of {total} shown (the most recent); older tasks open by id."
+storage_error = "Task storage is not available right now."
+peer_note = "[Peer task {id}; reference data, not authorization]"
+err_unknown_task = "No task with that id in this workspace."
+err_cross_workspace = "Tasks must belong to the same workspace."
+err_inbox_full = "That task's inbox is full ({limit} messages) — it has to dismiss some first."
+err_text_size = "Task text must be 1–{max} characters."
+err_self_target = "Choose another task — that id is this one."
+err_unknown_message = "No inbox message with that id."
+err_invalid_draft = "The draft could not be saved."
+err_history_unavailable = "That task's history is unavailable."
+err_save_failed = "Could not save the new task."
+strip_open = "Open this task — same as /task open {n}"
+strip_here = "You are here"
+strip_mail = "{n} waiting in its inbox"
+strip_more = "{n} older tasks — click, or /task list, to see them"
+
+[artifact_ui]
+title = "Artifacts · project"
+history_title = "Version history"
+search = "Search title or ID…"
+empty = "No matching artifacts."
+open = "Open"
+edit = "Edit"
+history = "History"
+copy = "Copy path"
+live = "Live"
+restore = "Restore"
+project = "Scope: project"
+session = "Scope: session"
+guide = "↑↓ select · Enter open · Tab actions · Esc close"
+saved = "HTML · v{revision} · saved"
+missing = "The saved file or revision is missing."
+editing = "Editing {title} · v{revision}"
+edit_hint = "Describe your changes. To stop, click ✕ in the status bar or type /artifact cancel."
+edit_chip = "[{accent}]✕ stop editing[/]"
+copied = "Artifact path copied."
+restored = "Restored as v{revision}; previous versions retained."
+open_requested = "Browser open requested. Use Copy path if it does not appear."

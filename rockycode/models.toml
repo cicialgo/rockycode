@@ -13,6 +13,7 @@
 #
 # base_url is the provider's China endpoint only — rocky no longer ships an
 # en/cn split. An international or proxy URL is one line in endpoints.toml.
+# Exception: openrouter below is an international free endpoint (no cn host).
 # Verified 2026-09-29 against each provider's own docs unless a `note` says
 # otherwise; correcting a value is a one-line data edit here or in the override.
 #
@@ -37,6 +38,11 @@
 #                 <name>-plan with ROCKYCODE_<NAME>_PLAN_API_KEY
 #   aliases       old model ids → current id (legacy names keep resolving)
 # model fields
+#   wire          API model id when the docs' spelling differs from this row's
+#                 key (omit = send the key). The key stays the /model id.
+#   efforts       per-model override of the provider's tier list
+#   thinking_off  per-model override of the provider flag
+#   endpoint_ids  allowed endpoint IDs (omit to allow every endpoint for this provider)
 #   context / max_output   tokens; compaction and the output clamp pace to these
 #   vision        takes image input
 #   price.usd / price.cny  per 1M tokens: in_hit · in_miss · out (each currency
@@ -45,9 +51,31 @@
 #   roles         default = the pick for a bare `/model <provider>` (first model
 #                 wins too) · sidecar = the cheap model for titles / image
 #                 describe / search on the home key · search = the model the
-#                 native web_search backend calls
+#                 native web_search backend calls (MiniMax's backend takes
+#                 only a row that carries it)
 #   hidden        true = drop this row (an override hiding a builtin)
+# model switches — the model's request contract (engine/model_protocol.py).
+# Leave them all out for a plain OpenAI-compatible model: a new model with a
+# known behaviour is one row. A field rocky does not know refuses the row and
+# says so, so a typo never runs the wrong contract in silence.
+#   replay_reasoning    send the model's earlier reasoning back in later
+#                       requests: never (default) | with_tools (only in a
+#                       request that carries tools) | always
+#   reasoning_required  true = a replayed turn must carry reasoning_content,
+#                       empty when the trace is lost (needs replay_reasoning)
+#   strict_finish       true = a reply that ends without a finish_reason is an
+#                       error (default: only when it carries tool calls)
+#   tool_choice_none    false = the endpoint ignores tool_choice="none", so a
+#                       summarize call sends it no tool schemas (default true)
+#   output_limit        the request field that caps the output: max_tokens
+#                       (default) | max_completion_tokens
+#   sampling            parameters the model wants fixed, in a sub-table
+#                       [models."<id>".sampling]: `thinking = { top_p = 1.0 }`
+#                       and/or `plain = { temperature = 1.0 }` (thinking on /
+#                       off); temperature and top_p only
 
+# verified_at / sources / served_model are maintenance evidence only;
+# served_model is a documented version, not a callable snapshot id.
 schema = 1
 
 # ── DeepSeek — rocky's home provider (rides ROCKYCODE_API_KEY) ───────────────
@@ -64,29 +92,42 @@ peak = "deepseek"
 
 [providers.deepseek.aliases]
 # retired 2026-09-10: DeepSeek still accepts the names and serves them with
-# V4.1-Flash at Flash rates — rocky maps them so old configs keep working.
+# V4.1-Flash-1017 at Flash rates — rocky maps them so old configs keep working.
 "deepseek-v4-flash" = "deepseek-flash"
 "deepseek-v4-flash-vision-exp" = "deepseek-flash"
 
 [models."deepseek-flash"]
 provider = "deepseek"
-label = "V4.1 Flash — rocky's home model"
+label = "V4.1 Flash 1017 — rocky's home model"
 context = 1048576
-max_output = 384000
+max_output = 393216
+replay_reasoning = "with_tools"
+reasoning_required = true
+strict_finish = true
 vision = true
 roles = ["default", "sidecar", "search"]
-note = "DeepSeek-V4.1-Flash (2026-09-10): native image input, thinking optional (on by default)"
+note = "DeepSeek-V4.1-Flash-1017 (2026-10-17): rolling API id; native image input, thinking optional (on by default). Legacy v4-flash ids resolve to this same row."
+served_model = "DeepSeek-V4.1-Flash-1017"
+verified_at = "2026-10-23"
+sources = ["https://api-docs.deepseek.com/", "https://api-docs.deepseek.com/quick_start/pricing/", "https://api-docs.deepseek.com/news/news261017/"]
 [models."deepseek-flash".price]
 usd = { in_hit = 0.003, in_miss = 0.15, out = 0.60 }
 cny = { in_hit = 0.02, in_miss = 1.0, out = 4.0 }
+[models."deepseek-flash".sampling]
+# Thinking ignores temperature; non-thinking ignores top_p.
+thinking = { top_p = 1.0 }
+plain = { temperature = 1.0 }
 
 [models."deepseek-v4-pro"]
 provider = "deepseek"
-label = "V4 Pro — text only · routes to V4.1-Flash at Flash rates until V4.1-Pro ships"
+label = "V4 Pro 0813 — text only"
 context = 1048576
 max_output = 384000
 vision = false
-note = "since 2026-09-14 every request is served by V4.1-Flash and billed at Flash rates; the listed price is the standing Pro table"
+note = "DeepSeek reversed the planned retirement: V4-Pro API remains available at Pro rates. See the updated 2026-09-10 changelog and current pricing table."
+served_model = "DeepSeek-V4-Pro-0813"
+verified_at = "2026-10-23"
+sources = ["https://api-docs.deepseek.com/zh-cn/updates/", "https://api-docs.deepseek.com/quick_start/pricing/"]
 [models."deepseek-v4-pro".price]
 usd = { in_hit = 0.022, in_miss = 0.66, out = 1.98 }
 cny = { in_hit = 0.15, in_miss = 4.5, out = 13.5 }
@@ -135,10 +176,26 @@ max_output = 131072
 vision = true
 note = "max_output is the documented default (131072); the API accepts up to 1048576"
 
+[models."kimi-k3.1-pro"]
+provider = "kimi"
+replay_reasoning = "always"
+strict_finish = true
+output_limit = "max_completion_tokens"
+label = "Kimi K3.1 Pro — vision, thinking always on"
+context = 1048576
+max_output = 131072
+vision = true
+
 # ── MiniMax ──────────────────────────────────────────────────────────────────
+# China OpenAI host rechecked 2026-10-20 (platform.minimax.cn and
+# platform.minimaxi.com both publish api.minimax.cn, not api.minimaxi.com).
+# International OpenAI host: https://api.minimax.io/v1 — one line in
+# ~/.rockycode/endpoints.toml (`minimax = "https://api.minimax.io/v1"`).
+# Anthropic-compatible hosts exist (…/anthropic); rocky speaks OpenAI only.
 [providers.minimax]
+search = "minimax_messages"
 label = "MiniMax"
-base_url = "https://api.minimaxi.com/v1"
+base_url = "https://api.minimax.cn/v1"
 key_env = "ROCKYCODE_MINIMAX_API_KEY"
 key_aliases = ["ROCKYCODE_MINIMAX_CN_API_KEY", "ROCKYCODE_MINIMAX_EN_API_KEY"]
 reasoning = "minimax"
@@ -150,7 +207,24 @@ label = "MiniMax M3 — image + video input, adaptive thinking"
 context = 1048576
 max_output = 131072
 vision = true
-note = "docs spell the id MiniMax-M3; the endpoint accepts the lowercase form rocky's bench runs used. max_completion_tokens up to 524288"
+note = "docs spell the id MiniMax-M3; the endpoint accepts the lowercase form rocky's bench runs used. max_completion_tokens up to 524288. thinking can be disabled"
+
+[models."minimax-m3.1-flash"]
+provider = "minimax"
+label = "MiniMax M3.1 Flash — image + video, thinking always on"
+context = 1000000
+max_output = 131072
+vision = true
+wire = "MiniMax-M3.1-Flash"
+replay_reasoning = "always"
+strict_finish = true
+roles = ["search"]
+efforts = ["low", "medium", "high", "xhigh", "max"]
+thinking_off = false
+note = "wire id is exactly MiniMax-M3.1-Flash. thinking.type=disabled and reasoning_effort=none return 400; dial off sends reasoning_effort=low. reasoning_split=false is rejected. max_completion_tokens recommended 131072, API max 524288; thinking tokens count toward max_tokens. service_tier is unsupported. See docs/minimax-m3.1-flash.md"
+[models."minimax-m3.1-flash".price]
+usd = { in_hit = 0.015, in_miss = 0.15, out = 0.60 }
+cny = { in_hit = 0.10, in_miss = 1.0, out = 4.0 }
 
 # ── StepFun ──────────────────────────────────────────────────────────────────
 [providers.stepfun]
@@ -188,6 +262,10 @@ label = "Bailian Token Plan"
 base_url = "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
 key_env = "ROCKYCODE_QWEN_PLAN_API_KEY"
 
+[providers.qwen.aliases]
+# Keep saved preview selections on the same Token Plan endpoint and key.
+"qwen4-max-preview" = "qwen4-max"
+
 [models."qwen3.8-max"]
 provider = "qwen"
 label = "Qwen3.8 Max — image + video input"
@@ -202,6 +280,23 @@ label = "Qwen3.8 Flash — multimodal, fast"
 context = 1048576
 max_output = 65536
 vision = true
+
+[models."qwen4-max"]
+provider = "qwen"
+label = "Qwen4 Max (Token Plan)"
+endpoint_ids = ["qwen-plan"]
+context = 1000000
+# One shared cap must also fit non-thinking requests (official limit 131072).
+# Thinking + answer may total 262144; mode-specific caps are not yet modeled.
+max_output = 131072
+vision = true
+replay_reasoning = "always"
+strict_finish = true
+output_limit = "max_completion_tokens"
+efforts = ["low", "high", "xhigh"]
+note = "Stable ID released 2026-11-16; Token Plan Personal and Team supported. Rocky retains the existing plan route. Shared output cap 131072 fits thinking on/off; official thinking + answer limit is 262144."
+verified_at = "2026-11-16"
+sources = ["https://help.aliyun.com/zh/model-studio/qwen4-max", "https://docs.agent.bailian.aliyun.com/en/token-plan/token-plan-product-updates"]
 
 # ── Xiaomi MiMo ──────────────────────────────────────────────────────────────
 [providers.mimo]
@@ -220,11 +315,55 @@ key_env = "ROCKYCODE_MIMO_PLAN_API_KEY"
 
 [models."mimo-v2.6-pro"]
 provider = "mimo"
+replay_reasoning = "always"
+strict_finish = true
+tool_choice_none = false
+output_limit = "max_completion_tokens"
 label = "MiMo-V2.6-Pro — omni input (image · video · audio)"
 context = 1048576
 max_output = 131072
 vision = true
-note = "thinking.type enabled|disabled is documented; reasoning_effort is not, so none is sent. Docs' curl examples show an `api-key` header — if Bearer auth is rejected, report it"
+note = "thinking.type enabled|disabled is documented; no reasoning_effort tiers. Bearer auth is supported. MiMo Paygo and Token Plan need separate live acceptance; see docs/mimo-v26-regression.md"
+
+# ── OpenRouter — free models, international (no cn host) ─────────────────────
+# OpenAI-compatible chat completions at https://openrouter.ai/api/v1.
+# Not the home provider: no `default` / `sidecar` / `search` role, so DeepSeek
+# stays the launch model. The picker lists these rows only when
+# ROCKYCODE_OPENROUTER_API_KEY is set (https://openrouter.ai/keys, then
+# ~/.rockycode/.env). The verifier's OPENROUTER_API_KEY is a different
+# variable and is not read here.
+# Free-tier limits (OpenRouter docs, rechecked 2026-10-23): 20 requests/minute
+# and 50/day until the account has bought at least $10 of credits; 1,000/day
+# after that (the per-minute cap stays 20). Failed attempts count toward the
+# daily cap. Price is omitted — these rows are $0, and the footer stays
+# "prices unset".
+# reasoning = none: the free catalog does not share one reasoning wire shape,
+# and OpenRouter's `reasoning` object is not one of rocky's shapes. Sending
+# nothing keeps a non-reasoning model from rejecting the request. No switches
+# (the generic OpenAI history path). Cache hits, when a
+# provider reports them, are OpenAI-style prompt_tokens_details.cached_tokens.
+# Optional HTTP-Referer / X-OpenRouter-Title headers are not sent.
+# Groq and Gemini's OpenAI-compatible free tiers are not builtin rows — point
+# ~/.rockycode/providers.toml (or endpoints.toml) at them.
+[providers.openrouter]
+label = "OpenRouter (free)"
+base_url = "https://openrouter.ai/api/v1"
+key_env = "ROCKYCODE_OPENROUTER_API_KEY"
+reasoning = "none"
+cache_field = "cached_tokens"
+
+[providers.openrouter.aliases]
+# The docs' wire id keeps resolving if someone pastes it into /model.
+"openrouter/free" = "openrouter-free"
+
+[models."openrouter-free"]
+provider = "openrouter"
+label = "Free Models Router — a free model that supports this request"
+context = 65536
+max_output = 8192
+vision = true
+wire = "openrouter/free"
+note = "wire id openrouter/free (checked 2026-10-23). The router filters for tools, images and structured outputs, then picks a free model at random — including very small ones, so tool quality varies. OpenRouter publishes context_length 200000 for the router, but that is a ceiling: the serving model's window is what the request gets. The smallest tool-capable :free model that day (liquid/lfm-2.5-2.6b:free) is 65536 context / 8192 output, so rocky paces to that floor. Raise both in ~/.rockycode/models.toml to use the published ceiling. Same free-tier rate limits as the provider comment. Some free providers log prompts; do not send secrets. The :free catalog changes often."
 
 # ── peak-hour surcharge schedules ────────────────────────────────────────────
 [peak.deepseek]

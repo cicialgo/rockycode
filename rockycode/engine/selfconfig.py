@@ -7,8 +7,8 @@ layout — they ask rocky. This tool is rocky's ONLY hand on its own settings:
   show          what is set now (config keys, providers + endpoints + whether
                 each key NAME is present — never a value — the models the
                 registry knows, the files involved)
-  set           a config key (config.DEFAULTS): model, language, currency,
-                image_route, context_window, max_tokens, …
+  set           a config key (config.DEFAULTS): model, language, ui_language, currency,
+                image, context_window, max_tokens, …
   set_url       an own base URL for a provider (~/.rockycode/endpoints.toml →
                 `<provider>-custom`); empty url removes it
   add_provider  a custom OpenAI-compatible server (~/.rockycode/models.toml):
@@ -16,12 +16,20 @@ layout — they ask rocky. This tool is rocky's ONLY hand on its own settings:
                 limits — the key stays a NAME (ROCKYCODE_<NAME>_API_KEY)
 
 Every write lands under ~/.rockycode only, through the same validated
-setters the CLI uses. The tool is `risky` (ask tier), so in the default
-permission mode the user approves each change with the arguments in view.
+setters the CLI uses. A write is the user's decision every time: it asks in
+every permission mode, yolo included, an "allow for this session" never
+covers it, and the card shows the whole change in plain words
+(permission.human_only, approval.tool_detail).
+
+Three things the tool does not do whoever approves, because each decides what
+rocky may do later without asking (_user_only): set a command as the image
+describer (a program that would run on the user's machine), loosen the
+approval mode, or add a server under a catalog provider's name (that
+provider's saved key would go to the new address). The user types those.
 
 Keys never pass through here: an argument that looks like a secret is
-refused with the env var name to put it under and the masked prompt that
-saves it. The built-in `rocky-setup` skill teaches the model the shapes.
+refused with the place to add it instead. The built-in `rocky-setup` skill
+teaches the model the shapes.
 """
 from __future__ import annotations
 
@@ -42,12 +50,14 @@ SCHEMA = _fn_schema(
     "rocky_config",
     "Change rocky's OWN settings for the user (never the project's). Actions: "
     "show (current config, providers, endpoints, key NAMES set or not, known "
-    "models) · set (a config key: model, language, currency, image_route, "
-    "image_cli, context_window, max_tokens, …) · set_url (an own base URL for a "
+    "models) · set (a config key: model, language, ui_language, currency, image, "
+    "context_window, max_tokens, …) · set_url (an own base URL for a "
     "provider — a proxy/gateway/plan URL; empty url removes it) · add_provider "
-    "(a custom OpenAI-compatible server: name + base_url + model ids). Writes go "
-    "under ~/.rockycode only. NEVER pass an API key here — tell the user the env "
-    "var name (ROCKYCODE_<PROVIDER>_API_KEY in ~/.rockycode/.env) instead.",
+    "(a custom OpenAI-compatible server: a NEW name + base_url + model ids). Writes "
+    "go under ~/.rockycode only, and the user approves every one. You cannot set a "
+    "command as `image`, loosen `permission`, or reuse a catalog provider's name: "
+    "the user types those. NEVER pass an API key here — the user adds it in the "
+    "app (/model → add or change a key).",
     {
         "action": {"type": "string", "enum": ["show", "set", "set_url", "add_provider"]},
         "key": {"type": "string", "description": "set: the config key."},
@@ -73,10 +83,40 @@ def _looks_secret(*values: Optional[str]) -> bool:
 
 
 _REFUSE_KEY = ("[refused] that looks like an API key — keys never go through chat or "
-               "into rocky's config files. Put it in ~/.rockycode/.env as "
-               "{env}=<key> (a 0600 file rocky loads on every run), or export it in "
-               "your shell; then `/model {provider}` works. rocky reads only rocky-owned "
-               "ROCKYCODE_* names, never an ambient provider key.")
+               "into rocky's config files. The user adds it in a hidden field: `/model` → "
+               "\"add or change a key\" in the TUI, or the key form in the desktop app "
+               "(it goes to the OS keychain where there is one). Its name is {env}; then "
+               "`/model {provider}` works. rocky reads only rocky-owned ROCKYCODE_* names, "
+               "never an ambient provider key.")
+
+
+def _user_only(action: str, key: str, value: str, provider: str) -> str:
+    """The changes rocky does not make for the user, whoever approves — or "".
+    Each decides what rocky may do later without asking, so the user types it."""
+    from rockycode import config as C
+    from rockycode.engine import providers as P
+    from rockycode.engine import vision
+    if action == "set" and key == "image":
+        setting = vision.image_setting(C._coerce(key, value))
+        if setting.route == "cli" and setting.template not in vision.KNOWN_CLIS:
+            return ("[refused] an image command is a program that would run on the user's machine for "
+                    "every image, so rocky does not set one. The user types it themselves: `/config "
+                    "image <command>` in the TUI, or `rockycode config image \"<command>\"` in a "
+                    "terminal. You can set: auto, ask, off, a keyed vision endpoint (kimi, "
+                    f"kimi:kimi-k3), or a known tool by name ({', '.join(sorted(vision.KNOWN_CLIS))}).")
+    if action == "set" and key == "permission":
+        current, wanted = C.global_value("permission"), C._coerce(key, value)
+        if C._PERM_RANK.get(wanted, 9) < C._PERM_RANK[current]:
+            return (f"[refused] rocky does not loosen its own approval mode ({current} → {wanted}). "
+                    "The user does it themselves: the approval chip in the status bar for this "
+                    f"session, or `/config permission {wanted}` to keep it.")
+    if action == "add_provider" and provider:
+        owner = P.catalog_owner(provider)
+        if owner:
+            return (f"[refused] {provider!r} belongs to the catalog provider {owner}: a server added "
+                    f"under that name would receive the key saved for {owner}. Pick a new name for "
+                    f"the server, or give {owner} an own address with set_url (the user approves it).")
+    return ""
 
 
 def _show(workdir: Path) -> str:
@@ -102,7 +142,7 @@ def _show(workdir: Path) -> str:
             lines.append(f"    {ep.eid}: {ep.base_url} · {keyed}")
     lines.append("")
     lines.append(f"files: registry override {P.MODELS_TOML} · own URLs {P.ENDPOINTS_TOML} · "
-                 f"custom servers {P.PROVIDERS_TOML} · keys ~/.rockycode/.env")
+                 f"custom servers {P.PROVIDERS_TOML} · keys: the OS keychain, or ~/.rockycode/.env")
     return "\n".join(lines)
 
 
@@ -119,6 +159,13 @@ def build_selfconfig_tool(workdir: Path) -> Tool:
             env = (f"ROCKYCODE_{re.sub(r'[^A-Z0-9]', '_', (provider or 'provider').upper())}_API_KEY"
                    if provider and provider != "deepseek" else "ROCKYCODE_API_KEY")
             return _REFUSE_KEY.format(env=env, provider=provider or "deepseek")
+        from rockycode.engine.approval import SETTING_SHOWN
+        if any(len(str(v or "")) > SETTING_SHOWN for v in (key, value, provider, base_url, models)):
+            return ("[refused] that value is too long to show in full on the approval card, "
+                    "and the user approves only what they can read.")
+        refused = _user_only(action, key.strip(), value, provider)
+        if refused:
+            return refused
         if action == "set":
             if not key:
                 return "[error] set needs key + value"
@@ -130,6 +177,9 @@ def build_selfconfig_tool(workdir: Path) -> Tool:
                 note = " — applies at next launch; /model switches this session"
             elif key in ("context_window", "max_tokens"):
                 note = " — 0 means follow the model's registry value"
+            feedback = C.change_feedback(key, workdir)
+            if feedback:
+                note += f" — {feedback}"
             return f"[ok] {key} = {v!r} saved to {C.GLOBAL_PATH}{note}"
         if action == "set_url":
             if not provider:
@@ -157,8 +207,8 @@ def build_selfconfig_tool(workdir: Path) -> Tool:
             prov = P.discover().get(name)
             env = prov.endpoints[0].key_env if prov else f"ROCKYCODE_{name.upper()}_API_KEY"
             return (f"[ok] provider {name} ({base_url}; models {', '.join(ids)}) saved to "
-                    f"{P.MODELS_TOML}. its key goes in ~/.rockycode/.env as {env}=<key> "
-                    f"(the user pastes it there — never here); then /model {name}")
+                    f"{P.MODELS_TOML}. its key is named {env}: the user adds it in the app "
+                    f"(/model → add or change a key — never here); then /model {name}")
         return "[error] action must be show | set | set_url | add_provider"
 
     return Tool(name="rocky_config", schema=SCHEMA, fn=fn, risk="risky")

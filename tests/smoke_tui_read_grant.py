@@ -27,8 +27,22 @@ SECRET.write_text("API_KEY=supersecret\n")
 
 from rockycode.engine.loop import Engine
 from rockycode.engine.tools import build_registry
-from rockycode.tui.app import ChatInput, RockyCodeApp
+from rockycode.tui.app import RockyCodeApp
+from rockycode.tui.chatinput import ChatInput
 from rockycode.tui.permission import InlineApproval
+from rockycode.tui import cardkeys
+
+cardkeys.ENTER_GUARD = 0  # the half second is tested in smoke_tui_card_keys.py; here Enter answers a card at once
+
+
+async def come_to_card(pilot, app):
+    """A card the user did not open never takes the keyboard: Enter in the empty message box goes to it."""
+    await pilot.press("enter")
+    for _ in range(80):
+        await pilot.pause(0.025)
+        if isinstance(app.focused, cardkeys.CardKeys):
+            return
+    raise AssertionError("Enter in the empty message box did not bring the keyboard to the card")
 
 
 class U:
@@ -46,7 +60,8 @@ def tc(i, id_, name, args):
 
 
 async def stream(chunks):
-    for c in chunks:
+    from invariants import completed_chunks
+    for c in completed_chunks(chunks):
         yield c
 
 
@@ -101,7 +116,8 @@ async def main():
         inp.text = "read the reference"
         await pilot.press("enter")
         assert await wait_until(pilot, lambda: has_approval(app)), "out-of-jail read must prompt"
-        await pilot.press("y")   # approve once
+        await come_to_card(pilot, app)
+        await pilot.press("enter")   # approve once
         # the turn must FINISH after one approval (2nd read auto-allowed via the grant)
         assert await wait_until(pilot, lambda: any(
             m.get("role") == "assistant" and "done." in str(m.get("content", "")) for m in eng.history)), \

@@ -4,8 +4,8 @@ import tempfile
 import time
 from pathlib import Path
 
-from rockycode.engine.budget import GoalBudget, recommended
-from rockycode.engine.worktree import GoalWorkspace
+from rockycode.goal.budget import GoalBudget, recommended
+from rockycode.goal.worktree import GoalWorkspace
 from rockycode.pricing import UsageLedger
 
 OFFPEAK = None  # add() uses real time; peak only affects cost past mid-July — fine here

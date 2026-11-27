@@ -1,0 +1,160 @@
+{
+  "reviewedAt": "2026-10-03",
+  "scope": "Selected historical incidents; NOT a complete malware database. Sources: docs/SUPPLY_CHAIN.md",
+  "packages": {
+    "backslash": [
+      "0.2.1"
+    ],
+    "chalk-template": [
+      "1.1.1"
+    ],
+    "supports-hyperlinks": [
+      "4.1.1"
+    ],
+    "has-ansi": [
+      "6.0.1"
+    ],
+    "simple-swizzle": [
+      "0.2.3"
+    ],
+    "color-string": [
+      "2.1.1"
+    ],
+    "error-ex": [
+      "1.3.3"
+    ],
+    "color-name": [
+      "2.0.1"
+    ],
+    "is-arrayish": [
+      "0.3.3"
+    ],
+    "slice-ansi": [
+      "7.1.1"
+    ],
+    "color-convert": [
+      "3.1.1"
+    ],
+    "wrap-ansi": [
+      "9.0.1"
+    ],
+    "ansi-regex": [
+      "6.2.1"
+    ],
+    "supports-color": [
+      "10.2.1"
+    ],
+    "strip-ansi": [
+      "7.1.1"
+    ],
+    "chalk": [
+      "5.6.1"
+    ],
+    "debug": [
+      "4.4.2"
+    ],
+    "ansi-styles": [
+      "6.2.2"
+    ],
+    "axios": [
+      "1.14.1",
+      "0.30.4"
+    ],
+    "plain-crypto-js": [
+      "4.2.1"
+    ],
+    "ua-parser-js": [
+      "0.7.29",
+      "0.8.0",
+      "1.0.0"
+    ],
+    "rc": [
+      "1.2.9",
+      "1.3.9",
+      "2.3.9"
+    ],
+    "coa": [
+      "2.0.3",
+      "2.0.4",
+      "2.1.1",
+      "2.1.3",
+      "3.0.1",
+      "3.1.3"
+    ],
+    "event-stream": [
+      "3.3.6"
+    ],
+    "flatmap-stream": [
+      "*"
+    ],
+    "nx": [
+      "21.5.0",
+      "20.9.0",
+      "20.10.0",
+      "21.6.0",
+      "20.11.0",
+      "21.7.0",
+      "21.8.0",
+      "20.12.0"
+    ],
+    "@nx/devkit": [
+      "21.5.0",
+      "20.9.0"
+    ],
+    "@nx/js": [
+      "21.5.0",
+      "20.9.0"
+    ],
+    "@nx/workspace": [
+      "21.5.0",
+      "20.9.0"
+    ],
+    "@nx/node": [
+      "21.5.0",
+      "20.9.0"
+    ],
+    "@nx/eslint": [
+      "21.5.0"
+    ],
+    "@nx/key": [
+      "3.2.0"
+    ],
+    "@nx/enterprise-cloud": [
+      "3.2.0"
+    ],
+    "keyv": [
+      "6.0.0"
+    ],
+    "cacheable": [
+      "2.5.1"
+    ],
+    "cache-manager": [
+      "7.2.10"
+    ],
+    "cacheable-request": [
+      "13.0.20"
+    ],
+    "flat-cache": [
+      "6.1.24"
+    ],
+    "file-entry-cache": [
+      "11.1.6"
+    ],
+    "@cacheable/net": [
+      "2.1.1"
+    ],
+    "@cacheable/node-cache": [
+      "3.1.2"
+    ],
+    "@cacheable/memory": [
+      "2.2.1"
+    ],
+    "@cacheable/utils": [
+      "2.5.1"
+    ],
+    "ecto": [
+      "5.0.1"
+    ]
+  },
+  "additionalSource": "https://securitylabs.datadoghq.com/articles/npm-worm-compromises-popular-npm-packages/"
+}

@@ -34,7 +34,7 @@ INDEX_FILE = "MEMORY.md"
 
 TYPE_DIRS = {
     "fact": "facts", "skill": "skills", "episode": "episodes",
-    "feedback": "feedback", "weakness": "weaknesses",
+    "feedback": "feedback", "weakness": "weaknesses", "habit": "habits",
 }
 ARCHIVE_DIR = "archive"
 
@@ -49,7 +49,7 @@ _LIST_FIELDS = {"evidence", "triggers"}
 @dataclass
 class Memory:
     name: str
-    type: str = "fact"             # fact | skill | episode | feedback | weakness
+    type: str = "fact"             # fact | skill | episode | feedback | weakness | habit
     description: str = ""          # one-liner shown in the index
     importance: int = 5            # 1–10
     status: str = "active"         # active | archived
@@ -305,7 +305,8 @@ def build_memory_tools(store: MemoryStore, index=None) -> list[Tool]:
                         "type": "string",
                         "enum": sorted(TYPE_DIRS),
                         "description": "fact (project knowledge), skill (verified how-to), "
-                        "episode (what happened), feedback (user guidance).",
+                        "episode (what happened), feedback (user guidance), "
+                        "weakness/habit (recurring patterns — usually dream-written).",
                     },
                     "description": {"type": "string", "description": "One-line summary for the index."},
                 },

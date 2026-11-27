@@ -32,6 +32,8 @@ import shutil
 import sys
 from pathlib import Path
 
+from rockycode.onboarding import tool_env
+
 
 def _pyflakes_available() -> bool:
     return importlib.util.find_spec("pyflakes") is not None
@@ -100,6 +102,7 @@ async def _run_one(argv: list[str], workdir: Path, timeout: int) -> tuple[int, s
         proc = await asyncio.create_subprocess_exec(
             *argv,
             cwd=str(workdir),
+            env=tool_env(),  # a checker reads the project's files; it has no use for rocky's keys
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )

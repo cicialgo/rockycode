@@ -37,6 +37,12 @@ rockycode chat                 # interactive TUI
 rockycode goal "…"             # autonomous run (sandboxed worktree copy)
 ```
 
+## Translations
+
+UI text lives in `rockycode/i18n/locales/<code>.toml`, one file per language. To add a language,
+copy `en.toml`, translate the values, keep every `{placeholder}`, and run
+`python tests/smoke_i18n_catalog.py`. Details and the translation boundary: `docs/i18n.md`.
+
 ## Before you open a PR
 
 1. **Run the test suite** — `python tests/run_all.py`. It should be green.

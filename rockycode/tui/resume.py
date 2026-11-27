@@ -17,23 +17,25 @@ from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
 
+from rich.cells import cell_len, set_cell_size
 from rich.markup import escape
 
+from rockycode.i18n import tr
 from rockycode.palette import LAVENDER, MUTED
 from rockycode.session import SessionInfo, list_sessions, public_id
 
 
-def rel_time(ts: float) -> str:
+def rel_time(ts: float, language: str = "en") -> str:
     d = time.time() - ts
     if d < 60:
-        return "just now"
+        return tr("selectors.time.now", language)
     if d < 3600:
-        return f"{int(d // 60)}m ago"
+        return tr("selectors.time.minutes", language, count=int(d // 60))
     if d < 86400:
-        return f"{int(d // 3600)}h ago"
+        return tr("selectors.time.hours", language, count=int(d // 3600))
     if d < 172800:
-        return "yesterday"
-    return f"{int(d // 86400)}d ago"
+        return tr("selectors.time.yesterday", language)
+    return tr("selectors.time.days", language, count=int(d // 86400))
 
 
 class ResumePicker(ModalScreen):
@@ -60,19 +62,20 @@ class ResumePicker(ModalScreen):
     ResumePicker #q { border: round $panel-lighten-2; margin-bottom: 1; }
     ResumePicker #q:focus { border: round $primary; }
     ResumePicker OptionList { height: 1fr; background: $surface; }
-    ResumePicker #picker-guide { height: 1; color: $text-muted; }
+    ResumePicker #picker-guide { height: auto; color: $text-muted; }
     """
 
-    def __init__(self, workdir: Path) -> None:
+    def __init__(self, workdir: Path, *, language: str = "en") -> None:
         super().__init__()
+        self.language = language
         self.workdir = workdir
         self.scope = "project"
         self._sessions: list[SessionInfo] = []
 
     def compose(self):
         with Vertical(id="picker") as box:
-            box.border_title = "resume a session"
-            yield Input(placeholder="type to search…", id="q")
+            box.border_title = tr("selectors.resume.title", self.language)
+            yield Input(placeholder=tr("selectors.resume.search", self.language), id="q")
             yield OptionList(id="list")
             yield Static("", id="picker-guide")
 
@@ -81,20 +84,23 @@ class ResumePicker(ModalScreen):
         self._reload()
 
     def _guide(self) -> str:
-        where = "this folder" if self.scope == "project" else "all folders"
-        return (
-            f"[{MUTED}]scope: [{LAVENDER}]{where}[/]  ·  ↑↓ move · ↵ resume · "
-            f"^a {'this folder' if self.scope == 'all' else 'all folders'} · esc cancel[/]"
-        )
+        where = tr("selectors.resume." + self.scope, self.language)
+        other = tr("selectors.resume." + ("project" if self.scope == "all" else "all"), self.language)
+        return tr("selectors.resume.guide", self.language, muted=MUTED,
+                  accent=LAVENDER, where=where, other=other)
 
     def _fmt(self, s: SessionInfo) -> str:
-        when = rel_time(s.started_at)
+        when = rel_time(s.started_at, self.language)
         folder = Path(s.project_path).name if s.project_path else s.project_name
         # escape: a past session's title/summary is untrusted user text; a stray
         # "[/…]" in it is a Textual markup close tag that would crash the picker.
-        title = escape(s.display_title)
-        return (f"{when:>9}  {title[:44]:<44}  {s.n_messages:>3} msgs  "
-                f"{public_id(s.session_id)}  📁 {folder}")
+        # Size raw text in terminal cells BEFORE escaping markup. Slicing an
+        # escaped title can split its backslash/tag and CJK is two cells wide.
+        raw_title = s.display_title
+        title = escape(set_cell_size(raw_title, 44) if cell_len(raw_title) != 44 else raw_title)
+        return tr("selectors.resume.row", self.language,
+                  when=" " * max(0, 9 - cell_len(when)) + when, title=title, count=s.n_messages,
+                  session=escape(public_id(s.session_id)), folder=escape(folder))
 
     def _reload(self) -> None:
         q = self.query_one("#q", Input).value or None
@@ -106,7 +112,7 @@ class ResumePicker(ModalScreen):
                 ol.add_option(Option(self._fmt(s), id=str(i)))
             ol.highlighted = 0
         else:
-            ol.add_option(Option("(no sessions found)", id="none", disabled=True))
+            ol.add_option(Option(tr("selectors.resume.empty", self.language), id="none", disabled=True))
         self.query_one("#picker-guide", Static).update(self._guide())
 
     @on(Input.Changed, "#q")

@@ -175,8 +175,8 @@ def _flatten(parts: list) -> str:
                            "cannot see images and no description was attached. The "
                            "user can enable image understanding with: /model "
                            "deepseek-flash (sees images on the existing DeepSeek "
-                           "key; with image_route auto it also describes images "
-                           "for text-only models), /config image_cli mmx (a local "
+                           "key; with config image = auto it also describes images "
+                           "for text-only models), /config image mmx (a local "
                            "vision CLI), or a keyed vision provider (kimi · "
                            "minimax · glm · qwen · mimo · stepfun).]")
         elif p.get("type") == "text":

@@ -226,9 +226,9 @@ async def _read_file(sandbox: ChatSandbox, path: str, offset=None, limit=None) -
         end = str(start + int(limit) - 1) if limit else "$"
         window = f" | sed -n '{start},{end}p'"
     out, _code = await sandbox.exec(
-        f'if [ -d {q} ]; then echo "[directory] {path}"; ls -p {q}; '
-        f'elif [ -e {q} ]; then cat -n {q}{window}; '
-        f'else echo "[error] file not found: {path}"; exit 1; fi'
+        f"if [ -d {q} ]; then printf '%s\n' {shlex.quote('[directory] ' + path)}; ls -p -- {q}; "
+        f'elif [ -e {q} ]; then cat -n -- {q}{window}; '
+        f"else printf '%s\n' {shlex.quote('[error] file not found: ' + path)}; exit 1; fi"
     )
     return _truncate(out.rstrip("\n"))
 
@@ -307,7 +307,8 @@ def build_sandbox_registry(sandbox: ChatSandbox, *, extras: dict[str, Tool] | No
     # loop's read-parallelism kicks in inside the sandbox too — goal mode and
     # `chat --sandbox` both build their registry here. Without this the reads
     # default to "risky" and every explore batch runs serially.
-    reg = {name: Tool(name=name, schema=SCHEMAS[name], fn=fn, risk=RISK.get(name, "risky"))
+    reg = {name: Tool(name=name, schema=SCHEMAS[name], fn=fn, risk=RISK.get(name, "risky"),
+                      workspace_root=Path("/workspace"))
            for name, fn in fns.items()}
     if extras:
         reg.update(extras)

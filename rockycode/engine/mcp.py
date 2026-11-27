@@ -32,9 +32,11 @@ from pathlib import Path
 from typing import Optional
 
 from rockycode.engine.tools import Tool, _truncate
+from rockycode.onboarding import tool_env
 
 CONNECT_TIMEOUT_S = 30
 CALL_TIMEOUT_S = 120
+STOP_TIMEOUT_S = 5
 
 
 @dataclass
@@ -51,11 +53,13 @@ class ServerConfig:
 # is a third-party binary; handing it {**os.environ} exposes the user's model
 # credentials (and any other secret) to it. We strip these from the inherited
 # env; a server that genuinely needs a key must re-add it via its own `env`.
+# The base is tool_env(), so whatever rocky's store loaded is gone whatever it
+# is called; the name pattern then drops the user's own secret-looking exports.
 _SENSITIVE_ENV = re.compile(r"(API_KEY|_TOKEN|_SECRET|PASSWORD|PASSWD|ANTHROPIC_|OPENAI_)", re.I)
 
 
 def _safe_child_env(extra: dict[str, str]) -> dict[str, str]:
-    base = {k: v for k, v in os.environ.items() if not _SENSITIVE_ENV.search(k)}
+    base = {k: v for k, v in tool_env().items() if not _SENSITIVE_ENV.search(k)}
     base.update(extra)  # explicit server env wins — can deliberately re-add a key
     return base
 
@@ -146,7 +150,7 @@ def _result_text(result) -> str:
             parts.append(f"[{type(item).__name__}]")
     text = "\n".join(parts).strip() or "[empty result]"
     if getattr(result, "isError", False):
-        return f"[error] {text}"
+        return _truncate(f"[error] {text}")
     return _truncate(text)
 
 
@@ -214,53 +218,138 @@ class _ServerActor:
         self.config = config
         self._requests: asyncio.Queue = asyncio.Queue()
         self.ready: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._stopping = False
+        self._stop_task: Optional[asyncio.Task] = None
         self._task = asyncio.create_task(self._run(), name=f"mcp-{config.name}")
+        # Cancellation before _run gets its first turn never executes its finally.
+        self._task.add_done_callback(lambda _: self._close())
 
     async def _run(self) -> None:
-        from mcp import ClientSession, StdioServerParameters
-        from mcp.client.stdio import stdio_client
-
-        params = StdioServerParameters(
-            command=self.config.command,
-            args=self.config.args,
-            env=_safe_child_env(self.config.env),
-        )
         try:
-            async with stdio_client(params, errlog=open(os.devnull, "w")) as (read, write):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    listed = await session.list_tools()
-                    if not self.ready.done():
-                        self.ready.set_result(listed.tools)
-                    while True:
-                        req = await self._requests.get()
-                        if req is None:
-                            return
-                        tool_name, arguments, fut = req
+            import anyio
+            from mcp import ClientSession, StdioServerParameters
+            from mcp.client.stdio import stdio_client
+            from mcp.shared.exceptions import McpError
+            from mcp.types import CONNECTION_CLOSED
+
+            params = StdioServerParameters(
+                command=self.config.command,
+                args=self.config.args,
+                env=_safe_child_env(self.config.env),
+            )
+            with open(os.devnull, "w") as devnull:
+                async with stdio_client(params, errlog=devnull) as (read, write):
+                    async with ClientSession(read, write) as session:
                         try:
-                            result = await asyncio.wait_for(
-                                session.call_tool(tool_name, arguments), timeout=CALL_TIMEOUT_S
-                            )
-                            if not fut.done():
-                                fut.set_result(result)
-                        except Exception as e:  # noqa: BLE001 — surfaced per-call
-                            if not fut.done():
-                                fut.set_exception(e)
+                            await session.initialize()
+                            listed = await session.list_tools()
+                            if not self.ready.done():
+                                self.ready.set_result(listed.tools)
+                            while True:
+                                req = await self._requests.get()
+                                if req is None:
+                                    return
+                                tool_name, arguments, fut = req
+                                if fut.done():
+                                    continue
+                                try:
+                                    result = await asyncio.wait_for(
+                                        self._dispatch(session, tool_name, arguments, fut),
+                                        timeout=CALL_TIMEOUT_S,
+                                    )
+                                    if not fut.done():
+                                        fut.set_result(result)
+                                except Exception as e:  # noqa: BLE001 — surfaced per-call
+                                    if not fut.done():
+                                        fut.set_exception(e)
+                                    if (isinstance(e, (anyio.BrokenResourceError,
+                                                       anyio.ClosedResourceError, anyio.EndOfStream))
+                                            or isinstance(e, McpError) and e.error.code == CONNECTION_CLOSED):
+                                        return  # a dead transport cannot serve queued calls
+                                finally:
+                                    # Actor cancellation (including stop's deadline) is a
+                                    # BaseException. This waiter is no longer in the queue.
+                                    if not fut.done():
+                                        fut.set_exception(self._not_running())
+                        except Exception as e:  # preserve the actual startup failure
+                            self._fail_ready(e)
+                            raise
+                        finally:
+                            # Close admission and settle waiters BEFORE slow context exit.
+                            self._close()
         except Exception as e:  # noqa: BLE001 — connection failure surfaced via ready
-            if not self.ready.done():
-                self.ready.set_exception(e)
+            self._fail_ready(e)
+        finally:
+            self._close()
+
+    async def _dispatch(self, session, tool_name: str, arguments: dict, fut):
+        # Python 3.11 wait_for schedules a child task: recheck at actual dispatch,
+        # not just dequeue. Once session.call_tool starts, caller cancellation
+        # still permits server effects. This is admission control, NOT rollback.
+        if not fut.done():
+            return await session.call_tool(tool_name, arguments)
+
+    def _not_running(self) -> RuntimeError:
+        return RuntimeError(f"MCP server {self.config.name!r} is not running")
+
+    def _fail_ready(self, exc: BaseException) -> None:
+        """Fail `ready` for whoever is still waiting. Waiters hold it through
+        `asyncio.shield` (connect timeout, cancelled connect), so they may be gone
+        by now; drain the outcome so an unread exception is not logged at GC."""
+        if not self.ready.done():
+            self.ready.set_exception(exc)
+            self.ready.add_done_callback(lambda f: f.cancelled() or f.exception())
+
+    def _close(self) -> None:
+        self._stopping = True
+        self._fail_ready(self._not_running())
+        self._fail_pending(self._not_running())
+
+    def _fail_pending(self, exc: BaseException) -> None:
+        while True:
+            try:
+                req = self._requests.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            if req is not None and not req[2].done():
+                req[2].set_exception(exc)
 
     async def call(self, tool_name: str, arguments: dict):
+        if self._stopping or self._task.done():
+            raise self._not_running()
         fut = asyncio.get_event_loop().create_future()
-        await self._requests.put((tool_name, arguments, fut))
-        return await fut
+        # This unbounded queue never blocks: admission and enqueue are atomic
+        # with respect to stop()/exit on this event loop.
+        self._requests.put_nowait((tool_name, arguments, fut))
+        try:
+            return await fut
+        except asyncio.CancelledError:
+            # The caller gave up. The actor will still settle this future (skip,
+            # error or "not running" at exit); nobody is left to read that
+            # outcome, so drain it quietly instead of letting asyncio log
+            # "Future exception was never retrieved" at garbage collection.
+            fut.add_done_callback(lambda f: f.cancelled() or f.exception())
+            raise
 
     async def stop(self) -> None:
-        await self._requests.put(None)
+        if self._stop_task is None:
+            if not self._stopping and not self._task.done():
+                self._stopping = True
+                self._requests.put_nowait(None)  # earlier accepted calls still run
+            self._stop_task = asyncio.create_task(self._finish_stop(), name=f"mcp-stop-{self.config.name}")
+        # A cancelled stop waiter must not cancel the actor, another stopper, or
+        # the shutdown deadline. All callers share one bounded shutdown attempt.
+        await asyncio.shield(self._stop_task)
+
+    async def _finish_stop(self) -> None:
+        # gather also handles an actor that was cancelled before stop().
+        done = asyncio.gather(self._task, return_exceptions=True)
         try:
-            await asyncio.wait_for(self._task, timeout=5)
-        except (asyncio.TimeoutError, Exception):  # noqa: BLE001
-            self._task.cancel()
+            await asyncio.wait_for(asyncio.shield(done), timeout=STOP_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            if not self._task.cancelling():
+                self._task.cancel()
+            await asyncio.shield(done)
 
 
 class MCPManager:
@@ -280,6 +369,7 @@ class MCPManager:
                 f"[{names}] — untrusted source, not auto-started. Review .mcp.json, then "
                 f"set ROCKYCODE_TRUST_PROJECT_MCP=1 to enable."
             )
+        self._connecting: dict[str, _ServerActor] = {}
         self.actors: dict[str, _ServerActor] = {}
         self.failures: dict[str, str] = {}
         self.blocked: list[str] = []   # tools rejected for poisoned descriptions
@@ -291,6 +381,7 @@ class MCPManager:
         if not self.configs:
             return
         actors = {name: _ServerActor(cfg) for name, cfg in self.configs.items()}
+        self._connecting.update(actors)
 
         async def wait_ready(name: str, actor: _ServerActor):
             try:
@@ -311,7 +402,14 @@ class MCPManager:
                 self.failures[name] = _exc_text(e)
                 await actor.stop()
 
-        await asyncio.gather(*(wait_ready(n, a) for n, a in actors.items()))
+        try:
+            await asyncio.gather(*(wait_ready(n, a) for n, a in actors.items()))
+        except BaseException:
+            # Connecting actors must also be stopped when startup is cancelled.
+            await self.stop()
+            raise
+        finally:
+            self._connecting.clear()
         if self.blocked:
             self.notices.append(
                 f"BLOCKED {len(self.blocked)} MCP tool(s) with poisoned descriptions — "
@@ -361,4 +459,8 @@ class MCPManager:
         return lines or ["no MCP servers configured (.mcp.json, ~/.claude.json, codex config)"]
 
     async def stop(self) -> None:
-        await asyncio.gather(*(a.stop() for a in self.actors.values()), return_exceptions=True)
+        actors = {**self.actors, **self._connecting}
+        await asyncio.gather(*(a.stop() for a in actors.values()), return_exceptions=True)
+        self.actors.clear()
+        self._connecting.clear()
+        self._tools.clear()

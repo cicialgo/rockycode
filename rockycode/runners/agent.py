@@ -115,25 +115,31 @@ async def _run_instance(
         )
 
         steps, usage, err = 0, {}, None
-        async for ev in engine.run_turn(_task_prompt(instance)):
-            if isinstance(ev, ToolStarted):
-                arg = (ev.args.get("raw") or "")[:70].replace("\n", " ")
-                console.print(f"    [dim]⚒ {ev.tool} {arg}[/dim]")
-            elif isinstance(ev, ToolFinished) and not ev.ok:
-                first = ev.output.strip().splitlines()[0][:90] if ev.output.strip() else ""
-                console.print(f"    [dim]✗ {ev.tool}: {first}[/dim]")
-            elif isinstance(ev, Compacted):
-                console.print(
-                    f"    [dim]♻ compacted ({ev.strategy}): "
-                    f"~{ev.tokens_before:,} → ~{ev.tokens_after:,} tokens[/dim]"
-                )
-            elif isinstance(ev, TextDelta):
-                pass  # final summary text; trajectory has it
-            elif isinstance(ev, EngineError):
-                err = ev.message
-                console.print(f"    [{RED}]✗ {ev.message}[/]")
-            elif isinstance(ev, TurnFinished):
-                steps, usage = ev.steps, ev.usage
+        try:
+            async for ev in engine.run_turn(_task_prompt(instance)):
+                if isinstance(ev, ToolStarted):
+                    arg = (ev.args.get("raw") or "")[:70].replace("\n", " ")
+                    console.print(f"    [dim]⚒ {ev.tool} {arg}[/dim]")
+                elif isinstance(ev, ToolFinished) and not ev.ok:
+                    first = ev.output.strip().splitlines()[0][:90] if ev.output.strip() else ""
+                    console.print(f"    [dim]✗ {ev.tool}: {first}[/dim]")
+                elif isinstance(ev, Compacted):
+                    console.print(
+                        f"    [dim]♻ compacted ({ev.strategy}): "
+                        f"~{ev.tokens_before:,} → ~{ev.tokens_after:,} tokens[/dim]"
+                    )
+                elif isinstance(ev, TextDelta):
+                    pass  # final summary text; trajectory has it
+                elif isinstance(ev, EngineError):
+                    err = ev.message
+                    console.print(f"    [{RED}]✗ {ev.message}[/]")
+                elif isinstance(ev, TurnFinished):
+                    steps, usage = ev.steps, ev.usage
+        except Exception as e:  # noqa: BLE001 — a mid-run crash must NOT skip
+            # extraction: the container may hold a finished fix (flip analysis:
+            # 5 silent deaths discarded done work; one had 1790 tests passing).
+            err = f"{type(e).__name__}: {e}"
+            console.print(f"    [{RED}]✗ engine died mid-task: {err} — extracting anyway[/]")
 
         patch = await extract_patch(session)
         engine.trajectory.outcome(
@@ -179,23 +185,43 @@ async def _run_all(
 
             iid = instance["instance_id"]
             console.print(f"\n[bold]task {i}/{len(instances)}[/bold] · {iid}")
-            try:
-                result = await _run_instance(
-                    instance,
-                    model=model,
-                    thinking=thinking,
-                    reasoning_effort=reasoning_effort,
-                    max_tokens=max_tokens,
-                    context_window=context_window,
-                    max_steps=max_steps,
-                    system_prompt=system_prompt,
-                    prompt_name=prompt_name,
-                    prompt_sha=prompt_sha,
-                    console=console,
+            # One retry, only when a task DIED empty-handed: a CRASH error with
+            # no patch, or an empty patch at ≤2 steps (an empty first completion
+            # kills a task at step 1 — flip analysis, django-14434). A salvaged
+            # non-empty patch is kept as-is: it may score, and a retry would
+            # discard it. Step-limit finishes are EXCLUDED even though they
+            # carry an engine_error — an empty patch at the step cap is the
+            # model's answer, not a crash, and re-rolling it breaks budget
+            # matching across runs (caught in the deepswe mecha A/B).
+            result = None
+            for attempt in (1, 2):
+                try:
+                    result = await _run_instance(
+                        instance,
+                        model=model,
+                        thinking=thinking,
+                        reasoning_effort=reasoning_effort,
+                        max_tokens=max_tokens,
+                        context_window=context_window,
+                        max_steps=max_steps,
+                        system_prompt=system_prompt,
+                        prompt_name=prompt_name,
+                        prompt_sha=prompt_sha,
+                        console=console,
+                    )
+                except Exception as e:  # noqa: BLE001 — one task must not kill the run
+                    fail(console, f"{iid}: {type(e).__name__}: {e}")
+                    result = {"instance_id": iid, "patch": "", "steps": 0, "usage": {}, "error": str(e)}
+                for k in totals:
+                    totals[k] += result["usage"].get(k, 0) or 0
+                err = result.get("error") or ""
+                crashed = bool(err) and "step limit" not in err
+                died_empty = not result["patch"].strip() and (
+                    crashed or result["steps"] <= 2
                 )
-            except Exception as e:  # noqa: BLE001 — one task must not kill the run
-                fail(console, f"{iid}: {type(e).__name__}: {e}")
-                result = {"instance_id": iid, "patch": "", "steps": 0, "usage": {}, "error": str(e)}
+                if not died_empty or attempt == 2:
+                    break
+                confused(console, f"task died empty ({result.get('error') or 'empty completion'}) — one retry")
 
             patch = result["patch"]
             if patch.strip():
@@ -203,9 +229,6 @@ async def _run_all(
                 amaze(console, f"patch ready · {result['steps']} steps · {len(patch):,} chars")
             else:
                 confused(console, f"no patch produced ({result.get('error') or 'agent stopped without changes'})")
-
-            for k in totals:
-                totals[k] += result["usage"].get(k, 0) or 0
 
             f.write(json.dumps({
                 "instance_id": iid,
@@ -228,9 +251,9 @@ def run(
     *,
     thinking: bool = True,
     reasoning_effort: str = "max",
-    max_tokens: int = 16384,
-    context_window: int = 131_072,
-    max_steps: int = 50,
+    max_tokens: int = 0,
+    context_window: int = 0,
+    max_steps: int = 100,
     token_budget: int = 0,
     system_prompt: Optional[str] = None,
     prompt_name: str = "rocky-builtin",
@@ -239,6 +262,8 @@ def run(
     output_dir: Path = PREDICTIONS_DIR,
 ) -> Path:
     """Run the harness on the requested instances. Returns predictions path."""
+    if max_tokens < 0 or context_window < 0:
+        raise ValueError("token limits must be non-negative (0 = model registry)")
     if system_prompt is None:
         system_prompt = ROCKY_SYSTEM
     ds = load_verified(console, instance_ids)

@@ -70,7 +70,7 @@ print("project .env: ignored, warned by NAME only  ✓")
 
 # cli must not slurp the cwd .env at import time — that was the shadowing bug
 _ROOT = Path(__file__).resolve().parents[1] / "rockycode"
-cli_src = (_ROOT / "cli.py").read_text()
+cli_src = "".join(p.read_text() for p in sorted((_ROOT / "cli").glob("*.py")))
 assert "load_dotenv()" not in cli_src, "cli must never load a project .env"
 print("cli: no bare load_dotenv() — project env files are never read  ✓")
 

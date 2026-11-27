@@ -20,13 +20,18 @@ config. `rockycode pricing` prints the live table + these paths.
 from __future__ import annotations
 
 import copy
+import os
 import tomllib
 from datetime import datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 
 PRICING_SOURCE_URL = "https://api-docs.deepseek.com/quick_start/pricing"
 PRICING_VERIFIED = "2026-09-29"
-OVERRIDE_PATH = Path.home() / ".rockycode" / "pricing.toml"
+OVERRIDE_PATH = Path(os.environ.get("ROCKYCODE_HOME") or Path.home() / ".rockycode") / "pricing.toml"
+
+# Official per-successful-request prices, not token rates or FX conversions.
+# https://api-docs.deepseek.com/{zh-cn/,}quick_start/pricing/
+DEEPSEEK_SEARCH_RATES = {"usd": 0.00075, "cny": 0.005}
 
 
 def default_pricing() -> dict:
@@ -123,6 +128,19 @@ class UsageLedger:
         # Marked at /model-switch/launch time (local model ids are per-machine,
         # discovered live — they can't live in a static table).
         self.free_models: set[str] = set()
+        self.search_requests = 0
+        self.search_usage_complete = True
+
+    def add_deepseek_search(self, count: int | None) -> None:
+        """Record ONE Messages response's successful searches, never attempts.
+
+        An unknown count keeps the total a lower-bound estimate.
+        Search fees never inherit model token peak multipliers.
+        """
+        if type(count) is not int or count < 0:
+            self.search_usage_complete = False
+            return
+        self.search_requests += count
 
     def mark_free(self, model: str) -> None:
         """Declare *model* local: $0 in every currency, counted as configured."""
@@ -131,7 +149,7 @@ class UsageLedger:
     def all_free(self) -> bool:
         """Every model used so far is local — the footer shows `· local`
         instead of a cache/price story that only applies to API providers."""
-        return bool(self.buckets) and all(
+        return self.search_requests == 0 and self.search_usage_complete and bool(self.buckets) and all(
             m in self.free_models for (m, _peak) in self.buckets)
 
     def add(self, model: str, usage: dict, at: datetime | None = None) -> None:
@@ -184,7 +202,7 @@ class UsageLedger:
         return m["usd"], False  # currency not configured for this model → fall back + flag
 
     def cost(self, currency: str = "usd") -> float:
-        total = 0.0
+        total = self.search_requests * DEEPSEEK_SEARCH_RATES.get(currency, 0.0)
         for (model, peak), b in self.buckets.items():
             r, _ = self._rates(model, currency)
             miss = max(0, b["prompt"] - b["hit"])
@@ -198,7 +216,9 @@ class UsageLedger:
 
     def configured(self, currency: str) -> bool:
         """True if every model used has its OWN rates for *currency* (no fallback)."""
-        return all(self._rates(model, currency)[1] for (model, _peak) in self.buckets)
+        return (self.search_usage_complete
+                and (not self.search_requests or currency in DEEPSEEK_SEARCH_RATES)
+                and all(self._rates(model, currency)[1] for (model, _peak) in self.buckets))
 
     def totals(self) -> dict:
         agg = {"prompt": 0, "hit": 0, "completion": 0}

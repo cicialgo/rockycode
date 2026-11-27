@@ -2,7 +2,7 @@
   "name": "rockycode",
   "displayName": "rockycode",
   "description": "AI coding agent — chat, inline tools, diff previews, and in-panel Enter/arrow tool approvals. Powered by the rockycode CLI (DeepSeek).",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "publisher": "rockycode",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -230,13 +230,13 @@
     "check-types": "tsc --noEmit"
   },
   "devDependencies": {
-    "@types/node": "^20.0.0",
+    "@types/node": "20.19.43",
     "@types/vscode": "^1.90.0",
-    "esbuild": "^0.24.0",
-    "typescript": "^5.4.0"
+    "esbuild": "0.24.2",
+    "typescript": "5.9.3"
   },
   "dependencies": {
-    "highlight.js": "^11.10.0",
-    "marked": "^18.0.5"
+    "highlight.js": "11.10.0",
+    "marked": "18.0.5"
   }
 }

@@ -44,13 +44,14 @@ def tc(index, id_, name, args):
 
 
 async def stream_from(chunks):
-    for c in chunks:
+    from invariants import completed_chunks
+    for c in completed_chunks(chunks):
         yield c
 
 
 def completion(content, usage):
     msg = types.SimpleNamespace(content=content)
-    return types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg)], usage=usage)
+    return types.SimpleNamespace(choices=[types.SimpleNamespace(finish_reason="stop", message=msg)], usage=usage)
 
 
 def client_of(completions):
@@ -147,7 +148,7 @@ class SummarizeFake:
 async def test_summarize_path():
     fake = SummarizeFake()
     eng = Engine(model="fake", client=client_of(fake), workdir=Path.cwd(),
-                 context_window=1000)  # limit = 750 < the fake's 5000 prompt tokens
+                 context_window=1000, system_prompt="Short test system.")  # limit = 750 < the fake's 5000 prompt tokens
     events = [ev async for ev in eng.run_turn("does echo work?")]
 
     assert fake.summary_calls == 1

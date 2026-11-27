@@ -35,7 +35,8 @@ def tc(index, id_, name, args):
 
 
 async def stream_from(chunks):
-    for c in chunks:
+    from invariants import completed_chunks
+    for c in completed_chunks(chunks):
         yield c
 
 
@@ -90,7 +91,9 @@ async def main():
 
     lines = [json.loads(l) for l in eng.trajectory.path.read_text().splitlines()]
     kinds = [l["kind"] for l in lines]
-    assert [k for k in kinds if k not in ("usage", "reasoning")] == ["meta"] + ["message"] * 5, kinds
+    # usage / reasoning ride per request; `note` carries the request and call
+    # receipts (call identity, phase 1) — none of them is a message.
+    assert [k for k in kinds if k not in ("usage", "reasoning", "note")] == ["meta"] + ["message"] * 5, kinds
     # per-call usage (incl. cache hit/miss) is now logged — for RL + cache debugging
     assert any(l["kind"] == "usage" and "prompt_cache_hit_tokens" in l["data"] for l in lines), \
         "usage not logged to trajectory"

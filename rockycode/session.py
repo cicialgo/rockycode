@@ -282,10 +282,59 @@ def project_current_path(project_id: str) -> Optional[Path]:
     return None
 
 
+def load_planning_state(traj: Path) -> Optional[dict]:
+    """Last host-owned planning record; never infer approval from chat text."""
+    state = None
+    try:
+        lines = Path(traj).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        data = rec.get("data")
+        if rec.get("kind") == "note" and isinstance(data, dict) and isinstance(data.get("planning"), dict):
+            state = data["planning"]
+    return state
+
+
+def load_resume_session(
+    token: str, *, workdir: Optional[Path] = None,
+) -> tuple[SessionInfo, Path, list[dict]]:
+    """Resolve a non-interactive history continuation before tools are built.
+
+    Follow chat's project registry (including renames), but reject a conflicting
+    explicit workdir rather than silently running tools in another project.
+    This loads a transcript, NOT an execution checkpoint; repaired interrupted
+    calls have unknown outcomes and must not be automatically retried.
+    """
+    info, error = resolve_session(token)
+    if info is None:
+        raise ValueError(error)
+    target = project_current_path(info.project_id) or (
+        Path(info.project_path) if info.project_path else None)
+    if target is None or not target.is_dir():
+        raise ValueError(f"{public_id(info.session_id)}'s folder is gone "
+                         f"(last known: {info.project_path or 'unknown'}).")
+    target = target.resolve()
+    if workdir is not None and workdir.expanduser().resolve() != target:
+        raise ValueError(f"--workdir conflicts with session folder {target}; "
+                         "omit --workdir to follow the session's project.")
+    history = load_history(info.path)
+    if not any(m.get("role") == "user" for m in history):
+        raise ValueError(f"{public_id(info.session_id)} has no readable conversation to resume.")
+    return info, target, history
+
+
 def load_history(traj: Path) -> list[dict]:
     """Reconstruct an engine message history from a trajectory file — exactly
-    the {role, content, tool_calls, tool_call_id} dicts that were sent to the
-    API (reasoning_content was never stored, so this is clean to replay).
+    persisted message dicts, including model-specific reasoning_content.
+    Older separate reasoning records are associated with the next assistant
+    message only when adjacent (usage/note records may intervene).
 
     The result is repaired before returning: a hard-killed process (SIGKILL,
     crash, OOM) can leave an assistant tool_calls message with NO tool
@@ -298,13 +347,28 @@ def load_history(traj: Path) -> list[dict]:
         lines = Path(traj).read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return history
+    pending_reasoning = None
     for ln in lines:
         try:
             rec = json.loads(ln)
         except json.JSONDecodeError:
+            pending_reasoning = None
             continue
-        if rec.get("kind") == "message":
-            history.append(rec["data"])
+        if rec.get("kind") == "reasoning":
+            pending_reasoning = rec.get("data", {}).get("text")
+        elif rec.get("kind") == "message":
+            message = dict(rec["data"])
+            if message.get("role") == "assistant" and isinstance(pending_reasoning, str):
+                message.setdefault("reasoning_content", pending_reasoning)
+            pending_reasoning = None
+            history.append(message)
+        elif rec.get("kind") == "compaction":
+            snapshot = rec.get("data", {}).get("new_history")
+            if isinstance(snapshot, list) and all(isinstance(m, dict) for m in snapshot):
+                history = snapshot
+            pending_reasoning = None
+        elif rec.get("kind") not in ("usage", "note"):
+            pending_reasoning = None
     repair_history(history)
     return history
 

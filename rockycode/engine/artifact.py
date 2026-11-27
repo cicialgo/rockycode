@@ -1,23 +1,18 @@
-"""Artifact tool — generate a self-contained HTML page and open it.
+"""Versioned HTML artifacts on rocky's own page, with host-owned preview.
 
-One tool: ``create_artifact``.  The model supplies body content (or a full
-document); rockycode wraps a fragment in its themed page and opens it.
-
-Static (default):  write the file and open it via ``file://`` — no server.
-Live (opt-in):     ``ArtifactServer`` serves it over ``http://localhost`` and
-                   the open tab auto-reloads whenever rocky rebuilds the same
-                   artifact.  Lazy-started on the first artifact (asked once),
-                   or from the start with ``--live``.  Local only.
-
-The TUI sets ``engine.artifact_target`` — an async callable that decides live
-vs static (asking once), lazy-starts the server, and returns the running
-``ArtifactServer`` (live) or ``None`` (static).
+A fragment gets rocky's page (engine/artifact_page.py: one stylesheet, the
+user's look, light and dark); a full HTML document is kept as written. Saved
+revisions contain no preview credentials. Live HTTP responses inject SSE
+reload support, while static files and exported originals stay self-contained.
 """
 from __future__ import annotations
 
 import asyncio
 import os
 import re
+import json
+import sqlite3
+from html import escape as html_escape
 import secrets
 import time
 import webbrowser
@@ -29,6 +24,7 @@ from urllib.parse import quote, unquote
 if TYPE_CHECKING:
     from aiohttp import web
 
+from rockycode.engine.artifact_page import DEFAULT_LOOK, LAYOUTS, NO_LOOK, THEMES, page_css, resolve_theme
 from rockycode.engine.tools import Tool, _fn_schema
 
 ARTIFACT_DIR = ".rockycode/artifacts"
@@ -48,9 +44,19 @@ class ArtifactRecord:
     created_at: float
     updated_at: float
     open_clients: int = 0
+    artifact_id: str = ""
+    revision: int = 1
+    theme: str = "none"
+    layout: str = "document"
+    sessions: tuple[str, ...] = ()
 
     def as_dict(self) -> dict:
         return {
+            "artifact_id": self.artifact_id,
+            "revision": self.revision,
+            "theme": self.theme,
+            "layout": self.layout,
+            "sessions": list(self.sessions),
             "name": self.name,
             "title": self.title,
             "path": str(self.path),
@@ -63,20 +69,46 @@ class ArtifactRecord:
 
 
 class ArtifactRegistry:
-    """In-memory Artifact inventory scoped to one Rocky engine session.
+    """Project inventory with persistent versions and session-filtered views.
 
-    Files deliberately remain in the project's existing artifact directory;
-    the registry is session-scoped visibility, not ownership of every file in
-    that shared directory. That distinction keeps a session-level "clean"
-    action from deleting another session's output.
+    Browser state stays in memory; saved revisions and their provenance survive
+    restarts. A no-workdir registry remains available to lightweight hosts/tests.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, workdir: Path | None = None, session_id: str = "") -> None:
+        from rockycode.engine.artifact_store import ArtifactStore
+        self.store = ArtifactStore(workdir) if workdir is not None else None
+        self.session_id = session_id
         self._records: dict[str, ArtifactRecord] = {}
         self._listeners: list[Callable[[str, ArtifactRecord], None]] = []
+        self.refresh()
 
     def subscribe(self, listener: Callable[[str, ArtifactRecord], None]) -> None:
         self._listeners.append(listener)
+
+    def unsubscribe(self, listener) -> None:
+        if listener in self._listeners:
+            self._listeners.remove(listener)
+
+    def refresh(self) -> None:
+        if self.store is None:
+            return
+        for row in self.store.records():
+            record = self._records.get(row['name'])
+            if record is None:
+                record = ArtifactRecord(row['name'], row['title'], row['path'],
+                                        row['path'].as_uri(), False, row['created'], row['updated'])
+                self._records[record.name] = record
+            record.title, record.path = row['title'], row['path']
+            record.artifact_id, record.revision = row['id'], row['revision']
+            record.created_at, record.updated_at = row['created'], row['updated']
+            record.theme, record.layout, record.sessions = row['theme'], row['layout'], row['sessions']
+            if not record.live:
+                record.url = record.path.as_uri()
+
+    def resume_from(self, session_id: str) -> None:
+        if self.store is not None:
+            self.store.resume_from(self.session_id, session_id)
 
     def _emit(self, action: str, record: ArtifactRecord) -> None:
         for listener in list(self._listeners):
@@ -115,45 +147,36 @@ class ArtifactRegistry:
         self._emit("clients", record)
 
     def get(self, name: str) -> ArtifactRecord | None:
-        return self._records.get(name)
+        self.refresh()
+        return self._records.get(name) or next(
+            (r for r in self._records.values() if r.artifact_id == name), None)
 
-    def records(self) -> list[ArtifactRecord]:
-        return sorted(self._records.values(), key=lambda r: r.updated_at, reverse=True)
+    def records(self, scope: str = "project") -> list[ArtifactRecord]:
+        self.refresh()
+        rows = list(self._records.values())
+        if scope == "session" and self.store is not None:
+            sessions = self.store.session_scope(self.session_id)
+            rows = [r for r in rows if sessions.intersection(r.sessions)]
+        return sorted(rows, key=lambda r: (-r.updated_at, r.name))
 
-    def snapshot(self) -> list[dict]:
-        return [record.as_dict() for record in self.records()]
+    def snapshot(self, scope: str = "project") -> list[dict]:
+        return [record.as_dict() for record in self.records(scope)]
+
+    def history(self, artifact_id: str) -> list[dict]:
+        return self.store.history(artifact_id) if self.store else []
 
     def rebind_live(self, base_url: str, token: str) -> None:
-        """Point saved live artifacts at a restarted session server.
-
-        A manually stopped server may come back on another ephemeral port (and
-        a new TUI server has a new token). Refresh both the inventory URL and
-        the injected EventSource URL so older session entries remain usable.
-        """
-        for record in self._records.values():
-            if not record.live:
-                continue
-            events_url = f"{base_url}/api/events?t={token}&artifact={quote(record.name)}"
-            try:
-                doc = record.path.read_text(encoding="utf-8")
-                rebound = re.sub(
-                    r'const es = new EventSource\("[^"]*"\);',
-                    f'const es = new EventSource("{events_url}");',
-                    doc,
-                    count=1,
-                )
-                if rebound != doc:
-                    record.path.write_text(rebound, encoding="utf-8")
-            except OSError:
-                pass  # a manually removed file stays listed but cannot be rewritten
-            record.url = (
-                f"{base_url}/artifacts/{quote(record.name)}?t={token}"
-            )
-            self._emit("server", record)
+        # Tokens only enter the served response, never the saved/exported HTML.
+        for record in self.records():
+            if record.live:
+                record.url = f"{base_url}/artifacts/{quote(record.name)}?t={token}"
+                self._emit("server", record)
 
     @property
     def count(self) -> int:
-        return len(self._records)
+        """Artifacts this session made or changed: what a status line counts.
+        The whole project's inventory is records() and the picker."""
+        return len(self.records("session"))
 
     @property
     def open_clients(self) -> int:
@@ -184,61 +207,78 @@ def _safe_filename(name: str) -> str:
 
 
 def _extract_body(html: str) -> str:
-    """Reduce model HTML to themable body content.
+    """Compatibility helper: preserve authored styles and complete documents."""
+    return html
 
-    The model often emits a whole <html> document with its own (usually dark)
-    theme — DeepSeek loves to. We keep only the inner <body> and strip every
-    <style> block, so rocky's light-purple theme always wins. A plain fragment
-    is returned with just its <style> blocks removed.
+
+def _with_charset(doc: str) -> str:
+    """A full document that declares no charset gets one, and nothing else changes.
+
+    The file is written as UTF-8. Opened from disk there is no HTTP header to say
+    so, and a browser left to guess can show Chinese text as garbage.
     """
-    low = html.lower()
-    i = low.find("<body")
-    if i != -1:
-        start = low.find(">", i)
-        end = low.rfind("</body>")
-        if start != -1 and end != -1:
-            html = html[start + 1:end]
-    return re.sub(r"(?is)<style\b.*?</style>", "", html)
+    if re.search(r"(?is)<meta\b[^>]*\bcharset\b", doc):
+        return doc
+    meta = '<meta charset="utf-8">'
+    for tag in (r"<head\b[^>]*>", r"<html\b[^>]*>", r"<!doctype\b[^>]*>"):
+        found = re.search("(?is)" + tag, doc)
+        if found:
+            return doc[:found.end()] + meta + doc[found.end():]
+    return meta + doc
 
 
-def _artifact_html(title: str, body: str) -> str:
-    """Wrap *body* in rockycode's light, soft-purple themed page.
+def default_theme(workdir: Path | None = None) -> str:
+    """The look a new fragment gets when the model names none: the user's
+    `artifact_theme` setting (their own file, or this project's)."""
+    from rockycode.config import load
+    try:
+        return resolve_theme(load(workdir)["artifact_theme"])
+    except (KeyError, ValueError):
+        return DEFAULT_LOOK
 
-    Palette tracks rockycode/palette.py + ROCKY_THEME_LIGHT.
+
+def _artifact_html(title: str, body: str, theme: str = DEFAULT_LOOK, layout: str = "document") -> str:
+    """A full HTML document is kept as written, apart from a charset declaration
+    when it has none. A fragment is put on rocky's page: the look's colours and
+    type in light and dark, at zero specificity, so CSS the fragment brings
+    wins. theme `none` is the page without colours, for a fragment that brings
+    its own palette.
     """
-    return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{title}</title>
-<style>
-:root {{ --bg:#f6f4fb; --card:#ffffff; --panel:#ece8f7; --border:#ddd4ef;
-       --text:#2a2a38; --dim:#5a5e7a; --heading:#6a4ca3; --accent:#7c5cba; --brand:#bb9af7; }}
-* {{ box-sizing:border-box; margin:0; padding:0; }}
-body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
-       background:var(--bg); color:var(--text); line-height:1.6; max-width:900px; margin:0 auto; padding:2rem; }}
-h1 {{ color:var(--heading); border-bottom:2px solid var(--border); padding-bottom:.5rem; margin-bottom:.75rem; font-weight:650; }}
-h2 {{ color:var(--accent); margin:1.5rem 0 .5rem; font-size:1.15rem; }}
-.card {{ background:var(--card); border:1px solid var(--border); border-radius:10px;
-        padding:1rem 1.1rem; margin:1rem 0; box-shadow:0 1px 3px rgba(106,76,163,0.06); }}
-.tag {{ display:inline-block; padding:.1rem .55rem; border-radius:10px; font-size:.72rem; font-weight:600; }}
-.tag-purple {{ background:#efe9fb; color:#6a4ca3; }}
-.tag-amber {{ background:#f7efe0; color:#8a6420; }}
-.tag-red {{ background:#fbe9eb; color:#b23a44; }}
-table {{ width:100%; border-collapse:collapse; margin:.5rem 0; }}
-th,td {{ border:1px solid var(--border); padding:.45rem .65rem; text-align:left; font-size:.85rem; }}
-th {{ background:var(--panel); color:var(--heading); }}
-pre {{ background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:.85rem; overflow-x:auto; font-size:.82rem; }}
-code {{ font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace; color:var(--heading); }}
-a {{ color:var(--accent); }}
-</style>
-</head>
-<body>
-<h1>{title}</h1>
-{body}
-</body>
-</html>"""
+    theme = resolve_theme(theme)
+    if layout not in LAYOUTS:
+        raise ValueError(f"layout must be one of {', '.join(LAYOUTS)}")
+    if re.search(r"(?is)<(?:!doctype\s+html|html\b|head\b|body\b)", body):
+        return _with_charset(body)
+    if theme == NO_LOOK:
+        width = "1440px" if layout == "wide" else "900px"
+        css = f""":where(body) {{ font-family:system-ui,sans-serif; line-height:1.65; max-width:{width};
+  margin:auto; padding:clamp(1rem,3vw,2.5rem); }}
+:where(table) {{ border-collapse:collapse; width:100%; }}
+:where(th,td) {{ border-bottom:1px solid; padding:.55rem .75rem; text-align:left; }}
+:where(pre) {{ overflow:auto; }}
+:where(img,svg) {{ max-width:100%; }}
+"""
+    else:
+        css = page_css(theme, layout)
+    heading = "" if re.search(r"(?is)<h1\b", body) else f"<h1>{html_escape(title)}</h1>"
+    return (f'<!DOCTYPE html>\n<html data-layout="{layout}" data-rocky-page="{theme}"><head><meta charset="utf-8">'
+            f'<meta name="viewport" content="width=device-width,initial-scale=1">'
+            f'<title>{html_escape(title)}</title><style>{css}</style></head><body>{heading}{body}</body></html>')
+
+
+# What _artifact_html writes around a fragment. The title is escaped and the page's
+# stylesheet is the head's only <style>, so the first `</style></head><body>` is ours.
+_ON_PAGE = re.compile(r'(?s)\A<!DOCTYPE html>\n<html data-layout="[\w-]+" data-rocky-page="[\w-]+"><head>'
+                      r'.*?</style></head><body>(.*)</body></html>\Z')
+
+
+def page_fragment(doc: str) -> str | None:
+    """The fragment inside a document rocky's page was put around, or None for
+    any other document. A model that edits an artifact reads the fragment and
+    sends a fragment back: the stylesheet is not re-sent with every revision,
+    and the artifact stays on the page instead of freezing into a full document."""
+    found = _ON_PAGE.match(doc)
+    return found.group(1) if found else None
 
 
 def _reload_script(sse_url: str, name: str) -> str:
@@ -265,106 +305,131 @@ def _inject_reload(doc: str, sse_url: str, name: str) -> str:
 
 
 def build_artifact_tools(*, workdir: Path, engine=None) -> dict[str, Tool]:
-    """Return {create_artifact} bound to *workdir*.
+    """Versioned project artifacts; the host chooses whether/how to preview."""
+    from rockycode.engine.artifact_store import ArtifactStore
 
-    At call time the tool consults ``engine.artifact_target`` (set by the TUI)
-    to decide live vs static and obtain the running server.
-    """
-    artifact_dir = workdir / ARTIFACT_DIR
-    registry: ArtifactRegistry | None = None
-    if engine is not None:
-        registry = getattr(engine, "artifact_registry", None)
-        if registry is None:
-            registry = ArtifactRegistry()
+    session_id = getattr(getattr(engine, "trajectory", None), "session_id", "") or secrets.token_hex(8)
+    registry = getattr(engine, "artifact_registry", None)
+    if registry is None:
+        registry = ArtifactRegistry(workdir, session_id)
+        if engine is not None:
             engine.artifact_registry = registry
+    elif registry.store is None:
+        registry.store, registry.session_id = ArtifactStore(workdir), session_id
+        registry.refresh()
+    resumed = getattr(engine, "artifact_resumed_from", None)
+    if resumed:
+        registry.resume_from(resumed)
 
-    async def create_artifact(title: str, html: str) -> str:
-        """Save a self-contained HTML artifact and open it in the browser."""
+    async def create_artifact(title: str, html: str, artifact_id: str | None = None,
+                              base_revision: int | None = None, theme: str | None = None,
+                              layout: str | None = None) -> str:
+        """Create a distinct work, or publish a new revision by ID + base revision."""
         if len(html) > MAX_ARTIFACT_CHARS:
-            return (
-                f"[error] artifact too large: {len(html):,} chars "
-                f"(max {MAX_ARTIFACT_CHARS:,}).  simplify the content."
-            )
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-
-        # The TUI decides live vs static (asking once on first use, lazy-starting
-        # the server). Headless/bench have no target → static file://.
+            return f"[error] artifact too large: {len(html):,} chars (max {MAX_ARTIFACT_CHARS:,})"
+        try:
+            previous = registry.get(artifact_id) if artifact_id else None
+            # A revision keeps the look its artifact has; a new one gets the user's default.
+            chosen_theme = resolve_theme(theme if theme is not None
+                                         else (previous.theme if previous else default_theme(workdir)))
+            chosen_layout = layout if layout is not None else (previous.layout if previous else "document")
+            doc = _artifact_html(title, html, chosen_theme, chosen_layout)
+            aid = registry.store.save(title=title, document=doc, session_id=registry.session_id,
+                                      theme=chosen_theme, layout=chosen_layout,
+                                      artifact_id=artifact_id, base_revision=base_revision)
+            record = registry.get(aid)
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            return f"[error] artifact not saved: {exc}"
+        # A preview startup failure must never discard a successful save.
+        server, preview_warning = None, ""
         target = getattr(engine, "artifact_target", None)
-        server = await target() if target is not None else None
-
-        stem = _safe_filename(title)
-        doc = _artifact_html(title, _extract_body(html))
-
+        if target is not None:
+            try:
+                server = await target()
+            except (OSError, ValueError, RuntimeError) as exc:
+                preview_warning = f"\n  preview unavailable (saved file is intact): {exc}"
+        record.live = server is not None
+        record.url = (f"{server.base_url}/artifacts/{quote(record.name)}?t={server.token}"
+                      if server else record.path.as_uri())
         if server is not None:
-            # Live: stable name, overwrite in place, auto-reload the open tab.
-            path = artifact_dir / f"{stem}.html"
-            existed = path.exists()
-            events_url = (
-                f"{server.base_url}/api/events?t={server.token}"
-                f"&artifact={quote(stem)}"
-            )
-            doc = _inject_reload(doc, events_url, stem)
-            path.write_text(doc, encoding="utf-8")
-            # Percent-encode: CJK stems survive _safe_filename (isalnum), and a
-            # raw non-ASCII URL gets mangled by webbrowser/terminal handlers.
-            # ?t= is the per-session nonce every server endpoint requires.
-            url = f"{server.base_url}/artifacts/{quote(stem)}?t={server.token}"
-            if registry is not None:
-                registry.upsert(
-                    name=stem, title=title, path=path, url=url, live=True,
-                )
-            if existed:
-                await server.broadcast("reload", {"name": stem})  # open tab refreshes
-                return f"[ok] artifact '{title}' updated live — {len(doc):,} chars\n  url: {url}"
-            _open_browser(url)
-            return f"[ok] artifact '{title}' opened live — {len(doc):,} chars\n  url: {url}"
+            server.registry = registry
+        registry._emit("updated" if artifact_id else "created", record)
+        # A live page that is already open reloads itself. Anything else is a new
+        # URL (each revision is its own file), so a host that presents artifacts
+        # itself gets it handed over. The TUI shows a card and opens nothing.
+        reloaded = server is not None and bool(artifact_id)
+        if reloaded:
+            await server.broadcast("reload", {"name": record.name})
+        presented = not reloaded and getattr(engine, "artifact_auto_open", True)
+        if presented:
+            opener = getattr(engine, "artifact_opener", None) or _open_browser
+            opener(record.url)
+        result = (f"[ok] artifact '{title}' saved · v{record.revision}\n"
+                  f"  artifact_id: {aid}\n  revision: {record.revision}\n  file: {record.path}\n")
+        # "url:" and "opened in browser:" are the VS Code extension's parse surface.
+        # The third line is for the model: nothing was opened, so it must not say so.
+        if server is not None:
+            result += f"  url: {record.url}"
+        elif presented:
+            result += f"  opened in browser: {record.url}"
+        else:
+            result += f"  not opened — the user opens it when they choose: {record.url}"
+        return result + preview_warning
 
-        # Static: unique filename, file://.
-        path = artifact_dir / f"{stem}.html"
-        n = 1
-        while path.exists():
-            path = artifact_dir / f"{stem}_{n}.html"
-            n += 1
-        path.write_text(doc, encoding="utf-8")
-        file_uri = path.resolve().as_uri()
-        if registry is not None:
-            registry.upsert(
-                name=path.stem, title=title, path=path, url=file_uri, live=False,
-            )
-        _open_browser(file_uri)
-        return (
-            f"[ok] artifact saved — {len(doc):,} chars\n"
-            f"  file: {path}\n"
-            f"  opened in browser: {file_uri}"
-        )
+    async def inspect_artifact(artifact_id: str = "", revision: int | None = None) -> str:
+        """Discover IDs after restart and read a particular revision for editing."""
+        if revision is not None and (not isinstance(revision, int) or revision < 1):
+            return "[error] revision must be a positive integer"
+        if not artifact_id:
+            return json.dumps([r.as_dict() for r in registry.records()], ensure_ascii=False)
+        record = registry.get(artifact_id)
+        if record is None:
+            return "[error] unknown artifact_id"
+        history = registry.history(record.artifact_id)
+        selected = next((r for r in history if r['revision'] == (revision or record.revision)), None)
+        if selected is None:
+            return "[error] unknown revision"
+        try:
+            content = selected['path'].read_text(encoding='utf-8')
+        except OSError as exc:
+            return f"[error] artifact file unavailable: {exc}"
+        fragment = page_fragment(content)
+        hint = "If truncated, read the saved path in chunks before editing."
+        if fragment is not None:
+            # On rocky's page: the model gets what it wrote, and sends a fragment back.
+            content = fragment
+            hint = ("This is a fragment on rocky's page: send a fragment back, not a full document, and it keeps "
+                    "its look. If truncated, read the saved path in chunks; the fragment is what is inside <body>.")
+        return json.dumps({**record.as_dict(), "revision": selected['revision'],
+                           "title": selected['title'], "path": str(selected['path']),
+                           "theme": selected['theme'], "layout": selected['layout'],
+                           "history": [{k: v for k, v in r.items() if k != 'path'} for r in history],
+                           "html": content[:20000], "truncated": len(content) > 20000,
+                           "fragment": fragment is not None,
+                           "current_revision": record.revision,
+                           "read_hint": hint}, ensure_ascii=False)
 
-    schema = _fn_schema(
-        "create_artifact",
-        "Create a visual artifact (report, diagram, dashboard, summary) and open "
-        "it in the browser. Use for output better seen outside the terminal. "
-        "Provide the BODY content ONLY — headings (<h1>/<h2>), paragraphs, cards "
-        "(<div class='card'>), tables, <pre>/<code>, inline SVG/Mermaid. Do NOT "
-        "write <html>/<head>/<style>, and do NOT set your own colors or "
-        "background — rockycode applies its own LIGHT theme (soft purple on "
-        "near-white). Use the provided classes: card, tag/tag-purple/tag-amber/"
-        "tag-red. No external CDN/network references. Reuse the SAME title to "
-        "update in place (in live mode the open tab auto-refreshes).",
-        {
-            "title": {
-                "type": "string",
-                "description": "Short descriptive title (also the filename; reuse to update).",
-            },
-            "html": {
-                "type": "string",
-                "description": (
-                    "Body content only — no <html>/<head>/<style> and no color/background "
-                    "styles (rocky themes it). Use rocky's classes; embed SVG/Mermaid inline."
-                ),
-            },
-        },
-        ["title", "html"],
-    )
-    return {"create_artifact": Tool(name="create_artifact", schema=schema, fn=create_artifact)}
+    schema = _fn_schema("create_artifact",
+        "Create or revise a self-contained HTML artifact. Send a FRAGMENT of plain HTML (headings, "
+        "paragraphs, tables, inline SVG): rocky's page supplies the type, the colours and dark mode, so "
+        "choose no colours or fonts yourself. Load the `artifact-design` skill before a substantial one. "
+        "A full HTML document is kept exactly as written, for when the user asks for their own design. "
+        "No external CDN/network references. Omit artifact_id to create a distinct work (even with the "
+        "same title). To update, first inspect_artifact and pass its artifact_id and base_revision. "
+        "Updates preserve version history in both static and live preview. Saving does not guarantee "
+        "browser opening.",
+        {"title": {"type": "string", "description": "Display title; not the identity."},
+         "html": {"type": "string", "description": "A fragment (preferred) or a complete HTML document."},
+         "artifact_id": {"type": "string", "description": "Existing stable ID to revise; omit for new."},
+         "base_revision": {"type": "integer", "description": "Revision read before editing; prevents lost updates."},
+         "theme": {"type": "string", "enum": list(THEMES), "description": "A fragment's look. Omit it: the user's default applies and a revision keeps its own. none = no colours of rocky's, for a fragment with its own CSS."},
+         "layout": {"type": "string", "enum": list(LAYOUTS), "description": "document (reading width) or wide (dashboards, wide tables); a full document controls its own."}},
+        ["title", "html"])
+    inspect_schema = _fn_schema("inspect_artifact", "List project artifacts or read one revision and its history before editing.",
+        {"artifact_id": {"type": "string", "description": "Omit to list project artifacts."},
+         "revision": {"type": "integer", "description": "Omit for current revision."}}, [])
+    return {"create_artifact": Tool(name="create_artifact", schema=schema, fn=create_artifact),
+            "inspect_artifact": Tool(name="inspect_artifact", schema=inspect_schema, fn=inspect_artifact, risk="safe")}
 
 
 # ------------------------------------------------------------------
@@ -474,22 +539,29 @@ class ArtifactServer:
         safe = _safe_filename(name)
         if safe != name:
             raise web.HTTPBadRequest(text="invalid artifact name")
-        fpath = self.artifact_dir / f"{safe}.html"
-        if not fpath.exists():
+        registry = self.registry or ArtifactRegistry(self.workdir)
+        record = registry.get(name)
+        fpath = record.path if record else self.artifact_dir / f"{safe}.html"
+        if fpath.is_symlink() or not fpath.resolve().is_relative_to(self.artifact_dir.resolve()):
             raise web.HTTPNotFound(text="artifact not found")
-        return web.FileResponse(fpath, headers={"Content-Type": "text/html; charset=utf-8"})
+        if not fpath.is_file():
+            raise web.HTTPNotFound(text="artifact not found")
+        doc = fpath.read_text(encoding="utf-8")
+        events_url = f"{self.base_url}/api/events?t={self.token}&artifact={quote(name)}"
+        return web.Response(text=_inject_reload(doc, events_url, name), content_type="text/html",
+                            charset="utf-8", headers={"Cache-Control": "no-store"})
 
     async def _list_artifacts(self, request: "web.Request") -> "web.Response":
         from aiohttp import web
 
         self._require_token(request)
-        files = sorted(self.artifact_dir.glob("*.html"), key=lambda p: p.stat().st_mtime, reverse=True)
-        items = [
-            {"name": f.stem, "size": f.stat().st_size,
-             "url": f"{self.base_url}/artifacts/{quote(f.stem)}?t={self.token}"}
-            for f in files[:50]
-        ]
-        return web.json_response(items)
+        registry = self.registry or ArtifactRegistry(self.workdir)
+        return web.json_response([
+            {"name": r.name, "artifact_id": r.artifact_id, "revision": r.revision,
+             "size": r.path.stat().st_size,
+             "url": f"{self.base_url}/artifacts/{quote(r.name)}?t={self.token}"}
+            for r in registry.records()[:50] if r.path.is_file()
+        ])
 
     async def _handle_events(self, request: "web.Request") -> "web.StreamResponse":
         """SSE endpoint — streams reload events to open artifact tabs.

@@ -26,8 +26,22 @@ from textual.widgets import Static
 
 from rockycode.engine.loop import Engine
 from rockycode.engine.tools import Tool
-from rockycode.tui.app import ChatInput, RockyCodeApp
+from rockycode.tui.app import RockyCodeApp
+from rockycode.tui.chatinput import ChatInput
 from rockycode.tui.permission import InlineApproval
+from rockycode.tui import cardkeys
+
+cardkeys.ENTER_GUARD = 0  # the half second is tested in smoke_tui_card_keys.py; here Enter answers a card at once
+
+
+async def come_to_card(pilot, app):
+    """A card the user did not open never takes the keyboard: Enter in the empty message box goes to it."""
+    await pilot.press("enter")
+    for _ in range(80):
+        await pilot.pause(0.025)
+        if isinstance(app.focused, cardkeys.CardKeys):
+            return
+    raise AssertionError("Enter in the empty message box did not bring the keyboard to the card")
 from invariants import assert_history_api_valid
 
 
@@ -46,7 +60,8 @@ def tc(i, id_, name, args):
 
 
 async def stream(chunks):
-    for c in chunks:
+    from invariants import completed_chunks
+    for c in completed_chunks(chunks):
         yield c
 
 
@@ -111,15 +126,17 @@ async def main():
     app, engine, ran = build(["ls -la", "brew install python-tk"], permission="ask")
     async with app.run_test(size=(90, 30)) as pilot:
         await submit(pilot, app)
-        # 1st approval: the benign `ls` — approve for the SESSION (press 'a')
+        # 1st approval: the benign `ls` — approve for the SESSION (the second row)
         assert await wait_until(pilot, lambda: has_approval(app)), "benign bash should prompt first"
-        await pilot.press("a")
+        await come_to_card(pilot, app)
+        await pilot.press("down", "enter")
         assert await wait_until(pilot, lambda: "ls -la" in ran), "ls should run after session-approve"
         # 2nd approval MUST appear for `brew install` despite the session grant
         assert await wait_until(pilot, lambda: has_approval(app)), \
             "brew install must RE-PROMPT — a session grant can't cover an install"
         assert "brew install python-tk" not in ran, "brew must not have run without approval"
-        await pilot.press("y")   # now approve it
+        await come_to_card(pilot, app)
+        await pilot.press("enter")   # now approve it
         assert await wait_until(pilot, lambda: "brew install python-tk" in ran), "approve → brew runs"
     assert_history_api_valid(engine.history)
 

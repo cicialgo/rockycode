@@ -1,0 +1,241 @@
+/* Rocky Nebula — the terminal's palette (rockycode/palette.py and the TUI's `rocky` theme) on
+   the desktop. It is a dark theme: while it is selected the main process pins the colour scheme
+   to dark, so the dark rules in styles.css apply underneath and this layer only recolours.
+
+   Every colour declaration in styles.css and race.css has a line here, in the same order, so
+   the cascade inside this layer mirrors the base sheets. tests/nebula.test.ts fails when a
+   colour is added there without a Nebula value. The preview frame's white page is the one
+   deliberate exception: a document is shown on the paper it was written for. */
+:root[data-theme=nebula]{
+  color-scheme:dark;
+  /* Surfaces, deepest first. bg, raised and panel are the TUI theme's own three. */
+  --n-deep:#121219;--n-bg:#16161e;--n-raised:#1e1e28;--n-panel:#23232f;--n-stripe:#1a1a23;
+  --n-hover:#262633;--n-select:#2b2740;--n-bubble:#262234;--n-tint:#201e2e;--n-disabled:#34344a;
+  --n-line:#2a2a38;--n-line-2:#34344a;--n-line-accent:#4a3f6b;
+  /* Text: the TUI foreground, LAVENDER, a readable step of MUTED, and MUTED for marks that are not text. */
+  --n-text:#c0caf5;--n-text-2:#a9b1d6;--n-text-3:#8c90ad;--n-mute:#787c99;
+  /* VIOLET leads. PURPLE supports and also means "ok": Nebula has no green. */
+  --n-accent:#bb9af7;--n-accent-hover:#cdb4fa;--n-accent-2:#9d7cd8;--n-on-accent:#16161e;--n-ring:#bb9af733;
+  /* AMBER warns, RED fails. */
+  --n-warn:#d8b27d;--n-warn-bg:#2a2622;--n-warn-line:#5a4c38;
+  --n-danger:#e06c75;--n-danger-hover:#ea8a91;--n-danger-bg:#2c1c23;--n-danger-line:#6a3740;
+  --n-backdrop:#0a0a1099;--n-shadow:0 12px 40px #05050a99;
+
+  /* styles.css */
+  color:var(--n-text);background:var(--n-bg);
+  input,select,textarea{color:var(--n-text)}
+  button:focus-visible,textarea:focus-visible,summary:focus-visible{outline-color:var(--n-accent)}
+  button:hover:not(:disabled){background-color:var(--n-hover)}
+  .sidebar{background:var(--n-deep);border-right-color:var(--n-line)}
+  .brand-mark{background:var(--n-select);color:var(--n-accent)}
+  .preview-label{color:var(--n-text-3);border-color:var(--n-line)}
+  .new-task{background:var(--n-raised);border-color:var(--n-line-2);box-shadow:none}
+  .new-task>span,.thread-button>svg{color:var(--n-text-3)}
+  .thread-button.selected{background:var(--n-select)}
+  .thread-button.selected>svg{color:var(--n-accent)}
+  .status-dot{background:var(--n-mute)}
+  .activity-dot{background:var(--n-accent)}
+  .workspace-picker{color:var(--n-text-2);border-top-color:var(--n-line)}
+  .online{background:var(--n-accent-2)}
+  .main-area{background:var(--n-bg)}
+  .topbar{border-bottom-color:var(--n-line)}
+  .breadcrumb strong{color:var(--n-text)}
+  .toolbar-button{color:var(--n-text-2)}
+  .toolbar-button.active{background:var(--n-select);color:var(--n-accent)}
+  .welcome-symbol{color:var(--n-accent);background:var(--n-select)}
+  .eyebrow{color:var(--n-text-3)}
+  .primary-button{background:var(--n-accent);color:var(--n-on-accent)}
+  .primary-button:hover:not(:disabled){background:var(--n-accent-hover)}
+  .app-footer{border-top-color:var(--n-line)}
+  .task-status.busy,.small-brand{color:var(--n-accent)}
+  .suggestions button{border-color:var(--n-line);color:var(--n-text-2);background:var(--n-raised)}
+  .suggestions button svg{color:var(--n-text-3)}
+  .user-message>div{background:var(--n-bubble)}
+  .assistant-label,.assistant-label .product-icon{color:var(--n-accent)}
+  .prose{color:var(--n-text)}
+  .prose pre{background:var(--n-panel)}
+  .waiting-text{color:var(--n-text-3)}
+  .reasoning{border-left-color:var(--n-line-accent);color:var(--n-text-3)}
+  .tool-call{border-color:var(--n-line);color:var(--n-text-2)}
+  .composer-box{border-color:var(--n-line-2);background:var(--n-raised);box-shadow:none}
+  .composer-box:focus-within{border-color:var(--n-accent-2);box-shadow:0 0 0 2px var(--n-ring)}
+  .composer-bottom>span{color:var(--n-text-3)}
+  .send-button{background:var(--n-accent);color:var(--n-on-accent)}
+  .send-button:hover:not(:disabled){background:var(--n-accent-hover)}
+  .send-button:disabled{background:var(--n-disabled);color:var(--n-mute)}
+  .stop-button{border-color:var(--n-line-accent);color:var(--n-accent)}
+  .note-panel{border-left-color:var(--n-line);background:var(--n-deep)}
+  .note-panel>header{color:var(--n-text-2)}
+  .note-panel button{color:var(--n-text-3)}
+  .note-panel>textarea{color:var(--n-text)}
+  .jump-button{border-color:var(--n-line);background:var(--n-raised);box-shadow:none;color:var(--n-text-2)}
+  .error-banner{color:var(--n-danger);background:var(--n-danger-bg)}
+  .fixture-banner{background:var(--n-warn-bg)}
+  .approval{border-color:var(--n-line-accent);background:var(--n-tint)}
+  .approval p,.approval pre{color:var(--n-text-2)}
+  .approval button{border-color:var(--n-line-accent)}
+  .approval .approve-button{background:var(--n-accent);color:var(--n-on-accent)}
+  .modal-backdrop{background:var(--n-backdrop)}
+  .modal{background:var(--n-raised);border-color:var(--n-line);box-shadow:var(--n-shadow)}
+  .modal h3{color:var(--n-text-3)}
+  .modal ul{color:var(--n-text-2)}
+  .modal-close{color:var(--n-text-3)}
+  .inline-error{color:var(--n-danger);background:var(--n-danger-bg)}
+  ::-webkit-scrollbar-thumb{background:var(--n-line-2)}
+  .sidebar-heading,.sidebar-empty,.thread-button small,.runtime-pill,.breadcrumb,.welcome-description,.empty-conversation>p,.task-status,.note-caption,.note-panel>footer,.composer-hint,.app-footer,.welcome-notes,.message-receipt,.muted{color:var(--n-text-3)}
+  .fixture-banner{color:var(--n-warn)}
+  .composer-box textarea::placeholder,.note-panel>textarea::placeholder{color:var(--n-text-3)}
+  .delivery-controls select{border-color:var(--n-line-accent);background:var(--n-raised)}
+  .message-queue{border-color:var(--n-line-accent)}
+  .message-queue button{color:var(--n-accent)}
+  select:focus-visible{outline-color:var(--n-accent)}
+  .language-picker{color:var(--n-text-3)}
+  .language-picker select{border-color:var(--n-line-2);background:var(--n-raised)}
+  .prose th,.prose td{border-color:var(--n-line)}
+  .prose th{background:var(--n-panel)}
+  .prose tr:nth-child(2n)>td{background:var(--n-stripe)}
+  .prose del{color:var(--n-text-3)}
+  .approval .session-button{background:var(--n-select);color:var(--n-accent)}
+  .approval-warning{color:var(--n-danger)}
+  .approval-keys{color:var(--n-text-3)}
+  .thread-actions .confirm-delete{background:var(--n-danger);color:var(--n-on-accent)}
+  .thread-rename{border-color:var(--n-accent-2);background:var(--n-raised)}
+  .error-banner .reconnect-button{border-color:var(--n-danger-line)}
+  .approval-timeout{color:var(--n-warn)}
+  .model-picker select{border-color:var(--n-line-2);background:var(--n-raised)}
+  .thread-button strong{color:var(--n-text)}
+  .transcript{scrollbar-color:var(--n-line-2) transparent}
+  .prose h1,.prose h2,.prose h3{color:var(--n-accent)}
+  .composer-box textarea,.thread-rename,.language-picker select,.model-picker select{color:var(--n-text)}
+  .task-model-picker{color:var(--n-text-3)}
+  .task-model-picker select{border-color:var(--n-line)}
+  .mode-summary{color:var(--n-text-3)}
+  .mode-help{color:var(--n-text-3);border-color:var(--n-line)}
+  .artifact-list button,.artifact-link{color:var(--n-accent)}
+  .artifact-list button{border-color:var(--n-line)}
+  .artifact-panel{border-left-color:var(--n-line)}
+  .artifact-panel>p{color:var(--n-text-3)}
+  .mode-help{background:var(--n-raised);box-shadow:var(--n-shadow)}
+  .composer-folder{color:var(--n-text-3)}
+  .preset-button{color:var(--n-accent)}
+  .preset-button.active{background:var(--n-select)}
+  .preset-panel{border-color:var(--n-line);background:var(--n-raised);box-shadow:var(--n-shadow)}
+  .preset-hint,.preset-empty{color:var(--n-text-3)}
+  .preset-toolbar button,.preset-form-actions button,.preset-confirm button{border-color:var(--n-line-accent)}
+  .preset-use small,.preset-form label{color:var(--n-text-3)}
+  .preset-panel input,.preset-panel textarea{border-color:var(--n-line-2)}
+  .preset-panel input,.preset-panel textarea{background:var(--n-raised)}
+  .preset-panel input:focus-visible,.preset-panel textarea:focus-visible{outline-color:var(--n-accent)}
+  .preset-confirm{background:var(--n-tint)}
+  .preset-save{background:var(--n-accent);color:var(--n-on-accent)}
+  .preset-save:hover:not(:disabled){background:var(--n-accent-hover)}
+  .preset-confirm-delete{background:var(--n-danger);color:var(--n-on-accent)}
+  .preset-confirm-delete:hover:not(:disabled){background:var(--n-danger-hover)}
+  .preset-button.active{color:var(--n-accent)}
+  .preset-panel input,.preset-panel textarea{color:var(--n-text)}
+  .tool-decision{color:var(--n-accent)}
+  .tool-decision.blocked{color:var(--n-danger)}
+  .update-banner{color:var(--n-accent);background:var(--n-tint)}
+  .update-banner small{color:var(--n-text-2)}
+  .update-banner button{border-color:var(--n-line-accent);color:var(--n-accent)}
+  .update-banner .update-open{background:var(--n-accent);border-color:var(--n-accent);color:var(--n-on-accent)}
+  .update-banner .update-open:hover:not(:disabled){background:var(--n-accent-hover)}
+  .update-settings{color:var(--n-text-3)}
+  .update-toggle input{accent-color:var(--n-accent)}
+  .update-check{border-color:var(--n-line-2);color:var(--n-text-2)}
+  .update-status{color:var(--n-text-3)}
+  .task-connections,.task-connections textarea,.task-connections button{border-color:var(--n-line-2)}
+  .theme-picker{color:var(--n-text-3)}
+  .theme-picker button{border-color:var(--n-line-2);color:var(--n-text-3)}
+  .theme-picker button.selected{background:var(--n-select);border-color:var(--n-accent-2);color:var(--n-accent)}
+
+  .key-form select,.key-form input{border-color:var(--n-line)}
+  .key-form input:focus-visible{outline-color:var(--n-accent)}
+  .modal .key-form button{border-color:var(--n-line-accent)}
+  /* race.css */
+  .race-nav{border-color:var(--n-line-accent);background:var(--n-tint)}
+  .race-nav>svg{color:var(--n-accent)}
+  .race-nav.selected{background:var(--n-select);border-color:var(--n-accent-2)}
+  .race-nav small{color:var(--n-text-2)}
+  .race-panel{color:var(--n-text);background:var(--n-bg)}
+  .race-panel button:focus-visible,.race-panel input:focus-visible,.race-panel select:focus-visible,.race-panel textarea:focus-visible,.race-panel pre:focus-visible{outline-color:var(--n-accent)}
+  .race-eyebrow{color:var(--n-text-2)}
+  .race-heading h1>svg{color:var(--n-accent)}
+  .race-heading p{color:var(--n-text-2)}
+  .race-setup,.race-review,.race-judge,.race-export{background:var(--n-raised)}
+  .race-setup,.race-review,.race-judge,.race-export{border-color:var(--n-line)}
+  .race-section-heading>span{color:var(--n-text-2)}
+  .race-local{color:var(--n-accent-2) !important;background:var(--n-tint)}
+  .race-label{color:var(--n-text-2)}
+  .race-prompt{background:var(--n-raised) !important;border-color:var(--n-line-2) !important}
+  .race-prompt::placeholder{color:var(--n-text-3)}
+  .race-folder button{color:var(--n-accent);border-color:var(--n-line)}
+  .race-folder>span,.race-help{color:var(--n-text-2)}
+  .race-warning{background:var(--n-warn-bg);border-color:var(--n-warn-line);color:var(--n-warn)}
+  .race-model-choice>span{color:var(--n-text-2)}
+  .race-model-choice>span>svg{color:var(--n-accent)}
+  .race-panel select{border-color:var(--n-line-2);background:var(--n-raised);color:var(--n-text)}
+  .race-limits{border-top-color:var(--n-line)}
+  .race-limits label{color:var(--n-text-2)}
+  .race-limits input{border-color:var(--n-line-2);background:var(--n-raised);color:var(--n-text)}
+  .race-limits small{color:var(--n-text-3)}
+  .race-charge{color:var(--n-warn)}
+  .race-primary{background:var(--n-accent);color:var(--n-on-accent);box-shadow:none}
+  .race-primary:hover:not(:disabled){background:var(--n-accent-hover)}
+  .race-secondary{border-color:var(--n-line-accent);background:var(--n-tint);color:var(--n-accent)}
+  .race-secondary:hover:not(:disabled){background:var(--n-select)}
+  .race-stop{border-color:var(--n-danger-line);color:var(--n-danger);background:var(--n-danger-bg)}
+  .race-error{background:var(--n-danger-bg);color:var(--n-danger);border-color:var(--n-danger-line)}
+  .race-notice{background:var(--n-tint);border-color:var(--n-line-accent);color:var(--n-text-2)}
+  .race-history-label{color:var(--n-text-2)}
+  .race-empty{background:repeating-linear-gradient(0deg,var(--n-raised),var(--n-raised) 31px,var(--n-line) 32px);border-color:var(--n-line-accent);color:var(--n-text-2)}
+  .race-empty>div,.race-empty small{color:var(--n-text-3)}
+  .race-summary>div{color:var(--n-text-2)}
+  .race-summary strong{color:var(--n-accent)}
+  .race-task-summary{color:var(--n-text-2)}
+  .race-lane{border-color:var(--n-line);background:var(--n-raised)}
+  .race-alias{background:var(--n-select);color:var(--n-accent)}
+  .race-lane>header>div>span{color:var(--n-text-3)}
+  .race-horse{color:var(--n-accent)}
+  .race-lane-track>span{color:var(--n-text-2)}
+  .race-lane-track i{border-bottom-color:var(--n-line-accent)}
+  .race-lane-running{border-color:var(--n-accent-2);box-shadow:0 0 0 1px var(--n-ring)}
+  .race-lane-complete .race-lane-track>span{color:var(--n-accent-2)}
+  .race-lane-error .race-lane-track>span{color:var(--n-danger)}
+  .race-lane-error{border-color:var(--n-danger-line)}
+  .race-metrics{background:var(--n-panel);border-top-color:var(--n-line);border-bottom-color:var(--n-line)}
+  .race-metrics dt{color:var(--n-text-3)}
+  .race-metrics dd{color:var(--n-text-2)}
+  .race-lane-output pre{color:var(--n-text)}
+  .race-lane-output pre:empty{color:var(--n-text-3)}
+  .race-file-results{border-top-color:var(--n-line)}
+  .race-file-results>strong,.race-tool-results summary{color:var(--n-text-2)}
+  .race-file-results>small{color:var(--n-text-3)}
+  .race-file-results summary{color:var(--n-accent)}
+  .race-file-results pre{background:var(--n-panel)}
+  .race-tool-results{border-top-color:var(--n-line)}
+  .race-tool-results p{color:var(--n-text-3)}
+  .race-score-card{border-color:var(--n-line);background:var(--n-panel)}
+  .race-score-card label{color:var(--n-text-2)}
+  .race-score-card input,.race-score-card textarea{background:var(--n-raised);border-color:var(--n-line-2);color:var(--n-text)}
+  .race-review-actions>span{color:var(--n-warn)}
+  .race-link{color:var(--n-accent)}
+  .race-judge-controls label{color:var(--n-text-2)}
+  .race-judge-controls>span{color:var(--n-warn)}
+  .race-judge-scores>div{background:var(--n-panel)}
+  .race-judge-scores strong{color:var(--n-accent)}
+  .race-judge-scores p{color:var(--n-text-2)}
+  .race-preview>pre{background:var(--n-panel);border-color:var(--n-line-accent);color:var(--n-text)}
+  .race-digest{color:var(--n-text-3)}
+  .race-confirm{color:var(--n-text-2)}
+  .race-confirm input{accent-color:var(--n-accent)}
+  .race-finish{border-color:var(--n-line);background:var(--n-raised)}
+  .race-finish-rows li{color:var(--n-text-2)}
+  .race-finish-rail{border-bottom-color:var(--n-line-accent);border-right-color:var(--n-accent-2)}
+  .race-finish-flag{color:var(--n-accent)}
+  .race-finish-result b{background:var(--n-select);color:var(--n-accent)}
+  .race-finish-first .race-finish-result b{background:var(--n-accent);color:var(--n-on-accent)}
+  .race-finish-out{color:var(--n-text-3)}
+  .race-finish-out .race-finish-flag{color:var(--n-mute)}
+  .race-finish-name{color:var(--n-accent)}
+}

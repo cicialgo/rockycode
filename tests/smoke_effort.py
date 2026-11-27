@@ -38,6 +38,9 @@ assert build_extra_body(False, "max", "thinking", thinking_off=False) == {
 assert build_extra_body(False, "max", "effort") == {"reasoning_effort": "low"}
 assert build_extra_body(False, "max", "enable_thinking") == {"enable_thinking": False}
 assert build_extra_body(False, "max", "minimax") == {"thinking": {"type": "disabled"}}
+_flash = ("low", "medium", "high", "xhigh", "max")
+assert build_extra_body(False, "max", "minimax", efforts=_flash, thinking_off=False)["reasoning_effort"] == "low"
+assert "disabled" not in str(build_extra_body(False, "high", "minimax", efforts=_flash, thinking_off=False))
 print("build_extra_body: enabled sends the clamped tier; off per shape  ✓")
 
 # live flip: /effort mutates engine attrs between turns; _extra_body must

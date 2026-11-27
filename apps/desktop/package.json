@@ -1,0 +1,48 @@
+{
+  "name": "rockycode-desktop",
+  "productName": "RockyCode",
+  "version": "0.1.0",
+  "private": true,
+  "description": "RockyCode desktop workbench",
+  "type": "module",
+  "main": "dist/main/index.cjs",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:fixture": "node scripts/dev.mjs --fixture",
+    "build": "tsc --noEmit && node scripts/build.mjs",
+    "start": "node scripts/start.mjs",
+    "test": "tsx --test tests/*.test.ts",
+    "test:runtime": "python3 -m unittest discover -s runtime/tests -v",
+    "test:runtime:shared": "node scripts/test-shared-runtime.mjs",
+    "test:e2e:task": "node scripts/e2e-task-ux.mjs",
+    "test:e2e": "node scripts/e2e.mjs",
+    "test:e2e:icon": "node scripts/e2e-icon.mjs",
+    "test:e2e:race": "node scripts/e2e-race.mjs",
+    "test:e2e:update": "node scripts/e2e-update.mjs",
+    "test:e2e:setup": "node scripts/e2e-setup.mjs",
+    "test:e2e:theme": "node scripts/e2e-theme.mjs",
+    "test:e2e:race:live": "node scripts/e2e-race-live.mjs",
+    "test:e2e:live": "node scripts/e2e-live.mjs",
+    "check": "npm run check:deps && npm run build && npm test",
+    "check:deps": "node scripts/check-dependencies.mjs",
+    "setup:electron": "node scripts/setup-electron.mjs"
+  },
+  "dependencies": {
+    "lucide-react": "1.51.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.4",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "electron": "44.11.1",
+    "esbuild": "0.28.2",
+    "playwright": "1.63.0",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vite": "8.3.5"
+  }
+}

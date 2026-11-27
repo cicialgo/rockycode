@@ -2,7 +2,8 @@
 
 read_file / write_file / edit_file must refuse any target outside workdir —
 absolute paths, `..` escapes, and symlinks that point out — on their own, not
-relying on the advisory permission layer (bench/serve/yolo bypass it). And
+relying on the advisory permission layer. Local YOLO explicitly opts into
+wide reads through a separate live policy; bare registries stay bounded. And
 write/edit must refuse secret files symmetrically with read.
 """
 import asyncio

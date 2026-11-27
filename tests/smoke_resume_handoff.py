@@ -94,7 +94,7 @@ class _FakeClient:
             if boom:
                 raise RuntimeError("no api")
             msg = SimpleNamespace(content=reply)
-            return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+            return SimpleNamespace(choices=[SimpleNamespace(message=msg, finish_reason="stop")])
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=create))
 
 
@@ -109,7 +109,7 @@ print("generate_title: cleaned title; failures → None, never raise  ✓")
 env = {**os.environ,
        "ROCKYCODE_HOME": tempfile.mkdtemp(prefix="rockytest-empty-"),
        "ROCKYCODE_API_KEY": "sk-test-fake", "ROCKYCODE_MODEL": "fake-model"}
-r = subprocess.run([sys.executable, "rockycode/cli.py", "--resume", "rk_deadbeef"],
+r = subprocess.run([sys.executable, "-m", "rockycode.cli", "--resume", "rk_deadbeef"],
                    capture_output=True, text=True, cwd=REPO_ROOT, env=env, timeout=60)
 out = r.stdout + r.stderr
 assert r.returncode != 0 and "no session matches" in out, out[:400]
@@ -120,7 +120,7 @@ print("cli: top-level --resume <id> routes to chat, unknown id fails cleanly  �
 import contextlib
 import io
 
-from rockycode import cli as rockycli
+from rockycode.cli import chat as rockycli
 
 eng = SimpleNamespace(trajectory=SimpleNamespace(path=TRAJ / "20260705-110000-ef012345.jsonl"))
 buf = io.StringIO()
@@ -138,5 +138,24 @@ with contextlib.redirect_stdout(buf2):
     rockycli._print_exit_card(SimpleNamespace(trajectory=SimpleNamespace(path=empty)))
 assert buf2.getvalue() == "", buf2.getvalue()
 print("exit card: id/title/folder + commands; silent with no user turn  ✓")
+
+# the card is the last thing a session says: it speaks the UI language. The
+# commands stay as they are typed, whatever the language.
+def card_in(locale, loops=0):
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rockycli._print_exit_card(SimpleNamespace(trajectory=eng.trajectory, loops_at_exit=loops), locale)
+    return out.getvalue()
+
+zh = card_in("zh", loops=2)
+for needle in ("♪ 会话已保存", "rk_ef012345", "credential fix", "📁 rocky", "条消息", "继续这次会话",
+               "rockycode --resume rk_ef012345", "或浏览全部会话", "2 个循环"):
+    assert needle in zh, (needle, zh)
+for english in ("session saved", "resume it", "or browse", "loops ended", "msgs"):
+    assert english not in zh, (english, zh)
+assert "1 loop ended" in card_in("en", loops=1) and "2 loops ended" in card_in("en", loops=2)
+assert "loop" not in card_in("en") and "循环" not in card_in("zh"), "no loop line when no loop was live"
+assert card_in("xx") == card_in("en"), "a language without a catalog falls back to English"
+print("exit card: Chinese in zh, English otherwise, commands unchanged  ✓")
 
 print("RESUME HANDOFF SMOKE OK — an id to come back to. amaze!")

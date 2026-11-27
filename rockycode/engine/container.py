@@ -31,8 +31,26 @@ EXEC_TIMEOUT_S = 300
 _WRAP = "source /opt/miniconda3/bin/activate testbed 2>/dev/null; cd /testbed 2>/dev/null; "
 
 # `git add -A` respects .gitignore, so build junk stays out; --cached diff
-# then captures edits AND new files the agent created.
-GIT_DIFF_SCRIPT = "git add -A >/dev/null 2>&1; git -c core.fileMode=false diff --cached"
+# then captures edits AND new files the agent created. Three hygiene passes
+# guard against real score-losses seen in the 2-round flip analysis
+# (results/flip-analysis-deepseek-2rounds.json):
+#   stash pop   — sphinx-8548: `git stash && pytest` as the final step-limit
+#                 command submitted an EMPTY patch with the fix in the stash;
+#   binary drop — matplotlib-24570: repro PNGs saved into /testbed rode into
+#                 the diff and broke an otherwise-identical correct patch;
+#   test drop   — django-16877: a model-authored test file at the gold test's
+#                 exact path broke test-patch application (scaffolds strip
+#                 test edits by convention: the scorer applies its OWN tests).
+GIT_DIFF_SCRIPT = """\
+while git stash list | grep -q .; do git stash pop >/dev/null 2>&1 || break; done
+git add -A >/dev/null 2>&1
+git diff --cached --numstat | awk -F'\t' '$1=="-" && $2=="-" {print $3}' \\
+  | while IFS= read -r f; do git reset -q HEAD -- "$f" 2>/dev/null; done
+git diff --cached --name-only \\
+  | grep -E '(^|/)tests?/|(^|/)testing/|(^|/)test_[^/]*$|(^|/)conftest\\.py$' \\
+  | while IFS= read -r f; do git reset -q HEAD -- "$f" 2>/dev/null; done
+git -c core.fileMode=false diff --cached
+"""
 
 
 class DockerSession:
@@ -132,9 +150,9 @@ async def _read_file(session, path: str, offset=None, limit=None) -> str:
         end = str(start + int(limit) - 1) if limit else "$"
         window = f" | sed -n '{start},{end}p'"
     out, _code = await session.exec(
-        f'if [ -d {q} ]; then echo "[directory] {path}"; ls -p {q}; '
-        f'elif [ -e {q} ]; then cat -n {q}{window}; '
-        f'else echo "[error] file not found: {path}"; exit 1; fi'
+        f"if [ -d {q} ]; then printf '%s\n' {shlex.quote('[directory] ' + path)}; ls -p -- {q}; "
+        f'elif [ -e {q} ]; then cat -n -- {q}{window}; '
+        f"else printf '%s\n' {shlex.quote('[error] file not found: ' + path)}; exit 1; fi"
     )
     return _truncate(out.rstrip("\n"))
 

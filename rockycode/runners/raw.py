@@ -10,7 +10,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from openai import OpenAI
 from rich.console import Console
 from rich.progress import (
     BarColumn,
@@ -23,7 +22,9 @@ from rich.table import Table
 
 from rockycode.banner import amaze, confused, fail
 from rockycode.engine.effort import build_extra_body
-from rockycode.onboarding import require_base_url, require_key
+from rockycode.engine import providers as providers_mod
+from rockycode.engine import route as route_mod
+from rockycode.engine.model_protocol import GENERIC
 from rockycode.palette import PURPLE, VIOLET
 from rockycode.prompts.rocky import RAW_SINGLE_SHOT
 from rockycode.runners.data import load_verified
@@ -74,7 +75,7 @@ def run(
     *,
     thinking: bool = True,
     reasoning_effort: str = "max",
-    max_tokens: int = 16384,
+    max_tokens: int = 0,
     task_label: str = "tasks",
     output_dir: Path = PREDICTIONS_DIR,
 ) -> Path:
@@ -91,12 +92,31 @@ def run(
     stamp = datetime.now().strftime("%Y%m%d-%H%M")
     out_path = output_dir / f"raw-{safe_model}-{task_label}-{stamp}.jsonl"
 
-    # Key AND endpoint from rocky's credential chain — never the SDK's ambient
-    # OPENAI_API_KEY / OPENAI_BASE_URL fallbacks.
-    # max_retries=5: DeepSeek is flakier than OpenAI; SDK default of 2 is too low.
-    client = OpenAI(api_key=require_key(), base_url=require_base_url(),
-                    max_retries=5, timeout=120.0)
-    extra_body = build_extra_body(thinking, reasoning_effort)
+    # The same route the Engine takes for this model (engine/route.py).
+    if max_tokens < 0:
+        raise ValueError("max_tokens must be non-negative (0 = model registry)")
+    to = route_mod.route(model)
+    protocol = GENERIC
+    wire_model = to.wire_model
+    if to.known:
+        provider, model = to.provider, to.model
+        spec = provider.spec(model)
+        protocol = spec.protocol
+        max_tokens = min(max_tokens or spec.max_output, spec.max_output)
+        extra_body = build_extra_body(thinking, reasoning_effort, provider.reasoning,
+                                      efforts=provider.efforts_for(model),
+                                      thinking_off=provider.thinking_off_for(model))
+    else:
+        max_tokens = max_tokens or providers_mod.DEFAULT_MAX_OUTPUT
+        extra_body = build_extra_body(thinking, reasoning_effort)
+    client = route_mod.open_sync_client(to)
+    # A model with a contract of its own keeps its sampling; a plain one is pinned for the bench.
+    sampling = protocol.sampling(thinking) if protocol != GENERIC else {"temperature": 0.0}
+    out_path.with_suffix(".settings.json").write_text(json.dumps({
+        "model": model, "wire_model": wire_model, "protocol": protocol.label,
+        "thinking": thinking, "reasoning_effort": reasoning_effort,
+        "max_tokens": max_tokens, "sampling": sampling,
+    }, indent=2) + "\n", encoding="utf-8")
 
     n_ok = n_fail = 0
     totals = {
@@ -119,20 +139,26 @@ def run(
             iid = instance["instance_id"]
             try:
                 resp = client.chat.completions.create(
-                    model=model,
+                    model=wire_model,
                     messages=[{"role": "user", "content": _build_prompt(instance)}],
-                    temperature=0.0,
-                    max_tokens=max_tokens,
+                    **sampling,
+                    **protocol.output_cap(max_tokens),
                     extra_body=extra_body,
                 )
-                content = resp.choices[0].message.content or ""
-                patch = _extract_diff(content).strip()
-                if patch and not patch.endswith("\n"):
-                    patch += "\n"
-
                 usage = _extract_usage(resp)
                 for k in totals:
                     totals[k] += usage.get(k, 0) or 0
+                if not resp.choices:
+                    raise ValueError("response has no choices")
+                choice = resp.choices[0]
+                problem = protocol.completion_error(getattr(choice, "finish_reason", None),
+                                                    tool_calls=bool(choice.message.tool_calls))
+                if problem:
+                    raise ValueError(f"incomplete prediction: {problem}")
+                content = choice.message.content or ""
+                patch = _extract_diff(content).strip()
+                if patch and not patch.endswith("\n"):
+                    patch += "\n"
 
                 n_ok += 1
             except Exception as e:  # noqa: BLE001 — log + record empty patch, keep going

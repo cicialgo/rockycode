@@ -18,10 +18,10 @@ def main():
     assert log.path is not None and log.path.exists(), "meta line not written"
     assert log.disabled_reason is None
     log.message({"role": "user", "content": "汉字 😀"})
-    log.feedback({"mood": "good", "text": "ok", "local_only": True})
+    log.reflect({"seq": 1, "final": False, "score": 0.8})
     text = log.path.read_text(encoding="utf-8")
     assert "there" in text and "汉字" in text and "😀" in text, text
-    assert '"feedback"' in text and '"local_only"' in text, text
+    assert '"reflect"' in text and '"score"' in text, text
     print("trajectory: writable dir logs utf-8 (CJK + emoji)  ✓")
 
     # --- unwritable: a file stands where a parent dir should be -> mkdir raises,
@@ -35,7 +35,7 @@ def main():
     log2.message({"role": "user", "content": "still alive"})
     log2.compaction({"n": 1})
     log2.outcome({"ok": True})
-    log2.feedback({"mood": "meh"})
+    log2.reflect({"seq": 1})
     print("trajectory: unwritable location degrades gracefully, no crash  ✓")
 
     print("TRAJECTORY SMOKE OK — logging is best-effort. amaze!")

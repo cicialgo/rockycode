@@ -25,13 +25,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 load_dotenv(Path.home() / ".rockycode" / ".env")
-from rockycode.onboarding import load_credentials_into_env  # noqa: E402
+from rockycode.onboarding import is_configured, load_credentials_into_env  # noqa: E402
 
 load_credentials_into_env()
 
 MODEL = (os.getenv("ROCKYCODE_MODEL") or "").strip()
-if not MODEL or not (os.getenv("OPENAI_API_KEY") or "").strip():
-    print("skip: OPENAI_API_KEY / ROCKYCODE_MODEL not set")
+if not MODEL or not is_configured():
+    print("skip: Rocky credentials / ROCKYCODE_MODEL not configured")
     sys.exit(0)
 
 from rockycode.engine import planmode  # noqa: E402
@@ -47,6 +47,7 @@ eng = Engine(
     reasoning_effort="high", max_tokens=32_768,  # snappy canary, not a bench run
 )
 eng.plan_file = plan
+eng.enable_planning()
 
 
 async def turn(text: str) -> str:
@@ -62,11 +63,12 @@ async def turn(text: str) -> str:
 
 ASK = ("mymath.py's add() returns a-b instead of a+b. Plan the fix "
        "(include how to verify it).")
-reply = asyncio.run(turn(planmode.marker(plan) + "\n\n" + ASK))
-if not plan.read_text().strip():
+reply = asyncio.run(turn(ASK))
+if eng.planning.status != "review":
     # turn 1 was a brainstorm question — answer it and expect the draft now
     print(f"turn 1 brainstormed: {reply[:100]!r}")
-    reply = asyncio.run(turn(planmode.marker(plan) + "\n\njust write the plan."))
+    reply = asyncio.run(turn("Keep this scoped to the bug and its regression test. "
+                            "Draft the plan and submit it for review."))
 
 fails = []
 content = plan.read_text().strip()
@@ -74,6 +76,8 @@ if not content:
     fails.append(f"model never drafted the plan file; last reply: {reply[:200]!r}")
 elif "add" not in content.lower():
     fails.append(f"plan file content looks unrelated: {content[:200]!r}")
+if eng.planning.status != "review":
+    fails.append("model did not submit_plan for explicit human review")
 if (wd / "mymath.py").read_text() != buggy:
     fails.append("mymath.py was MODIFIED during plan mode")
 stray = [p for p in wd.rglob("*")

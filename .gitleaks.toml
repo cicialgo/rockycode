@@ -1,0 +1,16 @@
+# gitleaks (>= 8.21) config — scripts/secret-sweep.sh uses it when gitleaks is installed.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "synthetic secrets used by the redaction / config tests"
+paths = [
+  '''tests/smoke_jev_contract\.py''',
+  '''tests/smoke_redact\.py''',
+  '''tests/smoke_selfconfig\.py''',
+  '''tests/smoke_providers\.py''',
+  '''tests/smoke_credentials\.py''',
+  '''tests/smoke_mcp_server\.py''',
+  '''tests/smoke_mcp_capabilities\.py''',
+  '''apps/desktop/runtime/tests/test_shared_runtime\.py''',
+]

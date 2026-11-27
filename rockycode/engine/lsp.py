@@ -1,29 +1,42 @@
-"""LSP bridge — connect to a language server via MCP and expose diagnostics.
+"""LSP bridge (experimental) — code navigation through an LSP-over-MCP server.
+
+Rocky does not speak the language-server protocol itself. It speaks MCP to an
+external wrapper the user names in ROCKYCODE_LSP_COMMAND, and that wrapper
+drives the real server (pyright / gopls / typescript-language-server). The
+tool names and argument shapes below are assumptions about that wrapper; the
+only server they are tested against is tests/fake_lsp_server.py. Nothing is
+auto-detected, and no wrapper is endorsed.
+
+What this module promises is honesty about the result: a query that failed
+says so (`[error]` / `[timeout]` first, so tools.execute counts it as a
+failure), and `[no results]` only ever means a query that worked and matched
+nothing. Lint and type checks after an edit are engine/checks.py's job
+(`check_code`), which needs no server; nothing here rides on read_file.
 
 Design: reuses the MCP actor pattern from mcp.py (one asyncio task per
-connection, Queue-based dispatch, ready Future). The external MCP server
-(e.g. karellen-lsp-mcp, zircote/lsp-tools) wraps an actual LSP server
-(pyright / gopls / typescript-language-server) and exposes its operations
-as MCP tools.
-
-Phase 1: diagnostics-only.  Phase 2 adds the 4 semantic tools.
+connection, Queue-based dispatch, ready Future).
 """
 from __future__ import annotations
 
 import asyncio
 import os
-from pathlib import Path
+import shlex
+
+
+class LSPUnavailable(RuntimeError):
+    """There is no live server behind the bridge: never started, or it exited."""
+
+
+class LSPError(RuntimeError):
+    """The server answered the call with an error."""
 
 
 class LSPManager:
-    """Connect to an LSP MCP server and provide diagnostics.
+    """One connection to an LSP-over-MCP server. `_call` returns the server's
+    text, or raises: LSPUnavailable (no live server), TimeoutError (no answer
+    in time), LSPError (the server reported an error)."""
 
-    If *config* is None the manager is a no-op — diagnostics always returns
-    an empty string.  This lets callers unconditionally append without
-    checking whether LSP is active.
-    """
-
-    CALL_TIMEOUT_S = 30  # diagnostics on a cold LSP can take a moment
+    CALL_TIMEOUT_S = 30  # a cold language server can take a moment
 
     def __init__(self, command: str, args: list[str] | None = None) -> None:
         self.command = command
@@ -90,50 +103,26 @@ class LSPManager:
                     except asyncio.QueueEmpty:
                         break
                     if item is not None and not item[2].done():
-                        item[2].set_exception(RuntimeError("lsp server stopped"))
+                        item[2].set_exception(LSPUnavailable("the lsp server stopped"))
 
     async def _call(self, tool_name: str, arguments: dict) -> str:
         # No live worker (never started, or the server process died) → don't
         # enqueue into a queue nothing will drain; that used to hang forever.
+        # And say so: an empty string here used to read as "no results".
         if self._task is None or self._queue is None or self._task.done():
-            return ""
+            raise LSPUnavailable("the lsp server is not running")
         fut: asyncio.Future = asyncio.get_event_loop().create_future()
         await self._queue.put((tool_name, arguments, fut))
-        try:
-            # Bound the wait: a worker that dies AFTER we enqueue, or a wedged
-            # server, must never block the agent loop. A hair above the per-call
-            # timeout inside _run so a genuinely slow call reports its own error.
-            result = await asyncio.wait_for(fut, timeout=self.CALL_TIMEOUT_S + 5)
-        except asyncio.TimeoutError:
-            return ""
-        # MCP CallToolResult — first text content
-        for c in (result.content or []):
-            if hasattr(c, "text"):
-                return c.text
-        return ""
-
-    # ------------------------------------------------------------------
-    # public API
-    # ------------------------------------------------------------------
-
-    async def get_diagnostics(self, path: str | Path) -> str:
-        """Return formatted diagnostics for *path*, or '' if none / no LSP."""
-        if self._task is None:
-            return ""
-        try:
-            raw = await self._call("diagnostics", {"path": str(path)})
-        except Exception:  # noqa: BLE001
-            return ""
-        if not raw or not raw.strip():
-            return ""
-        lines = raw.strip().splitlines()
-        if not lines:
-            return ""
-        header = "\n  LSP diagnostics\n  " + "-" * 39
-        body = "\n  ".join(lines[:20])  # cap at 20 diag lines
-        if len(lines) > 20:
-            body += f"\n  ... and {len(lines) - 20} more"
-        return header + "\n  " + body
+        # Bound the wait: a worker that dies AFTER we enqueue, or a wedged
+        # server, must never block the agent loop. A hair above the per-call
+        # timeout inside _run so a genuinely slow call reports its own error.
+        # Either way the caller gets a TimeoutError, never an empty answer.
+        result = await asyncio.wait_for(fut, timeout=self.CALL_TIMEOUT_S + 5)
+        # MCP CallToolResult: every text block counts, and isError is an error.
+        text = "\n".join(c.text for c in (result.content or []) if getattr(c, "text", None))
+        if getattr(result, "isError", False):
+            raise LSPError(text.strip() or "the server reported an error")
+        return text
 
     async def stop(self) -> None:
         if self._task is None or self._queue is None:
@@ -143,6 +132,7 @@ class LSPManager:
             await asyncio.wait_for(self._task, timeout=5)
         except (asyncio.TimeoutError, Exception):  # noqa: BLE001
             self._task.cancel()
+            await asyncio.gather(self._task, return_exceptions=True)
 
     @property
     def is_running(self) -> bool:
@@ -162,25 +152,24 @@ class LSPManager:
 # ------------------------------------------------------------------
 
 def resolve_lsp_config() -> tuple[str, list[str]] | None:
-    """Return (command, args) for an LSP MCP server, or None.
-
-    Checks, in order:
-      1. ROCKYCODE_LSP_COMMAND env var (shell-split on whitespace)
-      2. Auto-detection: pyright --version → karellen-lsp-mcp-like wrapper
-    """
-    env_cmd = os.getenv("ROCKYCODE_LSP_COMMAND")
-    if env_cmd:
-        parts = env_cmd.split()
-        return parts[0], parts[1:]
-    return None
+    """(command, args) from ROCKYCODE_LSP_COMMAND, or None when it is not set.
+    Nothing is auto-detected. The value is a command line, so a quoted path
+    with spaces stays one argument; unbalanced quotes raise ValueError rather
+    than launch something else. It is run directly, never through a shell."""
+    raw = (os.getenv("ROCKYCODE_LSP_COMMAND") or "").strip()
+    if not raw:
+        return None
+    parts = shlex.split(raw, posix=os.name != "nt")
+    return parts[0], parts[1:]
 
 
 # ------------------------------------------------------------------
-# Phase 2 — four composite LSP tools
+# the four LSP tools
 # ------------------------------------------------------------------
 
 # Map our semantic actions to likely MCP tool names on the LSP server.
 # Multiple variants are tried in order — the first available one wins.
+# These are guesses about the wrapper, not a contract (see the module docstring).
 _ACTION_TOOL_MAP: dict[str, list[str]] = {
     "definition":     ["definition", "go_to_definition", "goToDefinition"],
     "references":     ["references", "find_references", "findReferences"],
@@ -194,29 +183,32 @@ _ACTION_TOOL_MAP: dict[str, list[str]] = {
 def build_lsp_tools(lsp: "LSPManager") -> dict:
     """Return 4 composite LSP tools bound to *lsp*.
 
-    Each tool produces human-readable text, not raw JSON — designed for
-    DeepSeek's reasoning_content to digest efficiently.
+    Each tool produces human-readable text, not raw JSON. A failed query
+    begins with `[error]` or `[timeout]`; a header never sits in front of
+    one, because tools.execute reads the first characters to decide whether
+    the call worked.
     """
     from rockycode.engine.tools import Tool, _fn_schema, _truncate
 
-    def _pick_tool(actions: list[str]) -> str | None:
-        """Return the first MCP tool name from *actions* that the server supports."""
-        for name in actions:
-            if name in lsp.available_tools:
-                return name
-        return None
-
-    async def _call_or_fallback(tool_names: list[str], arguments: dict) -> str:
-        tool = _pick_tool(tool_names)
+    async def _query(what: str, tool_names: list[str], arguments: dict) -> str:
+        """Run one query and render it. Five outcomes, five different texts:
+        not running, unsupported by this server, timed out, server error —
+        all failures — and a result, which may be `[no results]`."""
+        if not lsp.is_running:
+            return f"[error] {what}: the lsp server is not running (/lsp shows its state; grep and read_file still work)"
+        tool = next((name for name in tool_names if name in lsp.available_tools), None)
         if tool is None:
-            return f"[error] lsp server does not support this operation (tried: {', '.join(tool_names[:3])})"
+            return (f"[error] {what}: this lsp server has no such operation "
+                    f"(looked for: {', '.join(tool_names[:3])})")
         try:
             raw = await lsp._call(tool, arguments)
-        except Exception as exc:  # noqa: BLE001
-            return f"[error] lsp call failed: {type(exc).__name__}: {exc}"
-        if not raw or not raw.strip():
-            return "[no results]"
-        return raw.strip()
+        except LSPUnavailable as exc:
+            return f"[error] {what}: {exc}"
+        except TimeoutError:
+            return f"[timeout] {what}: the lsp server did not answer in time"
+        except Exception as exc:  # noqa: BLE001 — a server error must reach the model as one
+            return f"[error] {what}: {type(exc).__name__}: {exc}"
+        return _truncate(f"{what}\n{'-' * len(what)}\n{raw.strip() or '[no results]'}", 8000)
 
     # -- lsp_lookup -------------------------------------------------------
 
@@ -227,55 +219,41 @@ def build_lsp_tools(lsp: "LSPManager") -> dict:
         action = action.lower().strip()
         if action not in _LOOKUP_ACTIONS:
             return f"[error] unknown action '{action}'. choose: {', '.join(_LOOKUP_ACTIONS)}"
-        tool_names = _ACTION_TOOL_MAP[action]
-        result = await _call_or_fallback(tool_names, {"symbol": symbol})
-        header = f"lsp {action}: {symbol}\n" + "-" * (len(action) + len(symbol) + 5)
-        return _truncate(f"{header}\n{result}", 8000)
+        return await _query(f"lsp {action}: {symbol}", _ACTION_TOOL_MAP[action], {"symbol": symbol})
 
     # -- lsp_symbol_search -------------------------------------------------
 
     async def lsp_symbol_search(query: str) -> str:
         """Search for symbols across the project by name (fuzzy)."""
-        result = await _call_or_fallback(
-            ["workspace_symbol", "workspaceSymbol", "symbol_search", "search_symbols"],
-            {"query": query},
-        )
-        header = f"symbol search: {query}\n" + "-" * (len(query) + 15)
-        return _truncate(f"{header}\n{result}", 8000)
+        return await _query(f"symbol search: {query}",
+                            ["workspace_symbol", "workspaceSymbol", "symbol_search", "search_symbols"],
+                            {"query": query})
 
     # -- lsp_file_symbols --------------------------------------------------
 
     async def lsp_file_symbols(path: str) -> str:
         """List all symbols in a file (classes, functions, etc.) with signatures."""
-        result = await _call_or_fallback(
-            ["document_symbol", "documentSymbol", "file_symbols"],
-            {"path": path},
-        )
-        header = f"symbols in {path}\n" + "-" * (len(path) + 12)
-        return _truncate(f"{header}\n{result}", 8000)
+        return await _query(f"symbols in {path}", ["document_symbol", "documentSymbol", "file_symbols"],
+                            {"path": path})
 
-    # -- lsp_diagnostics (active query) ------------------------------------
+    # -- lsp_diagnostics (an explicit query; nothing runs it for you) ------
 
     async def lsp_diagnostics(path: str = "") -> str:
         """Get diagnostics for a file, or project-wide if path is empty."""
-        args = {"path": path} if path else {}
-        result = await _call_or_fallback(
-            ["diagnostics", "get_diagnostics", "publish_diagnostics"],
-            args,
-        )
-        label = path or "project"
-        header = f"diagnostics: {label}\n" + "-" * (len(label) + 14)
-        return _truncate(f"{header}\n{result}", 8000)
+        return await _query(f"diagnostics: {path or 'project'}",
+                            ["diagnostics", "get_diagnostics", "publish_diagnostics"],
+                            {"path": path} if path else {})
 
     # -- schemas -----------------------------------------------------------
 
     schemas = {
         "lsp_lookup": _fn_schema(
             "lsp_lookup",
-            "Look up a symbol using LSP code intelligence — get its definition, "
+            "Look up a symbol through the connected language server — its definition, "
             "all references, type signature (hover), interface implementations, "
-            "or who calls / is called by it. One call replaces several grep "
-            "searches with precise, compiler-accurate results.",
+            "or who calls / is called by it. One call can replace several grep "
+            "searches. A result starting with [error] or [timeout] is a failed "
+            "query, not an empty one: fall back to grep.",
             {
                 "symbol": {
                     "type": "string",
@@ -317,9 +295,10 @@ def build_lsp_tools(lsp: "LSPManager") -> dict:
         ),
         "lsp_diagnostics": _fn_schema(
             "lsp_diagnostics",
-            "Get compiler/linter diagnostics for a file, or project-wide if no "
-            "path is given. Returns errors, warnings, and hints with line numbers. "
-            "Use after making changes to verify correctness.",
+            "Ask the connected language server for diagnostics on a file, or "
+            "project-wide if no path is given: errors, warnings and hints with line "
+            "numbers. Nothing runs this for you after an edit. For lint and type "
+            "checks without a language server, use check_code.",
             {
                 "path": {
                     "type": "string",
@@ -340,7 +319,7 @@ def build_lsp_tools(lsp: "LSPManager") -> dict:
 
 
 # ------------------------------------------------------------------
-# Phase 4 — multi-tenant LSP manager
+# multi-session manager
 # ------------------------------------------------------------------
 
 class MultiTenantLSPManager:
@@ -424,16 +403,6 @@ class MultiTenantLSPManager:
 
     # -- delegation (for the default session) --------------------------------
 
-    async def get_diagnostics(self, path: str | Path) -> str:
-        """Get diagnostics from the default session (no auto-create)."""
-        mgr = self._sessions.get("default")
-        if mgr is None:
-            return ""
-        try:
-            return await mgr.get_diagnostics(path)
-        except Exception:  # noqa: BLE001
-            return ""
-
     @property
     def is_running(self) -> bool:
         mgr = self._sessions.get("default")
@@ -445,18 +414,23 @@ class MultiTenantLSPManager:
         return mgr.available_tools if mgr else set()
 
     @property
+    def args(self) -> list[str]:
+        return list(self._args)
+
+    @property
     def command(self) -> str:
         return self._command
 
     async def _call(self, tool_name: str, arguments: dict) -> str:
         mgr = self._sessions.get("default")
         if mgr is None:
-            return "[error] lsp not connected — start a session first"
+            raise LSPUnavailable("the lsp server is not running")
         return await mgr._call(tool_name, arguments)
 
     async def stop(self) -> None:
         if self._cleanup_task is not None:
             self._cleanup_task.cancel()
+            await asyncio.gather(self._cleanup_task, return_exceptions=True)
             self._cleanup_task = None
         for mgr in self._sessions.values():
             try:

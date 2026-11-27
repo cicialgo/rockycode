@@ -1,4 +1,4 @@
-"""The proposals inbox — store, drafting gates, and skill install. No API.
+"""The proposals inbox — store, drafting gates, QUALITY GATE, installs. No API.
 
 Contracts under test:
   - ProposalStore: pending → approve installs a global SKILL.md (rk_ evidence
@@ -7,6 +7,12 @@ Contracts under test:
   - draft_proposals gates: quiet pass → no model call; hot weakness → one
     pending draft with rk_ evidence; "null" answer → nothing; existing-name
     dedup; the MAX_PENDING cap; --dry-run reports without writing.
+  - the quality gate (evolve v2): a critique reject drops the draft (decision
+    logged, inbox untouched); a failed dry-run drops a routine draft; an
+    unavailable sandbox proposes untested with an honest receipt; newlines in
+    a drafted routine prompt round-trip through the emitted toml.
+  - amendments REPLACE: approving an amends-proposal overwrites the failing
+    routine in place (old toml kept as .prev) — never a -dream sibling.
 """
 import asyncio
 import json
@@ -35,16 +41,28 @@ DRAFT = {"name": "verify-before-editing", "description": "read then edit",
          "when_to_use": "whenever editing files", "steps": "- read\n- edit\n- verify"}
 
 
+CRITIQUE_OK = json.dumps({"verdict": "ok", "reason": "supported by the evidence"})
+
+
 class FakeChat:
-    def __init__(self, answer="null"):
+    """Routes by prompt: drafting prompts get `answer`, the critique gate gets
+    `critique` (default: pass). Tests flip `critique` to exercise the gate."""
+
+    def __init__(self, answer="null", critique=CRITIQUE_OK):
         self.answer = answer
+        self.critique = critique
         self.prompts = []
 
     def propose_calls(self):
         return [p for p in self.prompts if "draft SKILL playbooks" in p]
 
+    def critique_calls(self):
+        return [p for p in self.prompts if "quality gate" in p]
+
     async def chat(self, prompt, max_tokens=2048):
         self.prompts.append(prompt)
+        if "quality gate" in prompt:
+            return self.critique
         return self.answer
 
 
@@ -188,7 +206,151 @@ async def main():
     assert any(f["routine"].name == "flaky-job" and f["fails"] >= 2 for f in fails), fails
     print("routine watch: a routine failing across recent runs is flagged for amendment  ✓")
 
-    print("PROPOSALS SMOKE OK — dream drafts skills AND routines, only cici installs. amaze!")
+    # ── evolve v2: the quality gate ──────────────────────────────────────────
+
+    # critique reject → the draft never reaches the inbox, decision logged
+    r = DreamRunner(WD, chat=FakeChat(
+        answer=json.dumps({**DRAFT, "name": "rejected-skill"}),
+        critique=json.dumps({"verdict": "reject", "reason": "not supported"})))
+    await draft_proposals(r, ["### ep"], ["20260709-000001-aaaaaaaa"])
+    assert r.report.proposals_drafted == 0
+    assert any("GATE critique dropped" in d for d in r.report.decisions), r.report.decisions
+    assert not any(x.name == "rejected-skill" for x in store.list(PENDING, project_id=pid))
+    print("gate: a critique reject drops the draft, logs the decision  ✓")
+
+    # unparseable critique → reject (precision first, the pattern stays hot)
+    r = DreamRunner(WD, chat=FakeChat(
+        answer=json.dumps({**DRAFT, "name": "junk-critique-skill"}), critique="hmm idk"))
+    await draft_proposals(r, ["### ep"], ["20260709-000001-aaaaaaaa"])
+    assert r.report.proposals_drafted == 0
+    print("gate: an unparseable critique verdict rejects, never installs on doubt  ✓")
+
+    # newline in a drafted prompt → the emitted toml still round-trips
+    import tomllib as _tomllib
+    nl_draft = {"name": "newline-routine", "description": "d", "cadence": "daily",
+                "prompt": "line one\nline two"}
+    r = DreamRunner(WD, chat=FakeChat(answer=json.dumps(nl_draft)))
+    await draft_routine_proposals(r, ["### e1", "### e2"], ["20260709-000001-aaaaaaaa"])
+    nl = [x for x in store.list(PENDING, project_id=pid) if x.name == "newline-routine"]
+    assert len(nl) == 1, "a newline prompt must survive the lint, not vanish"
+    parsed_toml = _tomllib.loads(nl[0].body)
+    assert parsed_toml["prompt"] == "line one\nline two", parsed_toml
+    assert nl[0].tested == "unavailable", "no client on the fake → honest untested receipt"
+    store.archive(nl[0])
+    print("gate: model newlines round-trip through the emitted toml  ✓")
+
+    # dry-run receipt: ok → proposed with proof; blocked → dropped
+    from rockycode import headless as headless_mod
+    from rockycode.routines import dry_run_routine
+
+    async def fake_exec_ok(*, write, **kw):
+        write({"type": "result", "steps": 3})
+        return 0
+
+    async def fake_exec_blocked(*, write, **kw):
+        write({"type": "result", "blocked_on": {"tool": "web_fetch"}})
+        return 2
+
+    real_exec = headless_mod.run_exec
+    try:
+        headless_mod.run_exec = fake_exec_ok
+        rr = Routine(name="dry-ok", prompt="do", workdir=str(WD))
+        receipt = await dry_run_routine(rr, model="fake", client=object())
+        assert receipt["tested"] == "ok" and "3 step(s)" in receipt["note"], receipt
+
+        headless_mod.run_exec = fake_exec_blocked
+        receipt = await dry_run_routine(rr, model="fake", client=object())
+        assert receipt["tested"] == "failed" and "blocked" in receipt["note"], receipt
+    finally:
+        headless_mod.run_exec = real_exec
+    print("gate: dry-run classifies ok / failed (draft defect) honestly  ✓")
+
+    # a failed dry-run drops the whole routine draft before the inbox
+    class ExecFakeChat(FakeChat):
+        client = object()
+        model = "fake"
+    try:
+        headless_mod.run_exec = fake_exec_blocked
+        r = DreamRunner(WD, chat=ExecFakeChat(answer=json.dumps(
+            {"name": "doomed-routine", "description": "d", "cadence": "daily", "prompt": "x"})))
+        await draft_routine_proposals(r, ["### e1", "### e2"], ["20260709-000001-aaaaaaaa"])
+        assert not any(x.name == "doomed-routine" for x in store.list(PENDING, project_id=pid))
+        assert any("GATE dry-run dropped" in d for d in r.report.decisions), r.report.decisions
+    finally:
+        headless_mod.run_exec = real_exec
+    print("gate: a draft that fails its own test never asks for attention  ✓")
+
+    # MCP consolidation may write memory/proposals but must never execute a draft.
+    from unittest.mock import patch
+    r = DreamRunner(WD, chat=ExecFakeChat(answer=json.dumps({
+        "name": "mcp-no-execution", "description": "d", "cadence": "daily", "prompt": "x"})),
+        test_routines=False)
+    with patch("rockycode.routines.dry_run_routine", side_effect=AssertionError("unexpected execution")):
+        await draft_routine_proposals(r, ["### e1", "### e2"], ["20260709-000001-aaaaaaaa"])
+    draft = next(p for p in store.list(PENDING, project_id=pid) if p.name == "mcp-no-execution")
+    assert draft.tested == "unavailable"
+    store.archive(draft)
+    print("gate: MCP writes proposals without executing their routine smoke  ✓")
+
+    # ── evolve v2: amendments REPLACE the failing routine ────────────────────
+    amend_draft = {"name": "flaky-job", "description": "clearer prompt", "cadence": "daily",
+                   "prompt": "do the thing, but read the error first"}
+    r = DreamRunner(WD, chat=FakeChat(answer=json.dumps(amend_draft)))
+    await draft_routine_proposals(r, ["### e1"], ["20260709-000001-aaaaaaaa"])
+    ap = [x for x in store.list(PENDING, project_id=pid) if x.name == "flaky-job"]
+    assert len(ap) == 1 and ap[0].amends == "flaky-job", (ap, r.report.decisions)
+    old_prompt = rstore.load("flaky-job").prompt
+    path = store.approve(ap[0])
+    assert path.parent.name == "flaky-job", "amendment must NOT install a -dream sibling"
+    fixed = rstore.load("flaky-job")
+    assert fixed.prompt == amend_draft["prompt"] and fixed.prompt != old_prompt
+    assert (path.parent / "routine.toml.prev").exists(), "the old toml must be kept beside it"
+    assert rstore.state(fixed).runs, "run history must survive an amendment"
+    print("amend: approve replaces the failing routine in place, history kept  ✓")
+
+    # ── evolve v2: the archive verdict decays the pattern ────────────────────
+    from rockycode.dream.patterns import decay_pattern
+    assert mem.get("blind-edits").importance == 8
+    assert decay_pattern(mem, "blind-edits")
+    assert mem.get("blind-edits").importance == 6, "archive must knock the pattern back"
+    assert not decay_pattern(mem, "no-such-pattern")
+    print("decay: an archived proposal makes its pattern re-earn hotness  ✓")
+
+    # ── evolve v2: the skill watch (usage telemetry → retire proposal) ───────
+    from rockycode.dream.proposals import RETIRE_AFTER_SESSIONS, watch_skills
+    from rockycode.engine.skills import bump_skill_usage, read_skill_usage
+
+    # enough later sessions (episode evidence sorts after the install stamp)
+    for i in range(RETIRE_AFTER_SESSIONS):
+        mem.save(Memory(name=f"ep-future-{i}", type="episode", description="e",
+                        evidence=[f"29990101-00000{i}-aaaaaaaa"]))
+    r = DreamRunner(WD, chat=FakeChat())
+    watch_skills(r)
+    rp = [x for x in store.list(PENDING, project_id=pid) if x.kind == "retire-skill"]
+    assert len(rp) == 1 and rp[0].name == "retire-test-dream-skill", (rp, r.report.decisions)
+    assert rp[0].pattern == "test-dream-skill" and "never loaded" in rp[0].description
+    assert r.report.proposals_drafted == 1
+    print("watch: an unused dream skill draws ONE retire proposal  ✓")
+
+    # a loaded skill is never nagged; an already-proposed retire never repeats
+    bump_skill_usage("test-dream-skill-dream")
+    assert read_skill_usage()["test-dream-skill-dream"]["loads"] == 1
+    r2 = DreamRunner(WD, chat=FakeChat())
+    watch_skills(r2)
+    assert r2.report.proposals_drafted == 0, \
+        "used skills and already-proposed retires must draft nothing"
+    print("watch: usage earns keep; retire asks exactly once  ✓")
+
+    # approve retire: the directory moves aside (reversible), discovery forgets it
+    path = store.approve(rp[0])
+    assert path == skills_home() / ".archived" / "test-dream-skill" and path.is_dir()
+    assert not (skills_home() / "test-dream-skill").exists()
+    names = {s.name for s in discover_skills(WD, home=Path.home())}
+    assert "test-dream-skill" not in names, "a retired skill must leave discovery"
+    assert (path / "SKILL.md").exists(), "retire must archive, never delete"
+    print("watch: approve retires by MOVING aside — reversible, never deleted  ✓")
+
+    print("PROPOSALS SMOKE OK — drafted, gated, tested, watched; only cici installs. amaze!")
 
 
 asyncio.run(main())

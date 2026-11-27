@@ -26,7 +26,8 @@ from textual.widgets import Static
 from rockycode.dream.proposals import PENDING, Proposal, ProposalStore, skills_home
 from rockycode.engine.loop import Engine
 from rockycode.session import get_project
-from rockycode.tui.app import ChatInput, RockyCodeApp
+from rockycode.tui.app import RockyCodeApp
+from rockycode.tui.chatinput import ChatInput
 from rockycode.tui.proposalcard import ProposalCard
 
 WD = Path.cwd()

@@ -1,0 +1,12 @@
+# Patch overlay: dsh web --patch /absolute/rocky.cordis.yml
+# Replace the checkout path. Keys belong in Rocky's credential store.
+- insert:
+    - id: mcp-rocky
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: rocky
+        transport: stdio
+        command: uv
+        args: [run, --locked, --directory, /absolute/rockycode-dev, rockycode, mcp]
+        toolCallTimeoutMs: 1800000
+        failOnStartupError: true

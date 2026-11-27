@@ -2,7 +2,7 @@
 the safety-gated bash. The model + Engine wiring needs a live run to validate."""
 import asyncio
 
-from rockycode.engine.goal import parse_plan, parse_review, parse_verdict, safe_bash_tool, split_plan
+from rockycode.goal.runner import parse_plan, parse_review, parse_verdict, safe_bash_tool, split_plan
 
 # --- plan parsing ---
 assert parse_plan("1. Read code\n2. Fix bug\n3. Add test") == ["Read code", "Fix bug", "Add test"]
@@ -62,7 +62,7 @@ print("split_plan: milestones vs REQUIRES declaration  ✓")
 import tempfile
 from pathlib import Path as _Path
 
-from rockycode.engine.goal import EngineDriver, _objective_keywords
+from rockycode.goal.runner import EngineDriver, _objective_keywords
 from rockycode.pricing import UsageLedger as _UL
 kw = _objective_keywords("Fix the auth login in the widget module")
 assert {"auth", "login", "widget"} <= set(kw), kw
@@ -109,7 +109,7 @@ class _FakeClient:
 
 
 async def _discuss():
-    from rockycode.engine.goal import EngineDriver
+    from rockycode.goal.runner import EngineDriver
     from rockycode.pricing import UsageLedger
 
     def drv(content):

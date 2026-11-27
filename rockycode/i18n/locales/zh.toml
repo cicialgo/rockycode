@@ -1,0 +1,1320 @@
+# 简体中文 — 键与 en.toml 一一对应。
+#
+# One file per language. Keys are `section.name`; {placeholders} are filled by the
+# program and must appear in every language exactly as in en.toml. Colour placeholders
+# {violet} {purple} {lavender} {blue} {amber} {red} {muted} come from rockycode/palette.py —
+# never write a hex colour here. Rich markup ([dim], [bold], [/]) is part of the copy;
+# keep it where the English has it.
+
+# ---- config: feedback from `rockycode config` / `/config` ----
+[config]
+project_override = '项目配置 {path} 覆盖了此设置：实际生效的 {setting} = {value!r}。'
+restart = '请重启 rockycode 以应用此语言设置。'
+unknown_key = "未知设置 '{setting}'。可用设置：{known}"
+positive_integer = '{setting} 必须为正整数（当前值为 {value!r}）'
+positive = '{setting} 必须为正数（当前值为 {value}）'
+invalid_value = '{setting} 的值无效：{value!r}。可用值：{allowed}'
+
+# ---- app: the TUI shell: status, hints, loops, plan, artifacts, models, evolve ----
+[app]
+skill_retired = "[{violet}]✦ 技能 '{p1}' 已停用[/] [dim]→ {p2} · 移回即可恢复[/]"
+routine_installed = "[{violet}]✦ 例程 '{p1}' 已安装[/] [dim]→ {p2} · {p3}[/]"
+routine_verb_amend = '替换失败的那个'
+routine_verb_click = '手动运行（/routines）'
+archive_decayed_suffix = '[dim] · 下次 rocky 会要求更充分的证据[/]'
+noting_session_for_dream = '[{muted}]🌙 正在为 rocky 的梦记录本次会话…[/]'
+evolve_disclosure = '[dim]🌙 rocky 会用你的模型反思每次会话（少量有上限的调用，大多命中缓存），起草技能和例程，由你在 /proposals 批准 · /config evolve off 可关闭[/]'
+pgup_pgdn_scroll_esc_close = '↑/↓/pgup/pgdn 滚动 · esc 关闭'
+no_match_help_for_all_commands = '  ? 没有匹配项 — /help 查看全部命令'
+more_commands = '  [dim]· 还有 {count} 个 — /help[/]'
+describe_via_this_time = '◈  通过 {p0} 描述图片 — 仅本次'
+always_describe_via = '✓  始终通过 {p0} 描述图片'
+this_time = '⌁  {p0} — 仅本次'
+always_use_for_images = '✓  始终使用 {p0} 处理图片'
+image_route_none = '◦  不发送像素（告知模型存在图片）'
+image_route_keys = '[{lavender}]↑↓[/] 选择   [{lavender}]↵[/] 确认   也可点击选项   [{lavender}]esc[/] 跳过   [dim]也可切换到支持图片的模型：/model (kimi · minimax · stepfun)[/]'
+image_this_model_can_t_see = '❖ {p0} 张图片{p1} — 此模型不支持视觉'
+loop_tick_cancelled = '[{muted}]· 循环 #{p1} 第 {p2} 次检查已取消 — {p3} 后再次运行（/loop stop 结束）[/]'
+turn_cancelled = '[{muted}]· 本轮已取消[/]'
+blocked_a_dangerous_command = '[bold {red}]⛔ 已阻止危险命令[/] [dim]{p1}[/]'
+jev_auto_allowed = '[{muted}]· verifier 已自动允许[/] [dim]{p1}[/]'
+jev_auto_mode_failed_closed = 'verifier 失败，已安全拒绝（{p0}）'
+jev_auto_mode_denied = 'verifier 已拒绝'
+allow_for_this_session = '本次会话允许 `{p0}`'
+allow_tool_for_session = '本次会话允许 {p0}'
+plan_turn_busy = '[dim]· 请先完成或取消当前轮次/审阅[/]'
+plan_mode_off_draft_kept = '[dim]· 计划模式已关闭 · 草稿已保留[/]'
+plan_mode_entered = '''
+[{violet}]✦ 计划模式[/] — 在对话中探索、讨论和修订
+  [dim]{p1} · 批准前代码保持只读[/]'''
+tell_rocky_what_you_want_to_plan = '[dim]· 告诉 rocky 你想制定什么计划[/]'
+plan_changed = '[dim]· 计划已更改或不可用 · /plan 重新审阅[/]'
+plan_approved = '[{violet}]✦ 计划已批准[/] [dim]— 正在执行审阅过的版本[/]'
+plan_keep_discussing = '[dim]· 在这里继续讨论计划 · /plan 重新审阅[/]'
+goal_needs_docker = '[{amber}]◆ 自主目标需要 Docker 运行[/] [dim]— 安装或启动 Docker 后，再次选择 “Run as goal” 重试，或选择 “Approve & build here” 在此构建。计划模式保持只读，已审阅的计划会保留。[/]'
+plan_changed_short = '计划已更改；/plan 审阅新版本'
+effort_off_kept = '[{lavender}]off[/] [dim]（思考已关闭 — 保留 {p1}，重新开启时使用）[/]'
+effort_off_lowest_tier = '[{lavender}]off[/] [dim]（{p1} 无法关闭思考 — 发送最低档位{p2}）[/]'
+effort_no_tiers = ' [dim]（{p0} 不支持思考档位 — 思考已开启，不发送档位）[/]'
+loops_resumed_by_yolo = '[{violet}]▶ 已恢复 {p1} 个因等待审批而暂停的{p2}[/] [dim]— 对话空闲时运行下次检查（/loop pause 暂停的保持暂停）[/]'
+ask_rocky = '问 rocky'
+input_keys = 'enter ↵ 发送 · ctrl+j 换行 · shift+↑↓ / pgup·pgdn 滚动历史'
+hints_bar = '[{muted}]拖选文本可复制 · /help · /model · /plan · /goal · /exit · 输入 / 查看更多[/]'
+iterm2_mouse_hint = "[dim]· iterm2：点击、链接及拖选复制需要在 Settings → Profiles → Terminal 中开启 'Enable mouse reporting'（⌥-拖选保留原生选择）[/]"
+proposals_waiting = '[{muted}]🌙 {p1} 个整理生成的技能提案待审阅 — /proposals 查看[/]'
+routine_s_due_routines_to_run = '[{muted}]⏰ 例行任务到期：{p1} — /routines 运行[/]'
+loaded_project_instructions = '[dim]· 已加载 {p0}（项目指令）[/]'
+skill_s_available_skills_to_list = '[dim]· {p0} 项技能可用 — /skills 列出[/]'
+web_tools_on_search = '[dim]· 网络工具已开启（搜索：{p0}）[/]'
+connecting_mcp_servers = '[dim]· 正在连接 mcp 服务器：{p0}…[/]'
+connecting_lsp = '[dim]· 正在连接 lsp…[/]'
+session_not_loaded = '会话未加载：{p0}'
+plan_mode_restored = '[dim]· 计划模式已恢复 · /plan 审阅，或继续对话[/]'
+mode_was_active = '[dim]· 该会话曾使用模式 {p0} — /{p1} {p2} 重新进入[/]'
+no_mode_active = '[{muted}]· 未启用模式[/]'
+mode_off_plain_rocky_again = '[{muted}]· 模式已关闭 — 已恢复普通 rocky[/]'
+mode_nothing_to_persist = '[{muted}]· 没有可保存的模式 — 先进入模式（/{p1}），再用 /{p2} always[/]'
+mode_builtin_only = '[{muted}]· {p1}（仅内置模式可设为文件夹默认模式）[/]'
+mode_default_saved = '[{muted}]· 已保存 — rocky 在此文件夹以 {p1} 模式启动（撤销：/{p2} never）[/]'
+mode_default_cleared = '[{muted}]· 文件夹默认模式已清除 — 模式恢复为仅本次会话[/]'
+no_modes_installed = '[{muted}]· 未安装 {p1} 模式[/]'
+mode_leave_hint = '[{muted}]  /{p1} off 退出 · 文件夹默认：/{p2} always · 下次直接进入：{p3}[/]'
+mcp_ready_server_s_tools = '[dim]· mcp 已就绪：{p0} 个服务器，{p1} 个工具[/]'
+failed_mcp_for_details = ' [{muted}]（{p1} 个失败 — /mcp 查看详情）[/]'
+artifacts_static = '[dim]· 作品：静态文件（file://）— /artifact live on 开启实时更新[/]'
+artifacts_live_at = '[dim]· 作品实时预览地址：{p0} — 重新生成时自动刷新[/]'
+lsp_ready = '[dim]· lsp 已就绪（{p0}）— {p1} 个工具[/]'
+lsp_unavailable = '[dim]· lsp 不可用：{p0} — grep 和 read_file 照常可用；/lsp 有更多说明[/]'
+dream_done = '[{muted}]🌙 rocky 已整理 {p1} 个历史会话 — 新增 {p2} 条事实，更新 {p3} 条 · /memory 浏览{p4}[/]'
+proposals_none = '[{muted}]没有待审阅提案 — rocky 在整理时发现反复出现的模式后会起草技能[/]'
+skill_installed = "[{violet}]✦ 技能 '{p1}' 已安装[/] [dim]→ {p2} · 下次会话加载（/skills）[/]"
+archived_kept_under_proposals_archived = "[{muted}]· 已归档 '{p1}' — 保留在 proposals/archived[/]"
+later_proposals_when_you_re_ready = '[{muted}]· 稍后处理 — 准备好后用 /proposals[/]'
+last_run_md_beside_the_routine = 'last-run.md（例行任务旁）'
+routines_none_due = '[{muted}]没有到期的例行任务 — 将按各自周期再次到期[/]'
+routine_lease_granted = '[{violet}]✦ 自动运行授权已授予[/] [dim]— {p1} 自动运行，限 7 天或 ${p2:.2f}，先到者为准；可在此卡片续期[/]'
+turned_off_re_enable_in_its_routine_toml = '[{muted}]· {p1} 已关闭 — 可在其 routine.toml 中重新开启[/]'
+later_routines_when_you_re_ready = '[{muted}]· 稍后处理 — 准备好后用 /routines[/]'
+loop_paused_approval = '''
+[{amber}]{p1} 循环 #{p2} 已暂停[/] [dim]— 第 {p3} 次检查需要批准[/] {p4}
+  [{lavender}]/permission yolo[/] [dim]（或 shift+tab 切到 yolo）恢复并无人值守运行 · [/][{lavender}]/loop allow {p7}[/] [dim]决定本次调用 · [/][{lavender}]/loop resume {p9}[/] [dim]不授予权限直接重试[/]'''
+loop_list_row = '[{muted}]{p1} 循环 #{p2} · {p3} · {p4} 次检查 · 已花费 {p5}{p6:.2f} · /loop stop 结束 · /loop {p7} max {p8}2 … 设置上限[/]'
+loop_no_budget = '无预算上限 — 持续运行至 /loop stop 或会话结束'
+rocky_set_it_up = ' [dim]（rocky 已设置 — “{p0}”）[/]'
+loop_ticks_never_prompt = "\n  [dim]定时检查不会弹出审批 — 需要批准时会暂停循环。[/][{lavender}]/permission yolo[/][dim]（或 shift+tab）恢复 · [/][{lavender}]/loop allow[/][dim] 决定一次调用 · 当前模式 {p2}[/]"
+loop_started = '[{violet}]{p1} 循环 #{p2}[/]{p3} [dim]· 每 {p4} · {p5} · 当前每次约 {p6}{p7:.4f}（前缀约 {p8:,} tokens，缓存命中）· 首次检查在 {p9} 后[/]{p10}'
+loop_ceiling_hint = '  [{muted}]需要上限？/loop {p1} for 3h … · /loop {p2} max {p3}2 … · /loop {p4} x12 …（仅设置后生效）[/]'
+loop_stopped_by_rocky_tick_s = '[{muted}]✓ rocky 已停止循环 #{p1} · {p2} 次检查 · {p3}{p4:.2f}[/]'
+loop_paused_loop_resume_brings_it_back = '[{muted}]‖ 循环 #{p1} 已暂停 — /loop resume {p2} 恢复[/]'
+loop_is_already_paused = '[{muted}]· 循环 #{p1} 已处于暂停状态[/]'
+loop_resumed = '[{violet}]▶ 循环 #{p1} 已恢复[/] [dim]— 对话空闲时运行下次检查[/]'
+loop_isn_t_waiting_on_an_approval = '[{muted}]· 循环 #{p1} 没有等待审批的调用[/]'
+allowed_for_this_session = '已允许本次会话使用'
+that_call_may_run_once = '已允许该调用运行一次'
+loop_resumed_retry = '[{violet}]▶ 循环 #{p1} 已恢复[/] [dim]— {p2}；对话空闲时下次检查会重试[/]'
+loop_stays_paused = '[{muted}]· 循环 #{p1} 保持暂停 — [/][{lavender}]/loop resume {p3}[/] [dim]不授予权限直接重试 · [/][{lavender}]/permission yolo[/] [dim]（或 shift+tab）恢复 · [/][{lavender}]/loop stop {p6}[/] [dim]结束[/]'
+model_unknown = '未知或不明确 — /model 查看可选项，/model all 查看完整目录'
+tools_off_plain_responder = ' [dim]（工具已关闭 — 仅回复）[/]'
+sees_images_paste_or_ctrl_v_to_attach = ' [dim]· 支持图片 — /paste 或 ctrl+v 添加[/]'
+model_applies_from_the_next_reply = '[{violet}]✦ 模型 → {p1}:{p2}[/]{p3} [dim]从下次回复生效[/]'
+preflight_not_ready_model_unchanged = '[{amber}]✦ {p1} 预检 — 未就绪（模型未改变）[/]'
+local_default = '本地默认值'
+context_window_local = '  [{muted}]✓ rocky context_window → {p1:,}（{p2}）— 按本地窗口大小压缩上下文[/]'
+fix_the_line_then_model = '  [{muted}]修复 ✗ 项后运行：[{lavender}]/model {p2}:{p3}[/][/]'
+model_local_note = '[dim]· {p0} 在本机运行 — API 费用 $0，数据保留在你的磁盘上[/]'
+model_cost_note = '[dim]· {p0} · API 费用：每百万 tokens 输入 {p1}{p2:.4g} / 输出 {p3}{p4:.4g} — 切换后缓存重置（首轮全部未命中）[/]'
+model_no_price = '[{amber}]· {p1} 未设置价格 — 请将 API 价格添加到 ~/.rockycode/pricing.toml，否则费用显示为 0。切换后缓存重置。[/]'
+stopped_saved_files_remain = '已停止；保存的文件仍保留'
+already_stopped = '已停止'
+artifact_server = '[{muted}]· 作品服务器{p1}[/]'
+no_artifacts_in_this_session_yet = '[{muted}]本次会话尚无作品[/]'
+artifacts_this_session = '[bold {violet}]作品[/] [dim]本次会话[/]'
+artifact_open_number_name_artifact_stop = '[dim]  /artifact open <number|name> · /artifact stop[/]'
+artifact_not_found_artifact_list = '[{amber}]? 未找到作品 — /artifact list[/]'
+saved_copy_live_server_is_stopped = '（已保存的副本；实时服务器已停止）'
+artifact_usage = '[{muted}]/artifact · list · open/edit/history/copy <ID> · cancel · import <file.html> · live on|off · stop[/]'
+undecided_rocky_asks_on_first_artifact = '尚未决定 — 首个作品生成时询问'
+artifact_status = '''
+[bold {violet}]作品[/] [{lavender}]{p2}[/]{p3}
+  [dim]本次会话已保存 {p4} 个 · {p5} 个浏览器连接
+  /artifact list | open <number|name> | stop | live on|off[/]'''
+rocky_thinking = '♪ rocky 正在思考'
+context_squeezed_tokens = '  [dim]♻ 上下文已压缩：约 {p0:,} → 约 {p1:,} tokens（{p2}）[/dim]'
+cache_evicted = '  [{muted}]↺ 空闲 {p1:.0f} 分钟后上游清除了提示缓存 — 本轮重新读取前缀（命中 {p2:,}/{p3:,} tokens）[/]'
+context_reminder = '  [dim]◐ 上下文约占 {p1} 的 {p0:.0%} — 超过一半后模型表现可能下降。用 [/][{lavender}]/task new <说明>[/][dim] 开一个新任务，或继续（接近满额时自动压缩）。[/]'
+step_s_in_out_cache_hit = '[dim]· {p0} 步 · 输入 {p1:,} / 输出 {p2:,} · 缓存命中 {p3:,}[/]'
+link_target_missing_moved_or_renamed = '[dim]· 链接目标不存在（已移动或重命名？）：{p0}[/]'
+doc_link_not_opened = '[dim]· 未通过点击打开 — 仅自动打开可阅读文件（md/pdf/…）和网页链接：{p0}[/]'
+prices_unset = ' [dim]（未设置价格）[/]'
+search_fees_incomplete = ' [dim]（搜索费用估算不完整）[/]'
+permission_help = '''
+  [{lavender}]/permission [yolo|ask|careful][/]  审批模式 — 不带参数可打开菜单
+     [dim]也可按 shift+tab 循环切换，或点击状态栏中的 🔒 标记[/]
+     [dim]YOLO 自动批准工具调用，不会停下来问；静态限制仍然生效。
+     只有你能批准的步骤会先搁置，等你决定：点 ⏸ 标记，或输入 /parked。
+     需要你回答或选择时，仍会询问。[/]'''
+welcome = '''
+[bold {purple}]♪♫ rocky ▸[/]
+你好！我是 rocky。你来提问，我们一起动手做。amaze!
+[{muted}]试试：“阅读 README 并解释这个仓库”[/]'''
+loop_help = '''
+[bold {violet}]循环检查[/] [dim]— rocky 在本次对话中按间隔检查[/]
+  [{lavender}]/loop 5m <prompt>[/]           每 5 分钟，直到你停止
+  [{lavender}]/loop 10m for 3h <prompt>[/]   指定时长 · [{lavender}]x12[/] 检查次数 · [{lavender}]max $2[/] 费用上限（仅设置后生效）
+  [{lavender}]/loop[/] 列表 · [{lavender}]/loop stop|pause|resume|allow \[id][/]
+  [dim]例如：/loop 5m 检查 results/run3 是否有 summary.json；有则报告关键数据，报告后返回 LOOP DONE。[/]
+  [dim]定时检查不会弹出审批；需要批准时会暂停循环。/permission yolo（或 shift+tab）恢复 · /loop allow 决定一次调用 · 在副本上过夜执行 → /goal · 每次启动 → /routines[/]'''
+permission = '审批模式'
+careful = '谨慎'
+ask = '询问'
+perm_hint = 'shift+tab · 或点击状态栏标记'
+perm_tooltip = '点击切换审批模式 — shift+tab 循环切换'
+perm_switch = '随时切换：shift+tab 循环切换，或点击状态栏中的 🔒 标记（也可用 /permission）'
+sends_to = ' [dim]（发送 {p0} 至 {p1}）[/]'
+plan = '   [{violet}]📋 计划[/]'
+open = ' · {p0} 个已打开'
+artifact = '   [{violet}]▣ {p1} 个作品{p2}{p3}[/]'
+loop_ticking = '   [{violet}]{p1} 循环 #{p2} 检查中…[/]'
+next = ' · 下次 {p0:%H:%M}'
+paused = ' · 已暂停'
+loop = '   [{violet}]⏱ {p1} 个循环{p2} · {p3}{p4:.2f}{p5}[/]'
+lines = '{p0} 行'
+chars = '{p0} 字符'
+copied = '⧉ 已复制 {p0}'
+chat = '♪ 对话'
+resumed_msgs = '[dim]· 已恢复 {p0} · {p1} · {p2} 条消息[/]'
+routine_running_sandboxed = '[{muted}]⏰ 例行任务 {p1} 运行中（沙盒）…[/]'
+routine_failed = '[{amber}]⏰ 例行任务 {p1} 失败：{p2}[/]'
+routine_see = '[{muted}]🌙 例行任务 {p1}：{p2} · ${p3:.4f} · 查看 {p4} · {p5}[/]'
+loop_tick = '[{muted}]{p1} 循环 #{p2} · 第 {p3} 次检查 · {p4:%H:%M}[/]'
+loop_tick_error = '✗ 循环 #{p0} 第 {p1} 次检查：{p2}'
+loop_quiet_last = '[{muted}]{p1} 循环 #{p2} · 无更新 ×{p3} · 上次 {p4:%H:%M}[/]'
+loop_tick_header = '[{violet}]{p1} 循环 #{p2} · 第 {p3} 次检查 · {p4:%H:%M} · {p5}[/]'
+loop_done = '[{violet}]{p1} ✓ 循环 #{p2} 已完成 · {p3:%H:%M}[/]'
+loop_stopped_tick_s = '[{violet}]{p1} ✓ 循环 #{p2} 已停止[/] [dim]— {p3} · {p4} 次检查 · {p5}{p6:.2f}[/]'
+loop_stopped = '[{muted}]✓ 循环 #{p1} 已停止 · {p2} 次检查 · {p3}{p4:.2f}[/]'
+loop_isn_t_paused = '[{muted}]· 循环 #{p1} 未暂停[/]'
+preflight = '[{violet}]✦ {p1} 预检 — {p2}[/]'
+fix = '    [{lavender}]修复：{p1}[/]'
+verified = '已验证'
+artifact_open_count = '{p0} 个已打开'
+saved = '已保存'
+live = '实时'
+static = '静态'
+opened = '[{muted}]· 已打开 {p1}{p2}[/]'
+static_file = '静态（file://）'
+0_in_out_local = '[{muted}]Σ $0 · 输入 {p1:,} · 输出 {p2:,} · 本地[/]'
+in_out_cache = '[{muted}]Σ {p1}{p2:.4f} · 输入 {p3:,} · 输出 {p4:,} · 缓存 {p5:.0f}%{p6}[/]'
+yolo_host_warning = '''
+[bold {amber}]⚠ YOLO 直接在你的机器上运行[/] [dim]— 工具调用会自动批准，安装、网络访问和 git push 都会实际执行。静态限制仍然生效。[/]
+  [dim]需要隔离？→ [/][{lavender}]/sandbox on[/][dim] 在临时容器内运行工具：离线，不修改你的原始文件。[/]'''
+permission_weakened = "此文件夹的 .rockycode/config.toml 将审批模式放宽为 '{mode}'；工具审批提示比默认设置更少。（可查看状态栏标记）"
+delivery_mode = '[dim]发送：{mode}[/]'
+queue_count = '[dim]{count} 条排队[/]'
+queue_paused = '[dim]{count} 条排队 · 已暂停[/]'
+queue_usage = '[dim]用法：/queue [on|off|resume|clear]（排队／打断／恢复／清空）[/]'
+queue_state_paused = '已暂停'
+queue_state_ready = '就绪'
+queue_summary = '发送：{mode} · 队列：{count} 条待处理 · {state}'
+message_queued = '[dim]已排队 ▸ {text} · /queue[/]'
+message_unsent = '[dim]{error} · 未发送：{text}[/]'
+leaving = 'rocky 正在退出'
+
+[app.status]
+thinking = '[italic {violet}]{note} 思考中…[/]'
+responding = '[italic {lavender}]{note} 回复中…[/]'
+tool = '[italic {muted}]⚒ 执行中…[/]'
+compacting = '[italic {muted}]♻ 压缩上下文…[/]'
+amazed = '[bold {violet}]✦ amaze! {note}[/]'
+error = '[{red}]✗ 出错了[/]'
+
+[app.note]
+yolo = 'YOLO — 自动批准工具调用，不会停下来问；静态限制仍然生效；只有你能批准的步骤会搁置等你决定（/parked）；需要你回答或选择时，仍会询问（esc 可停止本轮）'
+careful = '谨慎 — 写入和命令均先询问（esc 可停止本轮）'
+ask = '询问 — 高风险操作先询问（esc 可停止本轮）'
+
+# ---- help: one line per slash command (tui/commands.py joins them in table order) ----
+[exit]
+saved = '[bold {purple}]♪ 会话已保存[/] · [bold]{sid}[/] · “{title}” · 📁 {folder} · {count} 条消息'
+resume = '  继续这次会话：[{lavender}]rockycode --resume {sid}[/]'
+browse = '  或浏览全部会话：[{lavender}]rockycode --resume[/]'
+loops = '  [dim]⏱ {count} 个循环{s}已随会话结束 — 循环只在 rocky 运行时存在[/]'
+
+[help]
+title = '[bold {violet}]命令[/]'
+help = '  [{lavender}]/help[/]    显示帮助'
+task = '  [{lavender}]/task[/]    关联任务 — new <交接内容> · open <id> · list · send <id> <消息> · inbox · use · dismiss'
+plan = '  [{lavender}]/plan[/]    一起制定计划 — 探索、讨论、修订后批准'
+goal = '  [{lavender}]/goal \[objective][/]  自主执行 — 计划 → 确认 → 执行，独立视图（需要 Docker）'
+loop = '  [{lavender}]/loop 5m <prompt>[/]  在本次对话中每 5 分钟检查；/loop 列表 · stop · pause · allow'
+research = '  [{lavender}]/research[/]  研究模式 — deep-research · paper-reading · whiteboard'
+learn = '  [{lavender}]/learn[/]   学习模式 — rocky 带你学习论文、代码库或概念'
+model = '  [{lavender}]/model[/]   切换服务商和模型 · 添加或更换 key（deepseek · glm · kimi · minimax · stepfun · qwen · mimo · openrouter = 免费 · ollama = 本地，$0）'
+paste = '  [{lavender}]/paste[/]   添加剪贴板图片（或在输入框按 ctrl+v）。视觉模型直接读取图片（deepseek-flash 支持）；纯文本模型通过 deepseek-flash 或你的 CLI 获取图片描述（/config image mmx）'
+sandbox = '  [{lavender}]/sandbox[/]  on | off | status — 在容器中隔离工具'
+lsp = '  [{lavender}]/lsp[/]     语言服务器桥接（实验性）— 状态与设置方法'
+artifact = '  [{lavender}]/artifact[/]  作品面板 · 预览 · 修改 · 版本 · 项目/会话'
+prompt = '  [{lavender}]/prompt[/]  查看 rocky 的系统提示'
+mcp = '  [{lavender}]/mcp[/]     查看已连接的 MCP 服务器及工具'
+skills = '  [{lavender}]/skills[/]  查看已安装技能'
+memory = '  [{lavender}]/memory[/]  查看 rocky 的记忆'
+proposals = '  [{lavender}]/proposals[/]  审阅整理生成的技能提案（批准或归档）'
+routines = '  [{lavender}]/routines[/]  运行或授权到期的例行任务（定期、沙盒、预算限制）'
+remember = '  [{lavender}]/remember <note>[/]  保存记忆（反馈）'
+config = '  [{lavender}]/config \[key] \[value][/]  查看或设置偏好 — ui_language 界面语言 · language 回复语言 · auto|en|zh（重启生效）'
+effort = '  [{lavender}]/effort [off|low|high|max][/]  思考强度 — 下次回复生效'
+shell = '  [{lavender}]! <cmd>[/]  运行 shell 命令；输出进入 rocky 上下文'
+clear = '  [{lavender}]/clear[/]   清屏（rocky 仍记得这段对话）'
+exit = '  [{lavender}]/exit[/]    退出（也可 ctrl+q）'
+parked = '  [{lavender}]/parked[/]  只有你能批准、YOLO 没有停下来问而搁置的步骤 — 在这里决定'
+queue = '  [{lavender}]/queue [on|off|resume|clear][/]  工作中发来的消息：打断（off，默认）或等当前轮结束后执行（on）· 查看、恢复或清空排队消息'
+
+# ---- commands: feedback printed by slash commands ----
+[commands]
+limit_pinned = '已立即生效，/model 切换后仍保持固定值'
+limit_model = '已立即生效，跟随模型设置（{p0:,}）'
+next_launch = '下次启动时生效'
+each_use = '已立即生效，每次使用时读取'
+model_next_launch = '下次启动时生效；/model 可切换本次会话'
+vision_next_switch = '下次 /model 切换或启动时生效'
+restart = '重启后生效'
+config_saved = '[{p0}]✦ 已保存全局设置：{p1} = {p2}[/] [dim]（{p3}）[/]'
+config_title = '[bold {p0}]配置[/] [dim]{p1}[/]'
+config_usage = '[dim]  /config <key> <value> 设置全局配置[/]'
+prompt_title = '系统提示词，在 rockycode/prompts/rocky.py 中编辑'
+skills_empty = '[dim]未找到技能（.claude/skills、.rockycode/skills、~/.claude/skills、~/.codex/prompts）[/]'
+skills_title = '[bold {violet}]技能[/]'
+memory_off = '[dim]记忆已关闭（--no-memory）[/]'
+memory_empty = '[dim]暂时没有记忆。用 /remember 告诉我，文件保存在 .rockycode/memory/[/]'
+memory_title = '[bold {violet}]记忆[/]'
+memory_usage = '[dim]  rockycode memory show <name> · 文件位于 .rockycode/memory/[/]'
+remember_usage = '[{muted}]用法：/remember <note>[/]'
+remember_saved = '''
+[{violet}]✦ 记住了：[/] {p1}
+[dim]  {p2}[/]'''
+lsp_off = '[dim]lsp 已关闭（--no-lsp）[/]'
+lsp_unconfigured = '''
+[dim]lsp 尚未设置。它是可选的实验功能：
+  把 ROCKYCODE_LSP_COMMAND 设为一个 LSP-over-MCP 服务器的启动命令，然后重启 rocky。
+  lint 和类型检查不需要它 — 修改后由 check_code 运行。[/]'''
+lsp_problem = '[dim]lsp 未运行：{p0}[/]'
+lsp_disconnected = '[dim]lsp：已配置（{p0}），但尚未连接[/]'
+lsp_connected = '''
+[{violet}]lsp[/] [{lavender}]已连接[/]
+  [dim]服务器：{p2}
+  工具：{p3}[/]'''
+mcp_off = '[dim]mcp 已关闭（--no-mcp）[/]'
+effort_applied = '[{violet}]✦ 思考强度 → {p1}[/] [dim]从下一条回复起生效（本次会话）[/]'
+effort_help = '''
+[bold {violet}]思考强度[/] [dim]（本次会话的思考程度）[/]
+  当前：{p1}
+  [dim]/effort off | low | high | max；off 跳过思考，不支持关闭的模型使用最低档；各服务商的档位来自模型注册表[/]'''
+unknown = '[{muted}]?[/] 不认识命令 [bold]{p1}[/]，试试 [{lavender}]/help[/]'
+cleared = '[dim]· 已清屏。rocky 仍记得这段对话 — [/][{lavender}]/task new <说明>[/][dim] 可以开一个新的。[/]'
+docker_missing = '  [{amber}]✗ 未找到 Docker[/]；目标模式需要 Docker 沙箱。请安装并启动 Docker Desktop，再运行 /goal。'
+docker_ready = '  [{violet}]✓ Docker 已就绪[/]'
+docker_stopped = '  [{amber}]✗ Docker 已安装但未运行[/]；启动 Docker Desktop 后再运行 /goal。'
+goal_opening = '''
+[bold {violet}]◆ 目标[/] [dim]正在打开目标视图（规划 → 确认 → 执行），完成后返回这里。[/]
+  [dim]{p1}[/]'''
+goal_help = '[bold {violet}]目标模式[/]：给 rocky 一个目标，它会在仓库的隔离副本中，通过 Docker 沙箱在预算内自主执行，并提交每个里程碑。完成后你可以审查结果分支。'
+goal_example = '  [dim]输入目标，例如：[/] [italic]/goal 修复失败的认证测试[/]'
+goal_retry = '  [dim]Docker 启动后，再运行[/] [{lavender}]/goal {p1}[/] [dim]即可在这里打开目标视图。[/]'
+goal_cancelled = '[{muted}]· 目标已取消，未执行任何操作。[/]'
+goal_result = '[bold {p0}]◆ 目标 {p1}[/] — {p2}'
+goal_milestones = "\n  [dim]里程碑 {p0}/{p1}{p2}[/]"
+goal_isolated = "\n  [{amber}]⚠ 更改位于独立工作树的 {p1} 分支中，当前文件未改动。[/]"
+goal_review = "\n  [dim]审查：[/] [{lavender}]{p1}[/]"
+goal_merge = "\n  [dim]合并：[/]  [{lavender}]git -C {p1} merge {p2}[/]  [dim]（也可以让我操作）[/]"
+goal_log = "\n  [dim]日志：{p0}[/]"
+sandbox_on = '[{lavender}]沙箱[/] [{violet}]已开启[/] [dim]（{p2}…）[/]'
+sandbox_off = '[{lavender}]沙箱[/] [dim]已关闭，/sandbox on 启动[/]'
+sandbox_not_running = '[dim]沙箱未运行[/]'
+sandbox_stopped = '[{lavender}]沙箱[/] [dim]已停止，工具恢复使用主机文件系统[/]'
+sandbox_running = '[dim]沙箱已经在运行[/]'
+sandbox_starting_already = '[dim]沙箱正在启动…[/]'
+sandbox_starting = '[{lavender}]沙箱[/] [dim]正在启动…[/]'
+network_on = '[{violet}]网络已开启[/]'
+network_off = '[dim]离线（无网络），/sandbox on network 允许联网[/]'
+sandbox_started = '[{lavender}]沙箱[/] [{violet}]已开启[/] [dim]容器 {p2}… · 工具在 /workspace 中执行 · [/]{p3}[dim] · /sandbox off 停止[/]'
+sandbox_error = '[{red}]沙箱启动失败：{p1}[/]'
+sandbox_usage = '[{muted}]用法：/sandbox on | off | status[/]'
+clipboard_empty = '剪贴板中没有图片'
+image_attached = '❖ 图片 #{p0} · {p1} · {p2} KB'
+image_cli = '发送时由你的图片 CLI 描述图片'
+image_off = 'image 已关闭，模型只会获知有图片'
+image_ask = '发送时会先询问，再交给视觉服务商描述'
+image_auto = '发送时由 {p0} 描述图片'
+image_no_route = '尚无图片处理方式，模型只会获知有图片'
+image_model_blind = '[{muted}]· {p1} 本身无法查看图片，{p2} · [/][{lavender}]/model deepseek-flash[/][{muted}] 支持图片 · [/][{lavender}]/config image auto|ask|off|<端点>|<命令>[/]'
+image_no_provider = '[{amber}]· image = {p1} 没有匹配到已配置密钥的视觉端点，将发送占位信息。请配置其密钥（deepseek · kimi · minimax · glm · qwen · mimo · stepfun），或 /config image auto[/]'
+image_no_auto = '[{amber}]· {p1} 无法查看图片，且尚无可用的描述方式，将发送占位信息。[/] [dim]启用视觉：[/] [{lavender}]/model deepseek-flash[/] [dim]· 或[/] [{lavender}]/config image mmx[/]'
+image_setup = '''
+[{amber}]· {p1} 无法查看图片，且尚未配置处理方式。可选择：[/]
+  [dim]· 切换至视觉模型 →[/] [{lavender}]/model deepseek-flash[/] [dim]（使用已有密钥；其他视觉服务商：kimi · minimax · glm · qwen · mimo · stepfun；指定：/config image kimi:kimi-k3）[/]
+  [dim]· 使用视觉 CLI →[/] [{lavender}]/config image mmx[/] [dim]（或包含 {{path}} 的完整命令模板）[/]
+  [dim]· 继续纯文本，模型只会获知有图片[/]'''
+image_route_saved = '[{violet}]✦ 已保存全局设置：image = {p1}[/] [dim]· /config image ask 每次询问[/]'
+image_unmatched = "· 没有已配置密钥的视觉端点匹配 '{p1}'，在配置其密钥前图片只会发送占位信息（命令需包含 {{path}}，或是已知工具名，如 mmx）"
+image_looking = '[{muted}]❖ 正在查看 {p1}…[/]'
+image_seen = '[{lavender}]❖ {p1}[/] [dim]由 {p2} 处理[/]'
+image_error = '[{p0}]✗ {p1}：{p2}，将发送占位信息[/]'
+you = '[bold {violet}]你 ▸[/] {p1}'
+image_count = '  [{p0}]❖ {p1} 张图片{p2}[/] [dim]{p3}[/]'
+loop_interrupted = '[{muted}]· 循环 #{p1} 的第 {p2} 次执行被你的消息中断，将在 {p3} 后再次触发[/]'
+shell_usage = '[{muted}]用法：! <shell command>[/]'
+shell_unavailable = '[dim]本次会话没有 bash 工具[/]'
+view_truncated = "\n… [视图中已截断]"
+goal_branch = ' · 分支 {p0}'
+applied = '已立即生效'
+listing = '（正在列出…）'
+source_default = '默认'
+source_global = '全局'
+source_project = '项目覆盖'
+
+# ---- selectors: pickers: model, mode, resume, plan review ----
+[errors]
+auth = 'key 被拒绝（{status}）。key 来源：{key_source}。粘贴一个新的：[{lavender}]/model[/] → 添加或更换 key'
+credit = '提供商账户余额不足（{status}）。去充值，或用 [{lavender}]/model[/] 换一个模型'
+rate_limit = '提供商要求放慢（429）。稍等一下再发送'
+timeout = '{host} 没有及时回应。再发一次，或用 [{lavender}]/model[/] 换一个模型'
+network = '连不上 {host}。检查网络后再发送'
+context = '这段对话对 {model} 来说太长了。开一个新任务：[{lavender}]/task new <说明>[/]'
+model = '提供商不认识模型 {model}（{status}）。用 [{lavender}]/model[/] 选一个'
+request = '提供商拒绝了这次请求（{status}）。key 来源：{key_source}。原因见下一行'
+server = '提供商出了问题（{status}）。稍后再发送'
+
+[key_prompt]
+title = '添加 key · {label}'
+body = '''
+粘贴你的 {label} key。rocky 用一次免费请求测试它，保存后马上使用。
+key 全程隐藏，不会进入对话，也不会发给模型。'''
+placeholder = '粘贴 key，然后按回车'
+save_keychain = '  ✓  保存到系统钥匙串（加密，不是文件）'
+save_file = '  ✓  保存到 key 文件（{where}）'
+cancel = '  ✗  取消'
+guide = '[{muted}]↵ 保存 · esc 取消 · 也可以点击[/]'
+guide_keychain = '[{muted}]↵ 保存到系统钥匙串 · esc 取消 · 也可以点击[/]'
+silent = '这个 key 存在系统钥匙串里，但钥匙串没有给出（已锁定？远程会话？）。解锁后重启，或在这里重新粘贴。'
+keychain = '系统钥匙串'
+keychain_refused = '系统钥匙串没有接受这个 key（已锁定？）。还没有保存。解锁后按回车重试，或选择「保存到 key 文件」那一行。'
+empty = '需要一个 key。粘贴它，或按 esc 取消。'
+testing = '[{muted}]正在测试 key — 向 {host} 发一次免费请求，不计 token…[/]'
+rejected = 'key 被拒绝（401）。检查是否有错字或多余空格，然后重新粘贴。'
+unsaved = '无法保存 key：{reason}'
+saved = '[dim]· key 已保存到 {where}，名称为 {key_env}[/]'
+unverified = '[dim]· 无法连接 {host} 测试 key（离线？）。已保存 — 如果回复时出现 401，可以更换：/model → 添加或更换 key。[/]'
+cancelled = '[dim]· 没有保存 key。随时可以添加：[/][{lavender}]/model[/][dim] → 添加或更换 key[/]'
+pick_title = '添加或更换 key'
+pick_guide = '[{muted}]↑↓ 或点击移动 · ↵ 选择 · esc 取消[/]'
+place_keychain = '✓ key 在系统钥匙串'
+place_file = '✓ key 在 key 文件'
+place_shell = '✓ key 来自 shell'
+place_none = '· 还没有 key'
+place_silent = '✗ 在系统钥匙串里，但没有给出'
+move = '  ⇢ 把 key 文件里的 key 移到系统钥匙串（{count} 个）'
+moved = '[dim]· 已移到系统钥匙串：{names}。key 文件里不再保存它们。[/]'
+not_moved = '· 系统钥匙串没有接受：{names}。它们留在 key 文件里。'
+
+[selectors.key]
+local = '✓ 本地 · 无需密钥'
+set = '✓ 已设置密钥'
+rename = '✓ 已设置密钥（{source} → 请改名为 {target}）'
+
+[selectors.model]
+title = '/model — 选择模型（本次会话）'
+guide = '[{muted}]↑↓ 或点击移动 · ↵ 选择 · esc 取消 · 下次可直接输入：[{accent}]/model <provider>[:model][/][/]'
+vision = '  ·  ❖ 支持图像'
+no_key = '  ·  ✗ 未设置密钥'
+urls = '  ·  {count} 个 URL'
+more = '  … 另有 {count} 项（未设置密钥）— 显示完整目录'
+keys = '  ✎ 添加或更换 key'
+keys_hint = '[{muted}]把 key 粘贴到隐藏输入框 — rocky 会测试、保存并马上使用[/]'
+catalog = '[{muted}]完整目录 — 密钥保存在系统钥匙串或 ~/.rockycode/.env，变量名为 ROCKYCODE_<PROVIDER>_API_KEY（套餐端点：ROCKYCODE_<PROVIDER>_PLAN_API_KEY）[/]'
+details = '[{muted}]上下文 {context} · 输出 {output} · 推理 {reasoning} · 工具 {tools}{vision}'
+
+[selectors.endpoint]
+title = '/model — {model}：选择 URL'
+placeholder = 'https://your-gateway.example/v1  （↵ 保存）'
+guide = '[{muted}]↑↓ 或点击移动 · ↵ 切换 · esc 返回 · 下次可直接输入：[{accent}]/model <endpoint>:<model>[/][/]'
+custom = '  ✎ 自定义基础 URL — {provider} 的自有网关/代理'
+saved = '[{muted}]URL 保存在 ~/.rockycode/endpoints.toml，使用提供商的密钥（{key_env}）[/]'
+edit = '[{muted}]编辑 URL — 保存在 ~/.rockycode/endpoints.toml，使用提供商的密钥（{key_env}）· ↵ 保存[/]'
+
+[selectors.mode]
+title = '/{family} — 选择协作方式'
+guide = '[{muted}]↑↓ 移动 · ↵ 应用 · esc 取消 · 下次可直接输入：[{accent}]/{family} <name>[/][/]'
+off = '  ◉ off — 返回普通 rocky（当前：{active}）'
+local = '  ·  项目本地'
+leave = '[{muted}]退出当前模式 — rocky 恢复默认协作方式。[/]'
+
+[selectors.time]
+now = '刚刚'
+yesterday = '昨天'
+minutes = '{count}分钟前'
+hours = '{count}小时前'
+days = '{count}天前'
+
+[selectors.resume]
+title = '恢复会话'
+search = '输入关键词搜索…'
+project = '当前目录'
+all = '全部目录'
+guide = '[{muted}]范围：[{accent}]{where}[/] · ↑↓ 移动 · ↵ 恢复 · ^a {other} · esc 取消[/]'
+row = '{when}  {title}  {count:>3} 条消息  {session}  📁 {folder}'
+empty = '（未找到会话）'
+
+[selectors.plan]
+discuss = '✎  继续讨论计划'
+approve = '▶  批准并在此执行'
+goal = '◆  作为 goal 运行（沙箱、自主执行）'
+exit = '✗  退出计划模式（保留文件）'
+guide = '''
+[{accent}]↑↓[/] 选择   [{accent}]↵[/] 确认   也可点击选项   [{accent}]esc[/] 继续规划
+[dim]打字会进入你的消息 · pgup/pgdn 滚动[/]'''
+title = '📋 审阅计划 · {path}'
+subtitle = '批准前保持只读'
+
+[selectors.mode.learn]
+description = '导师模式 — 帮助用户理解论文、代码库或概念'
+preview = '适合以理解为目标的会话。材料可以是论文、陌生的 Git 仓库或概念。rocky 负责讲解，用户按自己的节奏学习。'
+
+[selectors.mode.deep-research]
+description = '调研主题 — 先明确范围，广泛收集，中立描述论文'
+preview = '适合在形成论点之前调研研究领域：文献综述、范围探索、核查已有的一手证据。产出是证据图谱，而非结论。'
+
+[selectors.mode.paper-reading]
+description = '深入阅读一篇论文 — 结合 PDF、TeX、笔记及用户仓库，平等讨论'
+preview = '像同事一样精读一篇论文：研究其主张、组织结构、假设、真正的贡献，以及与用户工作的联系。'
+
+[selectors.mode.prove]
+description = '让论断严谨可证 — 用 Lean 形式化、机器验证，并展示绿/黄/红结果'
+preview = '将非正式论断变成机器验证的结论，如数学性质、神经网络保证或注意力恒等式。产出是经编译器认证的 Lean 文件，以验证结果呈现。'
+
+[selectors.mode.whiteboard]
+description = '共同推敲想法或草稿 — 由用户主导创作'
+preview = '适合共同思考想法、设计或手写数学/LaTeX 草稿。先达成共识，再逐步推进，始终保留用户的创作主导权。'
+
+# ---- cards in the chat: the last line of a card that does not have the keyboard, or was answered too fast ----
+[cards]
+waits = '这张卡片在等你 · 消息为空时按 [{colour}]↵[/]，或按 [{colour}]tab[/] 到这里 · 也可点击选项'
+waits_tab = '这张卡片在等你 · 按 [{colour}]tab[/] 到这里 · 也可点击选项'
+early = '稍等 · 然后再按一次 [{colour}]↵[/]'
+pick = '还没有选中任何选项 · 按 [{colour}]↑[/] 或 [{colour}]↓[/] 显示选项，再按 [{colour}]↵[/] · 也可点击'
+
+# ---- permission: the approval card and the permission picker ----
+[parked]
+chip = '[{amber}]⏸ {n} 项待定[/]'
+tool_line = '[{amber}]已搁置[/] [dim]— 等你决定[/]'
+chip_tooltip = '只有你能批准的步骤 — 点击决定，或输入 /parked'
+reminder = '[{amber}]⏸ 等你决定：{n} 项[/] [dim]— YOLO 不会停下来问。[/] [{lavender}]点这里决定[/] [dim]· 或输入[/] [{lavender}]/parked[/]'
+stopped = '[{amber}]⏸ rocky 停止了本轮[/] [dim]— 这一轮有 {n} 步需要你决定[/]'
+none = '[{muted}]· 没有等你决定的步骤[/]'
+title = '等你决定 · {tool}'
+asked_at = 'rocky 在 {when} 想执行这一步'
+run = '▶  现在执行'
+skip = '✗  不执行'
+later = '⏸  稍后再决定'
+keys = '''
+[{colour}]↑↓[/] 选择 · [{colour}]↵[/] 确认 · 也可点击选项 · 打字会进入你的消息
+[{colour}]esc[/] 稍后再决定 · [{colour}]pgup/shift+↑↓[/] 滚动历史'''
+allowed = '[{muted}]· 已批准一次 — rocky 接着执行：[/] [dim]{detail}[/]'
+skipped = '[{muted}]· 不执行：[/] [dim]{detail}[/]'
+pickup_one = '我批准你搁置的那一步。如果还需要，请原样执行，然后完成依赖它的工作。'
+pickup_many = '我批准这 {n} 个搁置的步骤。如果还需要，请逐个原样执行，然后完成依赖它们的工作。'
+not_run_note = '[用户决定不执行这个搁置的步骤：{step}]'
+
+[permission]
+no_arguments = '（无参数）'
+once = '▶  运行一次'
+deny = '✗  拒绝'
+keys = '''
+[{colour}]↑↓[/] 选择 · [{colour}]↵[/] 确认 · 也可点击选项 · 打字会进入你的消息
+[{colour}]esc[/] 取消本轮 · [{colour}]home/end[/] 滚动审批
+[{colour}]pgup/shift+↑↓[/] 滚动历史'''
+title = '批准工具 · {tool}'
+risk_label = '风险：{risk}'
+mode_keys = '''
+[{colour}]↑↓[/] 选择 · [{colour}]↵[/] 切换 · [{colour}]esc[/] 保持
+点击选项切换 · shift+tab 循环切换'''
+mode_title = '❖ 审批模式'
+mode_subtitle = '本次会话 · /config permission 可保存'
+now = '当前'
+
+[permission.risk]
+safe = '安全'
+normal = '常规'
+low = '低'
+medium = '中'
+high = '高'
+dangerous = '危险'
+moderate = '中等'
+risky = '高风险'
+
+[permission.mode]
+careful = '🔒  谨慎'
+ask = '🔒  询问'
+yolo = '🔓  YOLO'
+
+[permission.blurb]
+careful = '写入和命令均先询问'
+ask = '高风险操作先询问'
+yolo = '自动批准工具调用'
+
+[permission.warning]
+download_shell = '将下载内容直接传入 shell 执行'
+pipe_shell = '将输出传入 shell 执行'
+base64 = '解码 base64 并执行'
+eval_substitution = '使用 eval 执行命令替换结果'
+recursive_delete = '递归删除主目录或根路径'
+shell_config = '写入 shell/ssh 隐藏配置文件'
+cron = '修改 cron 定时任务'
+tmp_executable = '将 /tmp 文件设为可执行'
+reverse_shell = '疑似反向 shell'
+shell_substitution = '在 shell 中执行命令替换结果'
+network_substitution = '通过进程替换将网络下载内容传入命令'
+inline_network = '内联解释器脚本从网络获取内容'
+rocky_store = '涉及 rocky 的 key 文件、设置文件，或它的整个文件夹'
+keychain_read = '从系统钥匙串读取已保存的密码'
+key_address = '这个服务商的请求，连同为它保存的 key，会发到这个地址'
+
+# ---- widgets: cards: proposals, routines, loops, goal screen, doc dock ----
+[widgets]
+none = '无'
+on = '开启'
+off = '关闭'
+
+[widgets.proposal]
+install_retire = '✓  停用技能（移至 skills/.archived，可恢复）'
+tested_ok = '[{colour}]已测试 ✓[/][{muted}] · {note}[/]'
+untested = '[{muted}]未测试 — {note}[/]'
+untested_default = '起草时沙箱不可用'
+install_routine = '✓  安装例程（全局 · /routines，授予租期前需点击运行）'
+install_skill = '✓  安装技能（全局 · 下次会话在 /skills 生效）'
+archive = '✗  归档（保留供参考，不再询问）'
+later = '·  稍后（保留在收件箱）'
+empty = '（空草稿）'
+subtitle = '由梦境起草，未经你批准不会安装'
+title = '🌙 梦境提案 · {name}'
+more = "\n…（另有 {count} 行）"
+why = '[{colour}]原因：{reason} · 来源：{evidence}[/]'
+pattern = '（重复出现的模式）'
+past = '过去的会话'
+keys = '[{colour}]↑↓[/] 选择 · [{colour}]↵[/] 确认 · [{colour}]esc[/] 稍后 · 或点击选项 · 打字会进入你的消息'
+
+[widgets.routine]
+renew = '↻  续期自动运行 · 7 天，租期预算 ${budget:.2f}（上期花费 ${spent:.2f}）'
+auto = '↻  自动运行 7 天（租期预算 ${budget:.2f}）'
+run = '▶  立即运行（沙箱）'
+later = '·  稍后'
+off = '✗  关闭'
+subtitle = '仅在你批准后运行，自动运行有租期限制'
+description = '''
+[{colour}]{description}
+频率：{cadence} · 网络：{network} · 授权：{grants} · ≤{steps} 步[/]'''
+keys = '[{colour}]↑↓[/] 选择 · [{colour}]↵[/] 确认 · [{colour}]esc[/] 稍后 · 或点击选项 · 打字会进入你的消息'
+title = '⏰ 例程待运行 · {name}'
+
+[widgets.doc]
+truncated = "\n\n> ✂ 仅显示前 {cap:,} 个字符，文件还有更多内容。"
+back = '[@click=app.doc_back]← 返回[/] · '
+controls = '[{colour}]{back}[@click=app.doc_wider]⇄ 宽度[/] · [@click=app.doc_full]⛶ 全屏[/] · [@click=app.doc_close]✕ 关闭 · esc[/] · {path}[/]'
+
+[widgets.loop]
+allow = '✓  处理正在等待的审批'
+resume = '▶  恢复'
+pause = '‖  暂停'
+stop = '✗  停止'
+leave = '·  保持不变'
+subtitle = '定时执行不会弹出审批提示，循环仅在 rocky 运行时有效'
+next = '下次 {time}'
+paused = '已暂停'
+waiting = '[{colour}]已暂停 · 等待：{detail}[/]'
+last = ' · 上次：{verdict}'
+description = '''
+[{colour}]“{prompt}”
+每 {interval} · {budget} · 已执行 {ticks} 次{last} · {sym}{spend:.2f} · {when}[/]'''
+keys = '[{colour}]↑↓[/] 选择 · [{colour}]↵[/] 确认 · [{colour}]esc[/] 保持 · 或点击选项 · 打字会进入你的消息'
+title = '{face} 循环 #{id} · {status}'
+running = '运行中'
+stopped = '已停止'
+duration = '持续 {duration}'
+max_spend = '上限 {symbol}{amount:g}'
+no_budget = '无预算限制'
+
+[widgets.goal]
+edit = '询问或修改计划…'
+starting = '正在启动…'
+empty = '（无目标）'
+setup = '正在设置隔离工作区…'
+planning = '正在规划…'
+no_plan = '规划器未生成任何里程碑。'
+cancelled = '在计划确认阶段取消'
+thinking = '正在思考你的留言…'
+running = '运行中 · 正在执行里程碑'
+stopped = '已由你停止（保留已完成的里程碑）'
+notice = '[dim]本次运行需要以下权限，请离开前批准：[/]'
+no_permissions = '[dim]无需额外权限（离线，无特权命令）。[/]'
+offline = '关闭（离线）'
+requested = '已请求'
+back = "\n[dim]↵ 返回聊天，请 rocky 帮你审阅或合并，也可以自行执行上述命令。[/]"
+review = '审阅计划 · {count} 个里程碑'
+decision_keys = '[{colour}]y[/] 运行   [{colour}]e[/] 讨论/编辑   [{colour}]n[/] 取消   [dim]· pgup/pgdn 滚动[/]'
+edit_keys = '[dim]输入留言后按[/] [{colour}]enter[/][dim] · 留空则返回[/]'
+status_label = '目标 {status}'
+done_keys = '[{colour}]enter[/] [dim]· 返回聊天[/]   [dim]· pgup/pgdn 滚动[/]'
+heading = '''
+[bold {title_colour}]◆ 目标[/]  [dim]·[/]  [{colour}]{status}[/]
+[dim]{objective}[/]'''
+drafting = '[dim]rocky 正在为此目标起草计划：[/] [{colour}]{objective}[/]'
+running_keys = '[dim]正在自主执行 · [/][{colour}]esc[/][dim] 停止（已完成的里程碑仍会保留提交）[/]'
+plan_heading = "\n[bold {colour}]计划[/] [dim]({count} 个里程碑)[/]"
+summary = "\n[bold {colour}]目标 {status}[/] — {reason}"
+spend = '[dim]{done}/{total} 个里程碑 · 花费 {symbol}{spend:.4f}[/]'
+workspace = '[{colour}]工作区[/] [dim]{path}[/]'
+sandbox = '[{colour}]沙箱[/] [dim]网络 {network} · 正在配置…[/]'
+branch_notice = '[{colour}]⚠ 更改保存在独立工作树的分支 [b]{branch}[/] 中，当前文件未被修改。[/]'
+review_command = '[{colour}]审阅：[/]  [dim]{command}[/]'
+run_command = '[{colour}]运行：[/]  [dim]cd {path}[/]'
+tidy_command = '[{colour}]清理：[/]   [dim]{command}[/]'
+log_path = '[{colour}]日志：[/]    [dim]{path}[/]'
+network_notice = '  [{violet}]🌐 网络[/] — {reason}'
+review_workspace = '[{colour}]在此审阅工作：[/] [dim]{path}[/]'
+blocked = '计划包含已禁止的操作：{action}'
+nothing_ran = '[{colour}]已取消[/] [dim]· 未执行任何操作。[/]'
+user_note = '[b {colour}]你：[/] {note}'
+network_forced_off = '  [dim]· 计划需要网络（{reason}），但网络已被强制关闭，这些步骤将失败[/]'
+
+[widgets.goal.status]
+done = '完成'
+budget = '预算已用尽'
+stalled = '停滞'
+stopped = '已停止'
+error = '错误'
+cancelled = '已取消'
+
+# ---- capability_detail: runtime capability details (sent to serve/desktop clients as detail_key + params too) ----
+[capability_detail]
+core = '文件、目录和 shell 工具'
+skills = '{count} 个技能可用'
+memory = '项目 Markdown 记忆'
+memory_index = '语义检索需要本地 Ollama 嵌入模型；文件记忆不需要'
+web = '已注册搜索、研究和抓取工具；提供商凭证和网络按调用检查'
+mcp_running = '{servers} 个服务、{tools} 个工具；{failed} 个失败或被拒绝，{untrusted} 个项目配置未受信任'
+mcp_pending = '等待启动和审批'
+mcp_untrusted = '项目 MCP 未受信任，未启动；请先检查配置'
+mcp_none = '未配置 stdio MCP'
+artifacts = 'HTML 作品'
+artifacts_desktop = 'HTML 作品；桌面端内置预览，打开浏览器需明确操作'
+goal_review = '分支评审与合并工具；不包含 TUI 的目标规划器'
+loops = '需要宿主的 tick 调度器；目前仅 TUI 支持'
+
+# ---- desktop: the desktop app's own text; exported to apps/desktop/src/shared/catalog.ts by scripts/i18n_desktop.py (keys lose the `desktop.` prefix there) ----
+[desktop]
+preview = '预览'
+newTask = '新任务'
+recentTasks = '最近任务'
+taskList = '任务列表'
+sidebarEmpty = '选择一个目录，开始你的第一个任务。'
+openProject = '打开其他项目'
+workbench = '工作台'
+start = '开始'
+notes = '笔记'
+toggleNotes = '切换笔记'
+dismissError = '关闭提示'
+fixtureBanner = '离线交互测试 · 不调用模型，不执行真实工具'
+opening = '正在打开…'
+chooseWorkspace = '选择工作目录'
+connecting = '正在连接本地运行环境…'
+localFiles = '文件与记录保存在本机'
+noModel = '尚未配置模型'
+newBeginning = '新的开始'
+jumpLatest = '回到最新'
+reasoning = '思考过程'
+
+[desktop.race]
+nav = '田忌赛马'
+title = '田忌赛马：同题比高下。'
+subtitle = '并行比较五次独立运行，再做出你自己的判断。'
+dismissError = '关闭赛马错误'
+loading = '正在加载本地比赛…'
+disconnected = '运行环境已断开，无法启动新比赛。'
+historyFailed = '无法加载比赛记录，请重启应用后再开始。'
+configureRuntime = '请先配置本地运行环境。'
+setupLabel = '比赛设置'
+setupHeading = '01 / 设置任务'
+notUploaded = '未上传'
+sharedTask = '统一任务'
+promptPlaceholder = '让每个模型完成什么？给它们同一份清晰的任务说明。'
+addFolder = '添加任务资料目录'
+promptOnly = '仅提示词'
+removeFolder = '移除任务目录'
+folderHelp = '可选：每道使用独立快照，最多 128 个 UTF-8 文件，每个 256 KiB、总计 2 MiB，目录最多 1,024 个条目。跳过秘密与缓存文件名；含链接、二进制文件或超限内容的目录将被拒绝。不写入原目录。'
+laneHelp = '每个 Rocky 只能读写和列出自己的文件；不提供 Shell 执行、浏览器或 MCP。这不是操作系统沙箱。'
+folderWarning = '纳入的文件内容会发送给所选模型提供商。过滤无法识别所有秘密信息，请使用已检查的小型目录。'
+contender = '参赛模型'
+chooseModel = '选择已配置模型'
+duplicateModels = '请选择五个不同的已配置模型。'
+needFiveModels = '需要五个已配置模型，请在本地 RockyCode 配置中添加并重启。'
+limitSteps = '每道模型调用次数'
+limitTokens = '每次输出 Token'
+limitSeconds = '每道时限（秒）'
+limitsInvalid = '请在上述范围内填写整数限制。'
+fixtureCharge = '离线测试：不会产生付费调用或执行真实工具。'
+charge = '启动 5 个模型，每道最多 {steps} 次模型调用（含工具轮次）。提供商会收取费用；这些限制不是美元硬性费用上限。'
+starting = '正在开始…'
+start = '开始五模型赛马'
+resultsLabel = '比赛结果'
+resultsHeading = '02 / 查看赛道'
+history = '历史'
+noRaces = '还没有比赛'
+loadingHistory = '正在加载历史…'
+loadOlder = '加载更早的比赛'
+emptyTitle = '五个起跑位，同一份任务。'
+emptyHint = '每道显示真实状态、输出与用量，不模拟进度。'
+detailFailed = '无法加载这场比赛，当前草稿已保留。'
+detailRetry = '重新加载详情'
+detailLoading = '正在加载完整结果…加载后即可评价、运行裁判或导出。'
+finishedCount = '已完成'
+inputFiles = '资料文件'
+excluded = '已排除'
+cancelAll = '全部停止'
+interrupted = '应用关闭时本次运行中断。已恢复输出，不会自动重试或产生新费用。'
+aliasHelp = 'A–E 为随机排列的匿名代号。保存人工评分或主动揭示前，模型名称保持隐藏。这只是单个任务的比较，不代表全局排名。'
+finishHeading = '冲线顺序'
+finishHelp = '只按用时排序。快不等于好：请在下方为答案评分。'
+finishWaiting = '旗帜在起点等待。比赛结束后，这里显示冲线顺序。'
+replay = '重播'
+lanesLabel = '五条并行赛道'
+reviewHeading = '03 / 你的独立评价'
+humanSaved = '人工评分已保存'
+humanSeparate = '人工评分独立保存'
+reviewHelp = '每个代号可评分 0–10 分，留空表示弃权。可填写理由。保存不会修改裁判评分。'
+lane = '赛道'
+humanScore = '人工评分'
+abstain = '弃权'
+humanReason = '人工理由'
+reasonPlaceholder = '理由（选填）'
+saveHuman = '保存人工评分'
+unsavedReview = '评价尚未保存'
+reveal = '揭示模型名称与裁判评分'
+judgeHeading = '04 / 可选模型裁判'
+judgeHelp = '仅在你点击后运行。裁判收到随机顺序的匿名输出，不包含模型名称。裁判评价具有主观性，与人工评价分开保存。裁判仅看到有限摘录：答案最多 12,000 字符、前 5 个文件各最多 4,000 字符，并标注截断。可弃权，不属于正式评测。'
+judgeModel = '已配置裁判模型'
+runJudge = '运行裁判'
+offlineFixture = '离线测试'
+paidCall = '会新增付费模型调用'
+judgeHidden = '裁判评分已隐藏。请先保存人工评价，或点击上方主动揭示。'
+exportHeading = '05 / 审核本地导出'
+exportHelp = '保存文件前，请检查完整的脱敏 JSON。当前没有配置网站上传。脱敏无法保证完整，提示词、输出或文件中可能仍有隐私信息。'
+generatePreview = '生成完整导出预览'
+saveBeforeExport = '生成导出前，请先保存人工评价。'
+exportConfirm = '我已检查完整预览中的秘密和隐私信息，确认在本机保存此版本。'
+chooseSaveLocation = '选择本地保存位置…'
+savedLocally = '已保存至本机。未上传。'
+saveCancelled = '已取消保存。未上传。'
+identityHidden = '模型已匿名'
+elapsed = '用时'
+tokens = '输入 / 输出 Token'
+cost = '估算费用（美元）'
+waitingOutput = '等待输出…'
+toolActivity = '工具活动'
+resultFiles = '结果文件'
+filesOmitted = '本预览还省略了 {count} 个文件。'
+noFiles = '暂无文件结果'
+partialPreview = ' · 预览已截断'
+fileTruncated = '文件预览已截断，完整文件保留在本地比赛目录。'
+moreFilesOmitted = '预览还省略了 {count} 个文件。'
+exportWarning = '仅本地导出，未上传。请检查隐私信息。'
+
+[desktop.race.state]
+queued = '等待开始'
+running = '运行中'
+cancelling = '正在停止'
+complete = '已结束'
+cancelled = '已停止'
+error = '失败'
+interrupted = '已中断'
+idle = '尚未运行'
+
+[desktop.race.error]
+invalidRequest = '比赛请求无效'
+requestTooLarge = '比赛请求过大'
+folderPicker = '请通过目录选择器选择资料目录'
+scoresTooLarge = '评分请求过大'
+scoresCoverage = '评分必须覆盖全部候选'
+scoreSchema = '评分格式无效'
+scoreAlias = '候选编号无效'
+scoreRange = '评分须为 0–10 或弃权'
+scoreReason = '评语过长'
+judgeJson = '裁判未返回有效 JSON'
+judgeSchema = '裁判格式无效'
+notFound = '比赛不存在'
+waitStop = '请等待比赛与裁判停止'
+cursor = '历史游标无效'
+judgeModel = '请选择已配置的裁判模型'
+noCandidates = '没有已完成的候选'
+previewChanged = '内容已变更，请重新预览'
+unknownMethod = '未知比赛方法'
+activeRace = '请先完成或停止当前比赛'
+promptLength = '任务长度须为 1–20,000 字符'
+fiveModels = '请选择五个已配置模型'
+distinctModels = '请选择五个不同模型'
+limits = '统一限制无效'
+inputFolder = '输入目录无效'
+timeLimit = '已达时间限制'
+runFailed = '运行失败，请检查模型配置'
+cleanupFailed = '运行资源清理失败'
+filesUnavailable = '无法读取结果文件'
+judgeFailed = '裁判失败或评分格式无效'
+judgeCleanupFailed = '裁判清理失败'
+
+[desktop.runtime]
+fixture = '离线测试模式'
+local = '本地运行环境'
+disconnected = '运行环境已断开'
+title = '运行环境'
+close = '关闭运行环境'
+fixtureDetail = '显式离线测试'
+core = '本地 RockyCode 核心'
+notConnected = '未连接'
+noModel = '未选择模型'
+modelLabel = '模型'
+stage = '当前阶段'
+record = '以下为本次会话最近一次运行的能力记录。'
+noDetail = '无额外说明'
+tools = '当前注册工具（{count}）'
+afterRun = '首次运行任务后显示'
+
+[desktop.error]
+reconnect = '重新连接'
+invalidLanguage = '语言偏好无效'
+saveLanguage = '无法保存语言偏好'
+invalidTheme = '没有这个主题'
+saveTheme = '无法保存主题，界面保持原样'
+
+[desktop.thread]
+renameLabel = '重命名会话'
+deleteLabel = '删除会话'
+confirmDelete = '确认删除'
+
+[desktop.welcome]
+title = '从一个项目开始'
+description = '''
+把资料、思考和下一步工作放在一起。
+你掌握方向，Rocky 协助推进。'''
+write = '记录与编辑'
+chat = '持续对话'
+stop = '随时停止'
+
+[desktop.setup]
+title = '先给 Rocky 配一个模型'
+body = '选择模型来自哪家，然后粘贴它的 key。Rocky 会用一次免费请求测试它，保存在这台设备上，之后不再显示。'
+pick = '提供商'
+hasKey = '已有 key'
+inKeychain = 'key 在系统钥匙串'
+inFile = 'key 在 key 文件'
+keyLabel = 'API key'
+keyPlaceholder = '粘贴 key'
+keychain = '保存在系统钥匙串（加密，不是文件）'
+save = '保存 key'
+testing = '正在测试 key…'
+saved = 'key 已保存。'
+savedKeychain = 'key 已保存到系统钥匙串。'
+keychainSilent = '你的 key 保存在系统钥匙串里，但它没有回应。解锁后重新检查，或在下面粘贴 key。'
+unreached = '无法连接提供商进行测试。'
+add = '添加或更换提供商的 key'
+terminal = '或者在终端里运行一次设置，然后重新检查：'
+copy = '复制'
+copied = '已复制'
+check = '重新检查'
+checking = '检查中…'
+still = '还没有可以运行的模型。'
+
+[desktop.capability]
+core = '基本工具'
+skills = 'Skills'
+memory = '项目记忆'
+memory_index = '语义检索'
+web = '网络工具'
+mcp = 'MCP'
+lsp = '语言服务'
+artifacts = '产物'
+goal_review = '分支审查'
+explore = '子任务探索'
+loops = '定时任务'
+
+[desktop.capabilityState]
+ready = '已就绪'
+registered = '已注册'
+pending = '等待连接'
+partial = '部分就绪'
+failed = '连接失败或已拒绝'
+disabled = '未启用'
+not_configured = '未配置'
+
+[desktop.status]
+idle = '就绪'
+running = '正在处理'
+waiting = '等待你的确认'
+cancelling = '正在停止'
+error = '任务未完成'
+interrupted = '上次任务已中断'
+
+[desktop.approval]
+label = '工具审批'
+title = '允许这次操作？'
+deny = '拒绝'
+allow = '允许一次'
+session = '本会话允许 {label}'
+keys = 'Enter：允许一次 · S：本会话允许 · Esc：拒绝'
+keysWarned = '这一步带有警告：请点击按钮来允许 · Esc：拒绝'
+timeoutHint = '{seconds} 秒无响应将自动拒绝'
+
+[desktop.parked]
+label = '等你决定的步骤'
+title = '等你决定'
+hint = '这些步骤只有你能批准。自动批准模式下 Rocky 不会停下来问，所以它先跳过了这些步骤，继续做其余工作。'
+asked = 'Rocky 在 {time} 想执行这一步'
+run = '现在执行'
+skip = '不执行'
+pickup = '''
+我批准你搁置的那一步。如果还需要，请按原样再执行一次，然后完成依赖它的工作。
+{step}'''
+
+[desktop.empty]
+title = '在这里，推进你的工作。'
+description = '''
+可以从一个问题、一段文字，
+或这个目录中的资料开始。'''
+
+[desktop.suggestion]
+project = '梳理这个项目的结构'
+research = '帮我整理一个研究问题'
+story = '讨论一段故事的大纲'
+
+[desktop.tool]
+running = '运行中'
+cancelled = '已停止'
+interrupted = '上次已中断'
+error = '未完成'
+complete = '已结束'
+blocked = '已阻止：任何模式下都不允许'
+autoAllowed = 'verifier 已自动允许'
+autoDenied = 'verifier 已拒绝'
+parked = '已搁置：等你决定'
+
+[desktop.message]
+cancelled = '已停止 · 已生成的内容保留'
+interrupted = '上次运行已中断，未自动重试'
+
+[desktop.composer]
+busy = '任务进行中，可以先写下一个想法…'
+placeholder = '描述想推进的工作…'
+label = '任务输入'
+stopLabel = '停止任务'
+stopping = '停止中'
+stop = '停止'
+send = '发送任务'
+shortcut = 'Enter 发送 · Shift + Enter 换行'
+configure = '还没有可以运行的模型，请看上方的设置提示。'
+approval = '操作前由你确认'
+busyDelivery = '补充一个想法，选择排队或打断…'
+sendQueued = '排队发送'
+sendInterrupt = '打断并发送'
+
+[desktop.preset]
+button = '预设'
+open = '提示词预设'
+new = '新建'
+saveDraft = '保存草稿'
+empty = '还没有预设。可以保存当前草稿，或新建一条。'
+name = '名称'
+body = '提示词'
+save = '保存'
+cancel = '取消'
+use = '使用'
+edit = '编辑'
+delete = '删除预设'
+confirmDelete = '删除'
+replace = '用这条预设替换当前草稿？'
+replaceConfirm = '替换草稿'
+hint = '使用预设会替换任务输入框里的文字。'
+close = '关闭预设'
+
+[desktop.queue]
+label = '排队消息'
+count = '{count} 条排队消息'
+pausedSuffix = ' · 已暂停'
+resume = '恢复队列'
+withdraw = '撤回'
+withdrawLabel = '撤回：{prompt}'
+
+[desktop.mode]
+label = '审批模式'
+hint = 'Rocky 执行操作前需要确认的程度'
+careful = '逐步审批'
+ask = '标准'
+yolo = '自动批准'
+yoloHint = '自动批准除危险命令外的所有操作'
+help = '审批模式说明'
+carefulDetail = '安全读取直接执行；修改文件、Shell 命令、网络工具和 MCP 工具均先确认。'
+askDetail = '安全读取、工作区内文件修改直接执行；Shell、网络和 MCP 工具先确认。'
+yoloDetail = 'Shell、联网、安装等工具调用无需逐次确认；核心策略列为禁止的命令仍会拦截。只有你能批准的步骤（例如修改 Rocky 自己的设置，或涉及它的 key 文件的命令）不会执行，也不会弹出询问：它们留在任务里等你决定。'
+boundary = '这些选项决定工具调用是否询问，不授予系统权限，也不改变 Shell 沙箱配置。外部服务启动仍单独确认。本会话授权在运行环境重启后失效。'
+codex = 'Codex 将沙箱范围与审批策略分开；其 Auto-review 由另一个模型审查请求。Rocky 也有对应的审查器（verifier），需要在 config.toml 的 [verifier] 表里开启；未开启时，这里的“减少确认”只是跳过工具询问。'
+
+[desktop.delivery]
+label = '忙时发送方式'
+queue = '排队'
+interrupt = '打断'
+hintQueue = '当前轮结束后执行'
+hintInterrupt = '打断不撤销已发生的操作'
+
+[desktop.note]
+saved = '已保存'
+saving = '保存中'
+failed = '保存失败'
+title = '任务笔记'
+close = '收起笔记'
+caption = '留给你的思考与整理'
+placeholder = '''
+在这里记录。
+
+助手不会自动修改这份笔记。'''
+characters = '{count} 字符'
+
+[desktop.language]
+label = '界面语言'
+system = '跟随系统'
+help = '仅切换界面文案，不会修改你的消息、笔记或模型回复。'
+name = '中文'
+tag = 'zh-CN'
+
+[desktop.theme]
+label = '主题'
+system = '跟随系统'
+nebula = '星云'
+
+[desktop.update]
+available = 'RockyCode {version} 已发布。'
+open = '打开下载页'
+later = '以后再说'
+checkOnLaunch = '启动时检查更新'
+help = '只向 rockycode.ai 请求一个很小的版本文件，每天最多一次。不会发送任何关于你的信息，也不会自行安装。'
+checkNow = '立即检查'
+checking = '检查中…'
+upToDate = '已是最新'
+failed = '无法访问更新源'
+saveFailed = '无法保存更新设置'
+
+[desktop.menu]
+about = '关于 RockyCode'
+hide = '隐藏 RockyCode'
+quit = '退出 RockyCode'
+edit = '编辑'
+undo = '撤销'
+redo = '重做'
+cut = '剪切'
+copy = '拷贝'
+paste = '粘贴'
+selectAll = '全选'
+window = '窗口'
+minimize = '最小化'
+zoom = '缩放'
+toggleDevTools = '切换开发者工具'
+checkUpdates = '检查更新…'
+
+[desktop.dialog]
+chooseWorkspace = '选择 RockyCode 工作目录'
+exportRace = '本地导出（未上传）'
+
+[desktop.diagnostic]
+invalidArgument = '参数无效'
+invalidSession = '会话标识无效'
+forbiddenCaller = '不允许的调用来源'
+incompatibleProtocol = '运行协议不兼容'
+chooseWorkspace = '请通过目录选择器选择工作目录'
+invalidApproval = '审批结果无效'
+pythonStart = '无法启动 Python。请指定 ROCKYCODE_PYTHON（Python 3.11+）。'
+pythonExit = 'Python 运行进程已退出，未完成任务将在下次启动时标为中断。'
+disconnected = '运行进程已断开，请重新打开应用。'
+timeout = '运行进程未及时响应。请检查任务状态后重试。'
+messageTooLarge = '运行协议消息过大。'
+invalidProtocol = '无效运行协议'
+requestFailed = '运行请求失败'
+malformedProtocol = '运行进程返回了无效协议，请重新打开应用。'
+runtimeExited = '运行进程已退出。'
+invalidContent = '内容为空或超出允许长度'
+sessionMissing = '会话不存在'
+invalidRequest = '无效请求'
+workspaceMissing = '工作目录不存在'
+documentTooLarge = '文档超出允许长度'
+alreadyRunning = '此会话已有任务正在执行，请先停止'
+runtimeUnavailable = '运行环境不可用'
+workspaceInaccessible = '工作目录已移动或不可访问'
+approvalExpired = '审批请求已经失效'
+parkedGone = '这一步已经不在等待'
+parkStopped = 'Rocky 停止了这一轮：其中有 {count} 步需要你决定。它们在下方等你。'
+unknownMethod = '未知方法'
+taskIncomplete = '任务未完成，请检查运行环境与模型配置。'
+historySave = '记录保存失败，请保留当前内容并检查磁盘空间。'
+cleanupAfterStop = '任务已停止，但部分运行资源未正常关闭；请重启运行环境。'
+cleanup = '部分运行资源未正常关闭，请重启运行环境。'
+requestProcessing = '运行环境处理请求失败'
+configureModel = '还没有可以运行的模型。请在下方添加提供商的 key。'
+missingRuntime = '无法加载 RockyCode 核心。请在仓库里运行 `uv sync`，或将 ROCKYCODE_SOURCE 指向含核心的分支。需要 Python 3.11+。'
+limitationServices = '已接入共享 Runtime；搜索与语义检索仍依赖各自服务配置'
+limitationDesktop = '桌面尚无定时调度、Dream 及 Goal 规划界面'
+limitationPlatforms = '尚未完成 Windows/Linux 执行验收及自包含分发'
+limitationFixture = '不会调用模型或执行真实工具'
+detailCore = '文件、目录和 shell 工具'
+detailMemory = '项目 Markdown 记忆'
+detailSemanticSearch = '语义检索需要本地 Ollama 嵌入模型；文件记忆不需要'
+detailWeb = '已注册搜索、研究与抓取工具；每次调用时检查服务凭证与网络'
+detailPending = '等待启动和审批'
+detailUntrustedMcp = '项目 MCP 尚未受信任，未启动；请先审查配置'
+detailNoMcp = '未配置 stdio MCP'
+detailArtifacts = 'HTML 产物；支持客户端预览及手动在浏览器打开'
+detailBranchReview = '分支审查与合并工具；不含 TUI Goal 规划器'
+detailScheduler = '需要宿主定时调度；目前仅限 TUI'
+presetName = '预设名称无效'
+presetBody = '预设内容为空或超出允许长度'
+presetMissing = '预设不存在'
+presetDuplicate = '已有同名预设'
+presetLimit = '预设数量已达上限'
+presetFields = '预设只保存名称和正文'
+presetFile = '预设文件无法更新'
+requestTooLarge = '请求过大'
+invalidDelivery = '发送方式无效'
+invalidMode = '无效的权限模式'
+modelNotConfigured = '请选择已配置凭证的模型'
+modelNoKey = '这个任务的模型 {model} 还没有 key（{variable}）。请在上方换一个模型，或在“添加或更换提供商的 key”（运行环境的“?”）里添加。'
+modelKeychainSilent = '这个任务的模型 {model} 的 key（{variable}）保存在系统钥匙串里，但钥匙串没有回应。解锁后重启应用，或在“添加或更换提供商的 key”（运行环境的“?”）里重新添加，或在上方换一个模型。'
+requestAuth = 'key 被拒绝（{status}）。key 来源：{key_source}。请在“添加或更换提供商的 key”（运行环境的“?”）里更换，或在上方换一个模型。'
+keyRejected = 'key 被拒绝（401）。请检查是否有错字或多余空格，然后重新粘贴。'
+keyProvider = '请选择提供商并粘贴它的 key。'
+keyUnsaved = '无法把 key 保存到 key 文件。'
+keychainRefused = '系统钥匙串没有接受这个 key，所以没有保存。解锁后再保存，或取消勾选钥匙串，把 key 存到 key 文件。'
+requestCredit = '提供商账户余额不足（{status}）。请去充值，或在上方换一个模型。'
+requestRateLimit = '提供商正在对这个 key 限速（429）。稍等一下再发送。'
+requestTimeout = '{host} 没有及时回应。请再发一次，或在上方换一个模型。'
+requestNetwork = '无法连接 {host}。请检查网络后再发送。'
+requestContext = '这段对话对 {model} 来说太长了。请新建一个任务继续。'
+requestModel = '提供商不认识模型 {model}（{status}）。请在上方换一个模型。'
+requestRefused = '提供商拒绝了这次请求（{status}）。key 来源：{key_source}。'
+requestServer = '提供商出了问题（{status}）。请稍后再发送。'
+modelSwitchWhileRunning = '请先停止此任务，再切换模型'
+deleteWhileRunning = '任务正在进行，先停止再删除'
+approvalDecision = '审批结果必须为 once/session/deny 或布尔值'
+deliveryClosed = '会话正在关闭，消息未发送'
+queueFull = '消息队列已满'
+artifactPath = '无效的 HTML 路径'
+artifactWorkspaceOnly = '仅支持工作区内的 HTML 文件'
+artifactRemote = '不支持远程文件地址'
+artifactNotRegular = 'HTML 文件过大或不是普通文件'
+taskUnknown = '此工作目录中没有该 ID 的任务'
+taskWorkspace = '任务必须属于同一工作目录'
+taskInboxFull = '对方收件箱已满（{limit} 条）'
+taskText = '任务文本长度须为 1–{max} 个字符'
+taskSelf = '请选择另一个任务'
+taskMessageUnknown = '没有该 ID 的收件箱消息'
+artifactTooLarge = 'HTML 文件过大'
+
+[desktop.artifact]
+list = 'HTML 文件'
+preview = 'HTML 预览'
+reload = '重新加载预览'
+external = '在默认浏览器中打开'
+close = '关闭预览'
+hint = '静态预览 · 脚本与外部资源已禁用 · 在浏览器打开将运行原始 HTML（包括脚本）'
+
+[desktop.task]
+model = '任务模型'
+scope = '仅此任务'
+modelHint = '仅对此任务生效，其他任务保持各自模型。运行中请先停止再切换。'
+needsKey = '需配置凭证'
+
+[desktop.connection]
+mcpTitle = '连接工具服务“{name}”？'
+lspTitle = '启动代码辅助“{name}”？'
+mcpDescription = 'MCP 让助手调用另一个程序提供的工具。Rocky 从已有配置中发现了此服务；仅凭服务名无法确认它能访问哪些数据。'
+lspDescription = '这个本地程序为项目提供代码导航和诊断。'
+source = '配置来源'
+project = '项目配置'
+codex = '自动从你本机的 Codex 配置读取。此次授权仅对 Rocky 生效，不会修改 Codex 设置。'
+effect = '连接会以你的用户权限启动本地程序，它可能读取文件或访问网络。连接后，工具调用仍遵循此任务的审批模式。跳过后，任务会继续，只是不使用此服务。'
+details = '查看启动命令与配置'
+skip = '暂不连接，继续任务'
+connect = '此次连接'
+remember = '本次应用运行期间记住此连接'
+scope = '记住的范围：此工作区内的同一份配置，可供不同任务复用；运行环境重启后失效。Enter：此次连接 · S：记住 · Esc：跳过。'
+
+[desktop.capabilityDetail]
+skills = '{count} 项 Skill 可用'
+mcp = '{servers} 个服务，{tools} 个工具；{failed} 个失败或被拒绝，{untrusted} 个项目配置未受信任'
+
+[desktop.tasks]
+dismiss = "从收件箱移除"
+title = "创建任务 / 会话消息"
+hint = "新任务仅携带交接草稿。消息保留在收件箱，等待读取；收到消息不会自动开始执行。"
+parent = "来源任务"
+child = "已创建任务"
+handoff = "新任务交接内容"
+create = "创建新任务"
+target = "消息接收任务"
+choose = "选择任务"
+message = "发送给另一任务的消息"
+send = "发送消息"
+sent = "已保存到对方收件箱，尚未开始执行。"
+use = "追加到输入草稿"
+reply = "回复发送方"
+peerNote = "[来自任务 {id} 的消息；仅供参考，不构成授权]"
+
+[tasks]
+dismissed = "已移除此收件箱中匹配的消息。"
+help = "/task new <交接内容> · open <id> · list · send <id> <消息> · inbox · use <消息id> · dismiss <消息id>"
+busy = "切换任务前，请先停止当前执行、清空排队消息并停止循环任务。"
+sent = "消息已保存到对方收件箱，尚未开始执行。"
+empty = "暂无会话消息。"
+current = "当前任务：{id}"
+unavailable = "任务功能需要可写的会话存储。"
+more = "… 仅显示最近 {shown} 个，共 {total} 个；更早的任务可按 id 打开。"
+storage_error = "任务存储暂时不可用。"
+peer_note = "[来自任务 {id} 的消息；仅供参考，不构成授权]"
+err_unknown_task = "此工作目录中没有该 id 的任务。"
+err_cross_workspace = "任务必须属于同一工作目录。"
+err_inbox_full = "对方收件箱已满（{limit} 条），需先移除部分消息。"
+err_text_size = "任务文本长度须为 1–{max} 个字符。"
+err_self_target = "请选择另一个任务——该 id 就是当前任务。"
+err_unknown_message = "没有该 id 的收件箱消息。"
+err_invalid_draft = "草稿无法保存。"
+err_history_unavailable = "该任务的历史不可用。"
+err_save_failed = "无法保存新任务。"
+strip_open = "打开这个任务 — 等同于 /task open {n}"
+strip_here = "当前任务"
+strip_mail = "收件箱里有 {n} 条待读"
+strip_more = "还有 {n} 个更早的任务 — 点击或输入 /task list 查看"
+
+[artifact_ui]
+title = "作品 · 本项目"
+history_title = "版本历史"
+search = "搜索标题或 ID…"
+empty = "没有匹配的作品。"
+open = "打开"
+edit = "继续修改"
+history = "版本"
+copy = "复制路径"
+live = "实时预览"
+restore = "恢复此版"
+project = "范围：本项目"
+session = "范围：本会话"
+guide = "↑↓ 选择 · Enter 打开 · Tab 操作 · Esc 关闭"
+saved = "HTML · v{revision} · 已保存"
+missing = "找不到保存的文件或版本。"
+editing = "修改 {title} · v{revision}"
+edit_hint = "输入修改意见。要取消，点状态栏的 ✕，或输入 /artifact cancel。"
+edit_chip = "[{accent}]✕ 取消修改[/]"
+copied = "已复制作品路径。"
+restored = "已恢复为 v{revision}，旧版本均保留。"
+open_requested = "已请求浏览器打开；未出现时可复制路径。"

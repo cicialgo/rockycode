@@ -1,0 +1,27 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "rocky",
+  "version": "0.1.0",
+  "description": "Delegate cheap bulk work (translation, summaries, mechanical refactors) to rockycode on DeepSeek.",
+  "author": {
+    "name": "rockycode contributors"
+  },
+  "license": "MIT",
+  "keywords": ["rockycode", "deepseek", "delegation", "mcp"],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Rocky",
+        "shortDescription": "Delegate bulk work to rockycode on DeepSeek.",
+        "longDescription": "Codex calls rocky_exec for full-document translation, long summaries, and mechanical refactors. The default profile is read. write and full run only when you pass them. Task text is sent to DeepSeek.",
+        "developerName": "rockycode contributors",
+        "category": "Developer Tools",
+        "capabilities": ["Read", "Write"],
+        "defaultPrompt": [
+          "Use rocky to translate this document.",
+          "Use rocky to summarize the files I point at."
+        ]
+      }
+    }
+  }
+}

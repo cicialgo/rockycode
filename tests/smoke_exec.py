@@ -27,7 +27,7 @@ sys.path.insert(0, str(_HERE))
 os.environ.setdefault("ROCKYCODE_HOME", tempfile.mkdtemp(prefix="rockyexec-home-"))
 os.chdir(tempfile.mkdtemp(prefix="rockyexec-"))
 
-from rockycode.engine.headless import (
+from rockycode.headless import (
     EXIT_BLOCKED,
     EXIT_DONE,
     SCHEMA,
@@ -56,7 +56,8 @@ def tc(index, id_, name, args):
 
 
 async def stream_from(chunks):
-    for c in chunks:
+    from invariants import completed_chunks
+    for c in completed_chunks(chunks):
         yield c
 
 
@@ -136,7 +137,7 @@ assert any(l["type"] == "turn.finished" for l in lines)
 texts = [l for l in lines if l["type"] == "text"]
 assert texts == [{"type": "text", "text": "all done."}], \
     "deltas must coalesce into one text event per block: " + repr(texts)
-from rockycode.engine.headless import _clip_output
+from rockycode.headless import _clip_output
 clipped = _clip_output("x" * 5000)
 assert clipped["output_truncated"] and clipped["output_chars"] == 5000 \
     and len(clipped["output"]) == 2000, "tool output is a receipt, not a payload"
@@ -200,7 +201,7 @@ assert home not in _scrub(f"error at {home}/secrets/x.py"), "home path must be r
 
 # F5: the result-envelope evidence fields (which the CALLER parses) are scrubbed,
 # not just the event stream — a token in a command URL must not leak in cleartext
-from rockycode.engine.headless import _scrub_obj
+from rockycode.headless import _scrub_obj
 leaky = {"command": "git push https://x:ghp_ABCDEFGHIJKLMNOPQRST1234@github.com/o/r"}
 scrubbed = _scrub_obj([leaky])
 assert "ghp_ABCDEFGHIJKLMNOPQRST1234" not in json.dumps(scrubbed), scrubbed
@@ -214,7 +215,7 @@ print("smoke_exec: envelope evidence fields scrubbed (F5)  ✓")
 # profile reports the posture the caller is trusting (checked above via
 # meta["profile"]["sandbox"/"network"]). Confirm the default is safe:
 import inspect
-from rockycode.engine.headless import run_exec
+from rockycode.headless import run_exec
 sig = inspect.signature(run_exec)
 assert sig.parameters["sandbox"].default is True, "exec must default to sandboxed"
 assert sig.parameters["network"].default is False, "exec must default to network off"
@@ -324,7 +325,7 @@ print("smoke_exec: OK")
 
 
 # 6. profiles: read/write run on the HOST with no shell and no Docker ---------
-from rockycode.engine.headless import PROFILE_TOOLS, host_profile_registry, run_exec
+from rockycode.headless import PROFILE_TOOLS, host_profile_registry, run_exec
 
 reg_r = host_profile_registry(Path.cwd(), (), "read")
 assert set(reg_r) == PROFILE_TOOLS["read"] == {"read_file", "grep", "glob", "view_image"}, set(reg_r)

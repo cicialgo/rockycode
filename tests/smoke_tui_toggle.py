@@ -19,8 +19,22 @@ from textual.widgets import Static
 
 from rockycode.engine.loop import Engine
 from rockycode.engine.tools import Tool
-from rockycode.tui.app import ChatInput, RockyCodeApp
+from rockycode.tui.app import RockyCodeApp
+from rockycode.tui.chatinput import ChatInput
 from rockycode.tui.permission import InlineApproval
+from rockycode.tui import cardkeys
+
+cardkeys.ENTER_GUARD = 0  # the half second is tested in smoke_tui_card_keys.py; here Enter answers a card at once
+
+
+async def come_to_card(pilot, app):
+    """A card the user did not open never takes the keyboard: Enter in the empty message box goes to it."""
+    await pilot.press("enter")
+    for _ in range(80):
+        await pilot.pause(0.025)
+        if isinstance(app.focused, cardkeys.CardKeys):
+            return
+    raise AssertionError("Enter in the empty message box did not bring the keyboard to the card")
 
 
 def has_approval(app):
@@ -42,7 +56,8 @@ def tc(i, id_, name, args):
 
 
 async def stream_from(cs):
-    for c in cs:
+    from invariants import completed_chunks
+    for c in completed_chunks(cs):
         yield c
 
 
@@ -114,9 +129,10 @@ async def main():
             if has_approval(app):
                 break
         assert has_approval(app), "ask mode must prompt after the toggle"
-        await pilot.press("y")
+        await come_to_card(pilot, app)
+        await pilot.press("enter")
         await pilot.pause(0.3)
-        assert ran["n"] == before + 1, "approve(y) should run it"
+        assert ran["n"] == before + 1, "approve should run it"
 
         # Tightening clears the session allowlist; loosening leaves it.
         app._auto_approve.add("bash")

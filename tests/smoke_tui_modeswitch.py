@@ -17,13 +17,18 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 os.chdir(tempfile.mkdtemp(prefix="rockymodeswitch-"))
 
+from rich.text import Text
 from textual.widgets import Static
 
 from rockycode.engine.loop import Engine
 from rockycode.engine.permission import CYCLE, next_mode
 from rockycode.engine.tools import Tool
-from rockycode.tui.app import ChatInput, RockyCodeApp
+from rockycode.tui.app import RockyCodeApp
+from rockycode.tui.chatinput import ChatInput
 from rockycode.tui.permission import InlineApproval, PermissionPicker
+from rockycode.tui import cardkeys
+
+cardkeys.ENTER_GUARD = 0  # the half second is tested in smoke_tui_card_keys.py; here Enter answers a card at once
 
 
 class FakeUsage:
@@ -41,7 +46,8 @@ def tc(i, id_, name, args):
 
 
 async def stream_from(cs):
-    for c in cs:
+    from invariants import completed_chunks
+    for c in completed_chunks(cs):
         yield c
 
 
@@ -117,9 +123,21 @@ async def main():
         await pilot.press("shift+tab")
         assert await wait_until(pilot, lambda: app._permission_mode == "yolo"), \
             "shift+tab did not reach the app (swallowed by the input?)"
-        assert "yolo" in chip(app), f"chip not repainted: {chip(app)!r}"
+        assert Text.from_markup(app._perm_chip()).plain == "🔓 YOLO", app._perm_chip()
+        assert "YOLO" in chip(app) and "no prompts" not in chip(app), \
+            f"chip not repainted: {chip(app)!r}"
+        note = app._permission_note()
+        assert "automatically approves tool calls" in note, note
+        assert "static restrictions still apply" in note, note
+        assert "questions and choices still ask for your input" in note, note
         assert "yolo runs on your machine" in transcript(app), \
             "switching to yolo must still print the host warning"
+        assert "no prompts" not in transcript(app), "YOLO copy must not promise to skip all input"
+
+        await enter(pilot, app, "/help")
+        assert await wait_until(pilot, lambda: "YOLO automatically approves tool calls" in transcript(app))
+        assert "static restrictions still apply" in transcript(app)
+        assert "Questions and choices still ask for your input" in transcript(app)
 
         await pilot.press("shift+tab")
         assert await wait_until(pilot, lambda: app._permission_mode == "careful"), \
@@ -131,6 +149,14 @@ async def main():
         await pilot.click("#permchip")
         assert await wait_until(pilot, lambda: len(app.query(PermissionPicker)) == 1), \
             "clicking the chip must open the picker"
+        yolo_row = str(app.query_one("#perm-mode-2", Static).render())
+        assert "YOLO" in yolo_row and "automatically approves tool calls" in yolo_row, yolo_row
+        for width, height in ((80, 24), (60, 20)):
+            await pilot.resize_terminal(width, height)
+            await pilot.pause(0.1)
+            assert app.query_one("#prompt").region.bottom <= height, "picker clipped the input"
+            assert app.query_one("#permchip").region.bottom <= height, "picker hid the status chip"
+        await pilot.resize_terminal(100, 34)
         await pilot.press("escape")
         assert await wait_until(pilot, lambda: not app.query(PermissionPicker))
         assert app._permission_mode == "ask", "esc must keep the current mode"
@@ -162,7 +188,9 @@ async def main():
         assert app._permission_mode == "ask", \
             "shift+tab must not move the goalposts while a prompt is waiting"
         assert len(app.query(InlineApproval)) == 1, "the approval must still be up"
-        await pilot.press("n")
+        await pilot.press("enter")  # the card waits for the user: Enter in the empty message goes to it
+        assert await wait_until(pilot, lambda: isinstance(app.focused, InlineApproval))
+        await pilot.press("down", "down", "enter")
         await pilot.pause(0.3)
 
     print("TUI MODESWITCH SMOKE OK — shift+tab cycles, chip + /permission open the picker, "

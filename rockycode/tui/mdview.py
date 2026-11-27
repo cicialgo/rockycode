@@ -18,6 +18,7 @@ from rich.markup import escape
 from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Markdown, Static
 
+from rockycode.i18n import tr, resolve_locale
 from rockycode.palette import MUTED
 from rockycode.tui.mdterm import rocky_markdown_parser
 
@@ -29,7 +30,7 @@ READ_CAP = 200_000  # chars — keeps a giant log paste from freezing the dock
 WIDTHS = ("45%", "62%", "30%")  # ⇄ cycles; the CSS default matches WIDTHS[0]
 
 
-def read_doc(path: Path, cap: int = READ_CAP) -> str:
+def read_doc(path: Path, cap: int = READ_CAP, *, language: str = "en") -> str:
     """File → markdown for the dock. .txt is fenced so it stays verbatim;
     oversized files are cut at `cap` chars with an honest tail note."""
     text = path.read_text(errors="replace")
@@ -39,7 +40,7 @@ def read_doc(path: Path, cap: int = READ_CAP) -> str:
     if path.suffix.lower() == ".txt":
         text = f"````text\n{text}\n````"
     if truncated:
-        text += f"\n\n> ✂ showing the first {cap:,} characters — the file has more."
+        text += tr("widgets.doc.truncated", language, cap=cap)
     return text
 
 
@@ -47,7 +48,8 @@ class DocDock(Vertical):
     """Right-hand reading pane. Keeps a back-stack so links inside a docked
     doc (routed through the same click policy by the app) navigate in place."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, language: str = "en") -> None:
+        self._language = resolve_locale(language)
         super().__init__(id="docdock")
         self._stack: list[Path] = []
         self.width_i = 0
@@ -78,13 +80,11 @@ class DocDock(Vertical):
 
     async def _show(self) -> None:
         path = self._stack[-1]
-        await self.query_one("#docdock-md", Markdown).update(read_doc(path))
+        await self.query_one("#docdock-md", Markdown).update(read_doc(path, language=self._language))
         self.border_title = f"♪ {escape(path.name)}"
-        back = "[@click=app.doc_back]← back[/] · " if len(self._stack) > 1 else ""
+        back = tr("widgets.doc.back", self._language) if len(self._stack) > 1 else ""
         self.query_one("#docdock-head", Static).update(
-            f"[{MUTED}]{back}[@click=app.doc_wider]⇄ width[/] · "
-            f"[@click=app.doc_full]⛶ full[/] · "
-            f"[@click=app.doc_close]✕ close · esc[/] · {escape(str(path))}[/]"
+            tr("widgets.doc.controls", self._language, colour=MUTED, back=back, path=escape(str(path)))
         )
         self.query_one("#docdock-body", VerticalScroll).scroll_home(animate=False)
 

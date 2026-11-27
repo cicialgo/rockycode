@@ -14,6 +14,7 @@ import sys
 import tempfile
 import types
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
@@ -21,7 +22,7 @@ os.chdir(tempfile.mkdtemp(prefix="rockygoalscreen-"))
 
 from textual.app import App
 
-from rockycode.engine.goal_session import GoalSummary, Permits
+from rockycode.goal.session import GoalSummary, Permits
 from rockycode.tui.goal_screen import GoalScreen
 
 
@@ -207,10 +208,12 @@ async def main():
         inp = app.query_one(ChatInput)
         inp.focus()
         inp.text = "/goal make the readme nicer"
-        await pilot.press("enter")
-        # the goal screen should push on top of chat
-        assert await wait_until(pilot, lambda: any(isinstance(s, GoalScreen) for s in app.screen_stack)), \
-            "/goal should open the goal screen"
+        # A faked readiness probe must suffice even on a host without Docker.
+        with patch("shutil.which", return_value=None):
+            await pilot.press("enter")
+            # the goal screen should push on top of chat
+            assert await wait_until(pilot, lambda: any(isinstance(s, GoalScreen) for s in app.screen_stack)), \
+                "/goal should open the goal screen"
         gs = goal_screen(app)
         assert await wait_state(pilot, gs, "confirm"), gs._state
         await pilot.press("y")
@@ -222,6 +225,32 @@ async def main():
         assert await wait_until(pilot, lambda: any(
             m.get("role") == "user" and "autonomous goal" in str(m.get("content", ""))
             for m in eng.history)), "chat history should carry the goal recap for the model"
+
+    # --- real readiness probe: missing CLI / stopped daemon guide, never run ---
+    for executable, diagnostic in ((None, "Docker not found"),
+                                   ("/fake/docker", "Docker installed but not running")):
+        eng = Engine(model="fake", client=client, workdir=Path.cwd())
+        app = RockyCodeApp(eng, permission="yolo")
+        be = FakeBackend()
+        app._make_goal_backend = lambda obj: be
+        proc = types.SimpleNamespace(wait=AsyncMock(return_value=1))
+        spawn = AsyncMock(side_effect=FileNotFoundError() if executable is None else None,
+                          return_value=proc)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(0.1)
+            inp = app.query_one(ChatInput)
+            inp.focus()
+            inp.text = "/goal make the readme nicer"
+            with patch("shutil.which", return_value=executable), \
+                    patch("asyncio.create_subprocess_exec", spawn):
+                await pilot.press("enter")
+                assert await wait_until(pilot, lambda: any(
+                    diagnostic in str(w.render()) for w in app.query("Static"))), diagnostic
+            spawn.assert_awaited_once()
+            assert spawn.call_args.args == ("docker", "info")
+            assert not any(isinstance(s, GoalScreen) for s in app.screen_stack)
+            assert not be.setup_called and be.ran_plan is None, "unavailable Docker must never start a goal"
+            assert app.query_one(ChatInput).has_focus, "guidance should leave chat usable"
 
     print("TUI GOAL-SCREEN SMOKE OK — plan gate y/e/n · discuss revises · events · summary · back to chat · /goal wiring. amaze!")
 

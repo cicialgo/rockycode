@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
 from rockycode.engine.redact import redact
+from rockycode.engine.file_access import FileAccessPolicy, read_target
+from rockycode.onboarding import tool_env
 
 MAX_OUTPUT_CHARS = 30_000
 # Seconds before a bash command is killed. Raise it for long jobs (e.g. many
@@ -51,6 +53,9 @@ class Tool:
     # tool that forgets to classify itself (incl. dynamic MCP tools) gets gated
     # rather than silently allowed. See engine/permission.py for tier -> policy.
     risk: str = "risky"
+    # For container-backed file tools, map their absolute workspace paths to
+    # host paths before applying host-owned policies such as the plan carve-out.
+    workspace_root: Optional[Path] = None
 
 
 def _fn_schema(name: str, description: str, params: dict, required: list[str]) -> dict:
@@ -154,11 +159,14 @@ async def _bash(command: str, *, workdir: Path) -> str:
     # start_new_session=True gives the shell its own process group, so on a
     # timeout we can kill the whole tree (curl/wget/… children) — not just the
     # shell, which proc.kill() alone would leave running as orphans.
+    # tool_env(): the user's environment without rocky's stored keys — a
+    # command that could read a key could send it anywhere.
     proc = await asyncio.create_subprocess_shell(
         command,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
         cwd=workdir,
+        env=tool_env(),
         start_new_session=True,
     )
     try:
@@ -216,55 +224,21 @@ def _is_secret_file(p: Path) -> bool:
 def _jail(
     path: str, workdir: Path, allowed_roots: tuple[Path, ...] = (), grants=(),
 ) -> tuple[Optional[Path], Optional[str]]:
-    """Resolve *path* and confine it to *workdir* (plus any *allowed_roots*).
-    Returns (resolved_path, None) on success or (None, error_string) if it escapes.
+    """Legacy bounded path check; write/edit never receive read grants.
 
-    *grants* are resolved paths a live human approval widened the jail to — READS
-    ONLY (write/edit never pass them). Like allowed_roots they can't come from a
-    file, only a launch flag or an in-session approval click, so an untrusted repo
-    can't grant itself out.
-
-    This is a HARD jail inside the tool, not the advisory permission layer:
-    bench/serve/yolo all bypass that layer, so read/write/edit must refuse an
-    escape on their own. resolve() collapses `..` and follows symlink components
-    (a symlink inside workdir that points out, or an absolute path, is caught).
-    strict=False so a not-yet-created write target still resolves. Best-effort
-    against a symlink swapped in after the check (a local race, out of scope for
-    the hostile-model threat model); it fully blocks model-driven `..`/abs/symlink
-    escapes. Reads/writes outside these roots must go through the (gated) bash tool.
-
-    *allowed_roots* are extra in-bounds directories the HUMAN declared at launch
-    (`--allow-dir`), already resolved. Deliberately NOT sourced from a project's
-    `.rockycode/config.toml` — an untrusted repo must never be able to widen its
-    own jail; only an explicit launch-time flag can.
+    Ordinary reads use the live FileAccessPolicy instead. This helper remains
+    bounded in every mode and is not an OS isolation boundary.
     """
-    p = Path(path)
-    if not p.is_absolute():
-        p = workdir / p
-    try:
-        resolved = p.resolve()
-        wd = workdir.resolve()
-    except OSError as e:
-        return None, f"[error] {e}"
-    roots = (wd, *allowed_roots, *grants)
-    if any(resolved == r or r in resolved.parents for r in roots):
-        return resolved, None
-    extra = (
-        f" or a declared --allow-dir root ({', '.join(str(r) for r in allowed_roots)})"
-        if allowed_roots else ""
-    )
-    return None, (
-        f"[blocked] path escapes the working directory: {path}. "
-        f"read/write/edit are confined to {wd}{extra}."
-    )
+    return FileAccessPolicy(workdir, allowed_roots, set(grants)).resolve(path, read=True)
 
 
 async def _read_file(path: str, *, workdir: Path, allowed_roots: tuple[Path, ...] = (), read_grants=None,
-                     offset=None, limit=None) -> str:
-    p, err = _jail(path, workdir, allowed_roots, grants=tuple(read_grants or ()))
+                     offset=None, limit=None, file_access=None) -> str:
+    access = file_access or FileAccessPolicy(workdir, allowed_roots, read_grants or set())
+    p, err = access.resolve(path, read=True)
     if err:
         return err
-    if _is_secret_file(p):
+    if _is_secret_file(Path(path)) or _is_secret_file(p):
         return (
             f"[blocked] refusing to read '{p.name}' — it likely holds secrets "
             f"(.env / credentials / private key). Ask the user for the specific "
@@ -288,15 +262,37 @@ async def _read_file(path: str, *, workdir: Path, allowed_roots: tuple[Path, ...
     return _truncate(numbered)
 
 
+def _own_settings() -> list[Path]:
+    """rocky's own settings files: which model, which address a saved key is
+    sent to, which command describes an image."""
+    from rockycode import config
+    from rockycode.engine import providers
+    return [config.GLOBAL_PATH, providers.MODELS_TOML, providers.PROVIDERS_TOML, providers.ENDPOINTS_TOML]
+
+
 def _secret_block(p: Path) -> Optional[str]:
     """Error string if writing/editing *p* would clobber a likely-secret file,
     else None. Symmetric with read_file's refusal — a model shouldn't be able to
-    overwrite ~/.ssh keys, .env, .npmrc, etc. any more than it can read them."""
+    overwrite ~/.ssh keys, .env, .npmrc, etc. any more than it can read them.
+
+    rocky's own settings files are refused too. They are outside most
+    projects, but a session started in the home directory has them in reach,
+    and a plain file write would skip everything rocky_config asks."""
     if _is_secret_file(p):
         return (
             f"[blocked] refusing to write '{p.name}' — it looks like a secrets / "
             f"credentials file (.env / key / .ssh / .aws). If you truly need this, "
             f"ask the user to do it."
+        )
+    try:
+        own = any(p == settings.resolve() for settings in _own_settings())
+    except OSError:
+        own = False
+    if own:
+        return (
+            f"[blocked] '{p.name}' is one of rocky's own settings files. Change a setting "
+            f"with the rocky_config tool (the user approves each change), or ask the user "
+            f"to edit the file themselves."
         )
     return None
 
@@ -353,18 +349,21 @@ VIEW_ATTACH_PREFIX = "[image-attach] "
 
 async def _view_image(path: str, question: str = "", *, workdir: Path,
                       allowed_roots: tuple[Path, ...] = (), read_grants=None,
-                      vision_active=None) -> str:
+                      vision_active=None, file_access=None) -> str:
     """Put an image in front of the model's eyes. With a vision-capable active
     model (*vision_active* is a live callable set by the engine) the image is
     ATTACHED raw — the model interprets it itself, no describe prompt in the
     middle. Only a text-only model falls back to the sidecar describe route
     (engine/vision.py): the user's image CLI when set, else a keyed vision
-    provider. Same READ jail as read_file — the pixels leave the machine
+    provider. Same live read policy as read_file — the pixels leave the machine
     either way, which is why this tool stays in the 'risky' approval tier
     rather than the auto-allowed read tier."""
-    p, err = _jail(path, workdir, allowed_roots, grants=tuple(read_grants or ()))
+    access = file_access or FileAccessPolicy(workdir, allowed_roots, read_grants or set())
+    p, err = access.resolve(path, read=True)
     if err:
         return err
+    if _is_secret_file(Path(path)) or _is_secret_file(p):
+        return f"[blocked] refusing to read '{p.name}' — it likely holds secrets"
     if not p.is_file():
         return f"[error] file not found: {p}"
     from rockycode.engine.images import IMAGE_EXTS, downscale_for_api
@@ -376,55 +375,72 @@ async def _view_image(path: str, question: str = "", *, workdir: Path,
         return f"{VIEW_ATTACH_PREFIX}{scaled}"
     from rockycode.config import load as load_config
     from rockycode.engine import vision
-    cfg = load_config(workdir)
+    # Project configuration is data, not permission to execute its image CLI.
+    # Explicitly configured user backends remain available, including headless.
+    setting = vision.image_setting(load_config()["image"])
     try:
         desc, source = await vision.describe(
             p, question or "", route="auto",
-            preferred=cfg["image_provider"], template=cfg["image_cli"])
+            preferred=setting.preferred, template=setting.template)
     except vision.VisionError as e:
         return f"[error] {e}"
     return f"[image {p.name} · seen by {source}]\n{desc}"
 
 
-def _walk_files(root: Path):
-    """Files under root, sorted, skipping junk dirs."""
-    stack = [root]
+def _readable(path: Path, access: FileAccessPolicy) -> Path | None:
+    target, err = access.resolve(str(path), read=True)
+    if err or _is_secret_file(path) or _is_secret_file(target):
+        return None
+    return target
+
+
+def _walk_files(root: Path, file_access=None):
+    """Check before traversal/open; resolve symlinks and visit directories once."""
+    access = file_access or FileAccessPolicy(root)
+    stack, seen = [root], set()
     while stack:
-        d = stack.pop()
+        path = stack.pop()
+        target = _readable(path, access)
+        if target is None:
+            continue
         try:
-            entries = sorted(d.iterdir(), reverse=True)
+            if target.is_file():
+                yield path
+            elif target.is_dir() and target not in seen:
+                seen.add(target)
+                stack.extend(e for e in sorted(path.iterdir(), reverse=True)
+                             if e.name not in SKIP_DIRS)
         except OSError:
             continue
-        for e in entries:
-            if e.is_dir():
-                if e.name not in SKIP_DIRS:
-                    stack.append(e)
-            elif e.is_file():
-                yield e
 
 
-def _grep_sync(pattern: str, path: str, include: Optional[str], workdir: Path) -> str:
+def _grep_sync(pattern: str, path: str, include: Optional[str], workdir: Path,
+               file_access=None) -> str:
     try:
         rx = re.compile(pattern)
     except re.error as e:
         return f"[error] bad regex: {e}"
-    root = Path(path) if Path(path).is_absolute() else workdir / path
+    access = file_access or FileAccessPolicy(workdir)
+    root, err = access.resolve(path, read=True)
+    if err:
+        return err
     if not root.exists():
         return f"[error] path not found: {root}"
     matches: list[str] = []
-    for f in _walk_files(root):
+    for f in _walk_files(root, access):
         if include and not fnmatch.fnmatch(f.name, include):
             continue
+        target = _readable(f, access)  # revalidate immediately before opening
+        if target is None:
+            continue
         try:
-            # one read: the handle is closed (no fd leak across many files),
-            # binary detection and decode share the same bytes (no double read)
-            raw = f.read_bytes()
+            raw = target.read_bytes()
             if b"\0" in raw[:8192]:
-                continue  # binary
+                continue
             text = raw.decode(errors="replace")
         except OSError:
             continue
-        rel = f.relative_to(root)
+        rel = f.name if f == root else f.relative_to(root)
         for i, line in enumerate(text.splitlines()):
             if rx.search(line):
                 matches.append(f"{rel}:{i + 1}: {line.strip()[:200]}")
@@ -434,29 +450,77 @@ def _grep_sync(pattern: str, path: str, include: Optional[str], workdir: Path) -
     return "\n".join(matches) if matches else "[no matches]"
 
 
-def _glob_sync(pattern: str, workdir: Path) -> str:
+def _glob_paths(base: Path, parts: tuple[str, ...], access: FileAccessPolicy, ancestors=frozenset()):
+    """Glob without traversing a directory outside the current read policy.
+
+    pathlib/glob followed by result filtering would already enumerate outside
+    directories. This walker gates every step, including literal symlinks.
+    """
+    target = _readable(base, access)
+    if target is None:
+        return
     try:
-        hits = sorted(
-            str(p.relative_to(workdir))
-            for p in workdir.glob(pattern)
-            if not any(part in SKIP_DIRS for part in p.parts)
-        )
-    except (ValueError, OSError) as e:
+        if not parts:
+            if base.exists():
+                yield base
+            return
+        if not base.is_dir():
+            return
+        part, rest = parts[0], parts[1:]
+        if part == "**":
+            yield from _glob_paths(base, rest, access, ancestors)
+            if target in ancestors:
+                return
+            for child in sorted(base.iterdir()):
+                if child.name not in SKIP_DIRS:
+                    yield from _glob_paths(child, parts, access, ancestors | {target})
+        elif not any(char in part for char in "*?["):
+            if part not in SKIP_DIRS:
+                yield from _glob_paths(base / part, rest, access, ancestors)
+        else:
+            for child in sorted(base.iterdir()):
+                if child.name not in SKIP_DIRS and fnmatch.fnmatchcase(child.name, part):
+                    yield from _glob_paths(child, rest, access, ancestors)
+    except (OSError, RuntimeError):
+        return
+
+
+def _glob_sync(pattern: str, workdir: Path, file_access=None) -> str:
+    access = file_access or FileAccessPolicy(workdir)
+    try:
+        requested = read_target("glob", {"pattern": pattern}, workdir)
+        if requested is None:
+            return "[error] bad pattern: empty path"
+        base, err = access.resolve(str(requested), read=True)
+        if err:
+            return err
+        expanded = Path(pattern).expanduser()
+        parts = expanded.parts
+        if any(part in SKIP_DIRS for part in parts):
+            return "[no matches]"
+        wildcard = next((i for i, part in enumerate(parts) if any(c in part for c in "*?[")), len(parts))
+        hits, seen = [], set()
+        for path in _glob_paths(base, parts[wildcard:], access):
+            # Keep local names relative, and outside names explicit and reusable.
+            label = str(path.relative_to(workdir.resolve())) if path.is_relative_to(workdir.resolve()) else str(path)
+            if label in seen:
+                continue
+            seen.add(label)
+            hits.append(label)
+            if len(hits) > GLOB_MAX_PATHS:
+                return "\n".join(sorted(hits[:GLOB_MAX_PATHS]) + [f"[truncated at {GLOB_MAX_PATHS} paths — narrow the pattern]"])
+        return "\n".join(sorted(hits)) if hits else "[no matches]"
+    except (ValueError, OSError, RuntimeError) as e:
         return f"[error] bad pattern: {e}"
-    if not hits:
-        return "[no matches]"
-    out = hits[:GLOB_MAX_PATHS]
-    if len(hits) > GLOB_MAX_PATHS:
-        out.append(f"[truncated: {len(hits)} total — narrow the pattern]")
-    return "\n".join(out)
 
 
-async def _grep(pattern: str, path: str = ".", include: Optional[str] = None, *, workdir: Path) -> str:
-    return _truncate(await asyncio.to_thread(_grep_sync, pattern, path, include, workdir))
+async def _grep(pattern: str, path: str = ".", include: Optional[str] = None, *, workdir: Path,
+                file_access=None) -> str:
+    return _truncate(await asyncio.to_thread(_grep_sync, pattern, path, include, workdir, file_access))
 
 
-async def _glob(pattern: str, *, workdir: Path) -> str:
-    return _truncate(await asyncio.to_thread(_glob_sync, pattern, workdir))
+async def _glob(pattern: str, *, workdir: Path, file_access=None) -> str:
+    return _truncate(await asyncio.to_thread(_glob_sync, pattern, workdir, file_access))
 
 
 # Static risk tier per built-in tool, shared by build_registry and
@@ -474,34 +538,36 @@ RISK = {
 
 
 def build_registry(workdir: Path, allowed_roots: tuple[Path, ...] = (), read_grants=None,
-                   vision_active=None) -> dict[str, Tool]:
+                   vision_active=None, file_access=None) -> dict[str, Tool]:
     """Tools bound to a local working directory (the chat TUI's registry).
 
     *allowed_roots* are extra in-bounds directories the human declared at launch
     (`--allow-dir`); read/write/edit accept paths inside them as well as workdir.
     *read_grants* is a live-mutable set of resolved paths a session approval
-    widened the READ jail to (read_file only; never writes) — the read_file
-    closure holds the set by reference, so approvals take effect immediately.
+    widened the read scope to (all file reads, never writes). Closures hold the
+    set by reference, so approvals take effect immediately. *file_access* lets a
+    trusted local host bind a live YOLO mode; omitted means bounded reads.
     *vision_active* is a zero-arg callable — "can the ACTIVE model see images
     right now?" — held live by the view_image closure so a /model switch flips
     its behavior (attach raw vs sidecar describe) with no registry rebuild.
     """
+    access = file_access or FileAccessPolicy(workdir, allowed_roots, read_grants if read_grants is not None else set())
     fns = {
         "bash": lambda command: _bash(command, workdir=workdir),
         "read_file": lambda path, offset=None, limit=None: _read_file(
             path, workdir=workdir, allowed_roots=allowed_roots, read_grants=read_grants,
-            offset=offset, limit=limit),
+            offset=offset, limit=limit, file_access=access),
         "write_file": lambda path, content: _write_file(path, content, workdir=workdir, allowed_roots=allowed_roots),
         "edit_file": lambda path, old_string, new_string: _edit_file(
             path, old_string, new_string, workdir=workdir, allowed_roots=allowed_roots
         ),
         "grep": lambda pattern, path=".", include=None: _grep(
-            pattern, path, include, workdir=workdir
+            pattern, path, include, workdir=workdir, file_access=access
         ),
-        "glob": lambda pattern: _glob(pattern, workdir=workdir),
+        "glob": lambda pattern: _glob(pattern, workdir=workdir, file_access=access),
         "view_image": lambda path, question="": _view_image(
             path, question, workdir=workdir, allowed_roots=allowed_roots,
-            read_grants=read_grants, vision_active=vision_active),
+            read_grants=read_grants, vision_active=vision_active, file_access=access),
     }
     reg = {
         name: Tool(name=name, schema=SCHEMAS[name], fn=fn, risk=RISK.get(name, "risky"))

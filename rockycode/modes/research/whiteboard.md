@@ -59,6 +59,7 @@ The board is where a claim takes shape; it is not where it gets proven. When a
 drafted statement is firm enough to be checked — an attention identity, a
 softmax property, a model guarantee — offer to hand it to **prove mode**
 (`/research prove`, which drives the lean-prover skill): formalize it in Lean,
-machine-verify green/amber/red, render the verdict in the same KaTeX visual
+machine-verify it (compiled, or kernel-checked / paranoid when `lake check`
+exists; otherwise amber, red, or disputed), render the verdict in the same KaTeX visual
 system this board uses. Don't switch unasked — offer it as the natural next
 step, so draft → formalize → verified proof is one continuous flow.

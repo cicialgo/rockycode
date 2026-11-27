@@ -25,7 +25,8 @@ from textual.widgets import Static
 from rockycode.engine.loop import Engine
 from rockycode.routines import Routine, RoutineStore
 from rockycode.session import get_project
-from rockycode.tui.app import ChatInput, RockyCodeApp
+from rockycode.tui.app import RockyCodeApp
+from rockycode.tui.chatinput import ChatInput
 from rockycode.tui.routinecard import RoutineCard
 
 WD = Path.cwd()

@@ -1,21 +1,23 @@
-"""Provider + model registry: models are DATA, the engine is generic.
+"""Provider + model registry: catalog metadata, not protocol certification.
 
-Every provider here (DeepSeek, GLM, Kimi, MiniMax, StepFun, Qwen, MiMo, …)
-speaks the OpenAI chat-completions protocol, so the OpenAI SDK is the ONLY
-compatibility layer — rocky never writes a per-provider adapter. A provider is
-a base_url, a key name and a reasoning WIRE SHAPE; a model is its limits,
-capabilities, price and roles. All of it lives in `rockycode/models.toml`
-(shipped) deep-merged with `~/.rockycode/models.toml` (the user's override);
-adding or correcting a model is a data edit, never code. The engine consumes
-a ModelSpec — context window, output cap, vision, reasoning shape — and
-carries no model-specific numbers of its own.
+The current providers use OpenAI-compatible Chat Completions. The SDK shares
+transport machinery; it does not guarantee identical model semantics. Limits,
+prices, roles, wire IDs and each model's request contract (the switches in
+engine/model_protocol.py) live in `rockycode/models.toml`, merged with the
+user's override — a new model with a known behaviour is one row. A new
+reasoning wire shape or a behaviour no model has had yet still needs code
+and conformance tests; a row alone cannot provide those.
+See docs/design/model-integration-roadmap.md for the per-model audit and plan.
 
 Endpoints: one cn base_url per provider (no en/cn split anymore), plus an
 optional subscription-plan endpoint (`<provider>-plan`, own URL + own key),
 plus an own-URL row from ~/.rockycode/endpoints.toml (`<provider>-custom`).
-Keys are rocky-OWNED per endpoint — `ROCKYCODE_<NAME>_API_KEY` — never the
-ambient `MINIMAX_API_KEY` etc.; the older regional names (`_CN_`/`_EN_`) are
-still read as aliases. The builtin `deepseek` reads ROCKYCODE_API_KEY.
+OpenRouter is the builtin exception: an international free host
+(`https://openrouter.ai/api/v1`), keyed by `ROCKYCODE_OPENROUTER_API_KEY`,
+reasoning shape `none`, the generic contract. Keys are rocky-OWNED per
+endpoint — `ROCKYCODE_<NAME>_API_KEY` — never the ambient `MINIMAX_API_KEY`
+or `OPENROUTER_API_KEY`; the older regional names (`_CN_`/`_EN_`) are still
+read as aliases. The builtin `deepseek` reads ROCKYCODE_API_KEY.
 
 Local servers (Ollama) are discovered live, not catalogued — see local_models.
 Custom OpenAI-compatible servers still come from ~/.rockycode/providers.toml.
@@ -30,6 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from rockycode.engine.model_protocol import GENERIC, SWITCHES, ModelProtocol
 from rockycode.onboarding import BASE_URL_ENV, DEFAULT_BASE_URL, KEY_ENV
 
 # Fallbacks for a model the registry does NOT know (a custom providers.toml
@@ -123,6 +126,18 @@ class ModelSpec:
     price: dict = field(default_factory=dict)  # {"usd": {in_hit,in_miss,out}, "cny": …}
     roles: tuple[str, ...] = ()
     note: str = ""
+    # API model id when the provider's docs spell it differently from `id`
+    # (the /model token). Empty = send `id`.
+    wire: str = ""
+    # The request contract the row's switches ask for (history, sampling,
+    # completion — engine/model_protocol.py). No switches = the generic one.
+    protocol: ModelProtocol = GENERIC
+    # None = inherit the provider. A tuple overrides (including () = no effort).
+    efforts: Optional[tuple[str, ...]] = None
+    # None = inherit the provider. False = this model 400s if thinking is disabled.
+    thinking_off: Optional[bool] = None
+    # Empty = available on all endpoints of this provider.
+    endpoint_ids: tuple[str, ...] = ()
 
 
 @dataclass
@@ -166,6 +181,27 @@ class Provider:
             context=LOCAL_CONTEXT_WINDOW if self.local else DEFAULT_CONTEXT,
             vision=self.vision or model in self.vision_models,
         )
+
+    def api_model(self, model: str) -> str:
+        """The id that goes on the wire. The registry key stays the /model token."""
+        spec = self.specs.get(model)
+        return spec.wire if spec is not None and spec.wire else model
+
+    def efforts_for(self, model: str) -> Optional[tuple[str, ...]]:
+        spec = self.specs.get(model)
+        if spec is not None and spec.efforts is not None:
+            return spec.efforts
+        return self.efforts
+
+    def thinking_off_for(self, model: str) -> bool:
+        spec = self.specs.get(model)
+        if spec is not None and spec.thinking_off is not None:
+            return spec.thinking_off
+        return self.thinking_off
+
+    def endpoints_for(self, model: str) -> list[Endpoint]:
+        ids = self.spec(model).endpoint_ids
+        return [endpoint for endpoint in self.endpoints if not ids or endpoint.eid in ids]
 
 
 @dataclass
@@ -270,6 +306,71 @@ def _key_env_for(name: str) -> str:
     return f"ROCKYCODE_{name.upper().replace('-', '_')}_API_KEY"
 
 
+def _slug(name: str) -> str:
+    """A provider name as add_provider stores it."""
+    return re.sub(r"[^a-z0-9_-]", "", name.strip().lower())
+
+
+def key_env_for(name: str) -> str:
+    """The rocky-owned variable a custom provider named *name* reads its key from."""
+    return _key_env_for(_slug(name))
+
+
+def catalog_owner(name: str) -> str:
+    """The catalog provider a custom server named *name* would replace or share
+    a key with, or "". add_provider replaces a provider of the same name and a
+    provider finds its key by its name, so reusing a catalog name (or one of
+    its endpoint ids) would send that provider's saved key to the new address."""
+    slug = _slug(name)
+    env = _key_env_for(slug)
+    for prov in _providers_from_data(_read_toml(BUILTIN_MODELS_TOML)).values():
+        for ep in prov.endpoints:
+            if slug in (prov.name, ep.eid) or env in (ep.key_env, *ep.key_aliases):
+                return prov.name
+    return ""
+
+
+# Every field a model row may carry (the header of models.toml explains each).
+# A row with any other field is refused: a misspelt switch would otherwise run
+# the generic contract without a word.
+MODEL_FIELDS = frozenset({
+    "provider", "label", "context", "max_output", "vision", "price", "roles", "note",
+    "wire", "efforts", "thinking_off", "endpoint_ids", "hidden",
+    "served_model", "verified_at", "sources", *SWITCHES})
+
+
+def _model_spec(mid: str, m: dict, provider: str) -> ModelSpec:
+    """One catalog row as a ModelSpec. A ValueError says what is wrong with it."""
+    unknown = sorted(set(m) - MODEL_FIELDS)
+    if "protocol" in unknown:
+        raise ValueError("`protocol` is gone — write the model's switches in its row instead "
+                         f"({', '.join(SWITCHES)})")
+    if unknown:
+        import difflib
+        near = difflib.get_close_matches(unknown[0], sorted(MODEL_FIELDS), n=1)
+        raise ValueError(f"unknown field `{unknown[0]}`" + (f" — did you mean `{near[0]}`?" if near else ""))
+    protocol = ModelProtocol.from_row(m)
+    try:
+        return ModelSpec(
+            id=mid, provider=provider, label=str(m.get("label") or ""),
+            context=int(m.get("context") or DEFAULT_CONTEXT),
+            max_output=int(m.get("max_output") or DEFAULT_MAX_OUTPUT),
+            vision=bool(m.get("vision", False)),
+            price={k: dict(v) for k, v in (m.get("price") or {}).items()
+                   if isinstance(v, dict)},
+            roles=tuple(str(r) for r in (m.get("roles") or ())),
+            note=str(m.get("note") or ""),
+            wire=str(m.get("wire") or ""),
+            protocol=protocol,
+            efforts=(tuple(str(e) for e in m["efforts"]) if "efforts" in m else None),
+            thinking_off=(bool(m["thinking_off"]) if "thinking_off" in m else None),
+            endpoint_ids=tuple(str(e) for e in (m.get("endpoint_ids") or ())),
+        )
+    except (TypeError, ValueError, AttributeError):
+        raise ValueError("a field has the wrong type (context and max_output are whole numbers; "
+                         "roles, efforts and endpoint_ids are lists; price is a table)") from None
+
+
 def _providers_from_data(data: dict) -> dict[str, Provider]:
     provs: dict[str, Provider] = {}
     for name, cfg in (data.get("providers") or {}).items():
@@ -313,18 +414,9 @@ def _providers_from_data(data: dict) -> dict[str, Provider]:
         if p is None:
             continue
         try:
-            spec = ModelSpec(
-                id=str(mid), provider=p.name, label=str(m.get("label") or ""),
-                context=int(m.get("context") or DEFAULT_CONTEXT),
-                max_output=int(m.get("max_output") or DEFAULT_MAX_OUTPUT),
-                vision=bool(m.get("vision", False)),
-                price={k: dict(v) for k, v in (m.get("price") or {}).items()
-                       if isinstance(v, dict)},
-                roles=tuple(str(r) for r in (m.get("roles") or ())),
-                note=str(m.get("note") or ""),
-            )
-        except (TypeError, ValueError):
-            continue  # a malformed entry is skipped, never fatal
+            spec = _model_spec(str(mid), m, p.name)
+        except ValueError:
+            continue  # never fatal — refused_rows() says why, wherever the model is asked for
         p.specs[spec.id] = spec
         p.models.append(spec.id)
         if spec.vision and spec.id not in p.vision_models:
@@ -450,7 +542,7 @@ def add_provider(name: str, base_url: str, models: list[str], *,
     override ~/.rockycode/models.toml — the `rocky_config` tool's path, so
     "add my vLLM server" is something rocky can do for the user. Returns
     (provider name, error). Never writes a key: only its env var NAME."""
-    name = re.sub(r"[^a-z0-9_-]", "", name.strip().lower())
+    name = _slug(name)
     if not name:
         return None, "provider name must be letters/digits/-/_"
     base_url = base_url.strip()
@@ -555,14 +647,28 @@ def discover() -> dict[str, Provider]:
 def choices() -> list[Choice]:
     """Every (provider, endpoint, model) as a flat pickable list."""
     return [Choice(p, e, m) for p in discover().values()
-            for e in p.endpoints for m in p.models]
+            for e in p.endpoints for m in p.models if e in p.endpoints_for(m)]
+
+
+def key_rows() -> list[tuple[Provider, Endpoint]]:
+    """Every endpoint a key can be saved for, in catalog order. A local server
+    takes no key; an endpoint that serves no model has no use for one."""
+    return [(p, e) for p in discover().values() for e in p.endpoints
+            if not e.keyless and any(e in p.endpoints_for(m) for m in p.models)]
 
 
 def configured_choices() -> list[Choice]:
-    """Only choices whose key is set — the SHORT list the picker shows by
-    default, so a catalog of ~12 doesn't scroll. deepseek is always
-    included (it rides the default ROCKYCODE_API_KEY)."""
-    return [c for c in choices() if c.configured or c.provider.name == "deepseek"]
+    """The SHORT list the picker shows by default, so a catalog of ~12
+    doesn't scroll. A model is listed when one of its endpoints is keyed
+    (deepseek always — it rides ROCKYCODE_API_KEY). Every endpoint of that
+    model comes along: the plan row and a saved own-URL, keyed or not.
+    Dropping the unkeyed siblings made the URL step vanish on the next bare
+    /model — one configured endpoint, so the picker switched straight away
+    and the base URL could no longer be picked or edited."""
+    all_c = choices()
+    shown = {(c.provider.name, c.model) for c in all_c
+             if c.configured or c.provider.name == "deepseek"}
+    return [c for c in all_c if (c.provider.name, c.model) in shown]
 
 
 def role_choice(role: str) -> Optional[Choice]:
@@ -583,18 +689,6 @@ def role_model(role: str) -> Optional[str]:
             if role in p.spec(m).roles:
                 return m
     return None
-
-
-def sidecar_client():
-    """(AsyncOpenAI client, model id) for the registry's keyed `sidecar` model
-    — the cheap flash for titles / image describe — or None. Deferred SDK
-    import: this module must stay cheap to import."""
-    c = role_choice("sidecar")
-    if c is None:
-        return None
-    from openai import AsyncOpenAI
-    return AsyncOpenAI(api_key=c.endpoint.key(), base_url=c.endpoint.base_url,
-                       max_retries=2, timeout=60.0), c.model
 
 
 def cache_hit_tokens(usage: dict, cache_field: str) -> Optional[int]:
@@ -634,17 +728,26 @@ def resolve(spec: str) -> Optional[tuple[Provider, Endpoint, str]]:
     by_eid = {e.eid: (p, e) for p in provs.values() for e in p.endpoints}
     if eid_part in by_eid:
         p, e = by_eid[eid_part]
-        if not p.models:  # a local provider with nothing discovered — see local_hint()
+        models = [m for m in p.models if e in p.endpoints_for(m)]
+        if not models:  # a local provider with nothing discovered — see local_hint()
             return None
         if not model_part:
-            return p, e, p.models[0]
-        m = _pick_model(_unalias(p, model_part), p.models)
+            return p, e, models[0]
+        part = _unalias(p, model_part)
+        m = _pick_model(part, models)
+        if m is None:
+            # A plan-only addition must not steal an existing shorthand such as qwen-plan:max.
+            m = _pick_model(part, [model for model in models if not p.spec(model).endpoint_ids])
         return (p, e, m) if m else None
 
     # a legacy id on its own → its provider's current model
     for prov in provs.values():
         if spec in prov.aliases:
-            return prov, prov.endpoints[0], prov.aliases[spec]
+            model = prov.aliases[spec]
+            if model not in prov.models:  # its row is hidden or refused: no default-shaped stand-in
+                return None
+            endpoints = prov.endpoints_for(model)
+            return (prov, endpoints[0], model) if endpoints else None
     # bare model — must pick uniquely across all providers (first endpoint)
     all_models = [m for prov in provs.values() for m in prov.models]
     m = _pick_model(spec, all_models)
@@ -652,7 +755,8 @@ def resolve(spec: str) -> Optional[tuple[Provider, Endpoint, str]]:
         return None
     for prov in provs.values():
         if m in prov.models:
-            return prov, prov.endpoints[0], m
+            endpoints = prov.endpoints_for(m)
+            return (prov, endpoints[0], m) if endpoints else None
     return None
 
 
@@ -736,6 +840,52 @@ def local_hints() -> list[str]:
         elif state == "empty":
             out.append(f"{p.name} — no models pulled · ollama pull {RECOMMENDED_LOCAL_MODEL}")
     return out
+
+
+def refused_rows() -> dict[str, str]:
+    """Model rows the registry will not load, and why. A refused row is said out
+    loud wherever its model is asked for, instead of the model quietly vanishing
+    or running a contract nobody wrote."""
+    data = registry_data()
+    live = {name for name, cfg in (data.get("providers") or {}).items()
+            if isinstance(cfg, dict) and not cfg.get("hidden") and str(cfg.get("base_url") or "").strip()}
+    out: dict[str, str] = {}
+    for mid, m in (data.get("models") or {}).items():
+        if not isinstance(m, dict) or m.get("hidden") or str(m.get("provider") or "") not in live:
+            continue
+        try:
+            _model_spec(str(mid), m, str(m["provider"]))
+        except ValueError as e:
+            out[str(mid)] = str(e)
+    return out
+
+
+def _tilde(path: Path) -> str:
+    return str(path).replace(str(Path.home()), "~", 1)
+
+
+def refused_hint(spec: str) -> Optional[str]:
+    """When a /model *spec* names a row the registry refused: what is wrong
+    with the row and where to fix it. Exact ids only — a refused row must not
+    capture a request for some other unlisted model."""
+    rows = refused_rows()
+    if not rows:
+        return None
+    asked = {spec.strip().lower(), split_spec(spec)[1].lower()}
+    # A legacy id is a request for the row it now names.
+    for cfg in (registry_data().get("providers") or {}).values():
+        aliases = cfg.get("aliases") if isinstance(cfg, dict) else None
+        asked |= {str(new).lower() for old, new in (aliases or {}).items() if str(old).lower() in asked}
+    hit = next((mid for mid in rows if mid.lower() in asked), None)
+    if hit is None:
+        return None
+    return (f"the row for '{hit}' was refused: {rows[hit]}. Fix it in {_tilde(MODELS_TOML)} "
+            f"— every field is explained at the top of {_tilde(BUILTIN_MODELS_TOML)}")
+
+
+def refused_hints() -> list[str]:
+    """One picker row per refused model row, so the model stays visible with its reason."""
+    return [f"{mid} — row refused · {why}" for mid, why in refused_rows().items()]
 
 
 def fmt_tokens(n: int) -> str:

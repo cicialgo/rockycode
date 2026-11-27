@@ -11,7 +11,7 @@ Line shapes:
   {"t": <unix>, "kind": "usage",   "data": {prompt_tokens, ...}}       # per API call
   {"t": <unix>, "kind": "compaction", "data": {strategy, ...}}         # history rewrite (see loop._maybe_compact)
   {"t": <unix>, "kind": "outcome", "data": {...}}                      # reward signal, when known
-  {"t": <unix>, "kind": "feedback", "data": {mood, text, local_only}}  # user's exit sheet — LOCAL ONLY (see feedback())
+  {"t": <unix>, "kind": "reflect", "data": {seq, final, score, ...}}   # evolve checkpoint (see dream/reflect.py)
 """
 from __future__ import annotations
 
@@ -40,13 +40,7 @@ TRAJECTORY_DIR = trajectory_dir()
 
 
 class TrajectoryLogger:
-    def __init__(self, meta: dict, directory: Path | None = None) -> None:
-        if directory is None:
-            directory = trajectory_dir()
-            # Bench rollouts live in a subdir so they don't mix with chat
-            # sessions — the resume picker and dream read only the top level.
-            if meta.get("runner") == "rockycode" or meta.get("instance_id"):
-                directory = directory / "bench"
+    def __init__(self, meta: dict, directory: Path | None = None, *, enabled: bool = True) -> None:
         stamp = time.strftime("%Y%m%d-%H%M%S")
         self.session_id = f"{stamp}-{uuid.uuid4().hex[:8]}"
         # Logging is best-effort: an unwritable location (read-only cwd/home,
@@ -55,6 +49,17 @@ class TrajectoryLogger:
         # surface it if it wants.
         self.path: Path | None = None
         self.disabled_reason: str | None = None
+        if not enabled:
+            # A host that owns persistence (the desktop model race) opts out up
+            # front: same object, every write no-ops, nothing lands in ~/.rockycode.
+            self.disabled_reason = "disabled by host"
+            return
+        if directory is None:
+            directory = trajectory_dir()
+            # Bench rollouts live in a subdir so they don't mix with chat
+            # sessions — the resume picker and dream read only the top level.
+            if meta.get("runner") == "rockycode" or meta.get("instance_id"):
+                directory = directory / "bench"
         try:
             directory.mkdir(parents=True, exist_ok=True)
             self.path = directory / f"{self.session_id}.jsonl"
@@ -83,10 +88,8 @@ class TrajectoryLogger:
         self._write("message", msg)
 
     def reasoning(self, text: str) -> None:
-        """The turn's reasoning_content. Never part of history (DeepSeek 400s
-        if it is sent back), so without this record the trace exists only as
-        ephemeral stream deltas — but language-adherence analysis and the
-        RL-export path (self-evolve phase 3) both need it."""
+        """Analysis/RL record retained for compatibility. Models requiring replay
+        also store reasoning_content on their assistant message records."""
         if text:
             self._write("reasoning", {"text": text})
 
@@ -100,12 +103,11 @@ class TrajectoryLogger:
     def outcome(self, data: dict) -> None:
         self._write("outcome", data)
 
-    def feedback(self, data: dict) -> None:
-        # The user's exit-sheet rating. LOCAL ONLY by contract: the sheet
-        # promises "never sent to the model provider", so readers must never
-        # place feedback records in any cloud-bound prompt — only the local
-        # dream (Ollama) consumes them. See the self-evolve design.
-        self._write("feedback", data)
+    def reflect(self, data: dict) -> None:
+        # An evolve checkpoint (dream/reflect.py) — graded session state plus
+        # pattern observations, written mid-session so a hard kill loses at
+        # most the tail since the last checkpoint.
+        self._write("reflect", data)
 
     def note(self, data: dict) -> None:
         self._write("note", data)
@@ -119,9 +121,9 @@ class TrajectoryLogger:
 
 def append_record(path: Path, kind: str, data: dict) -> bool:
     """Append one record to an EXISTING trajectory file — for post-hoc writers
-    like the dream-time judge, which grades sessions long after their logger
-    is gone. Same line shape and best-effort contract as TrajectoryLogger:
-    returns False instead of raising."""
+    like the dream's cold reflect, which grades straggler sessions long after
+    their logger is gone. Same line shape and best-effort contract as
+    TrajectoryLogger: returns False instead of raising."""
     try:
         line = json.dumps({"t": time.time(), "kind": kind, "data": data}, ensure_ascii=False)
         with path.open("a", encoding="utf-8") as f:
