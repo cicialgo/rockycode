@@ -12,6 +12,7 @@ os.environ["ROCKYCODE_OLLAMA_URL"] = "http://127.0.0.1:9"
 os.environ.setdefault("ROCKYCODE_HOME", tempfile.mkdtemp(prefix="rockytest-home-"))
 
 from rockycode.engine import providers as P
+from rockycode.engine import route as route_mod
 
 home = Path(tempfile.mkdtemp(prefix="rockyreg-"))
 P.MODELS_TOML = home / "models.toml"
@@ -22,7 +23,7 @@ P.PROVIDERS_TOML = home / "providers.toml"
 data = P.registry_data()
 assert data.get("schema") == 1
 cat = P.catalog()
-assert set(cat) == {"deepseek", "glm", "kimi", "minimax", "stepfun", "qwen", "mimo"}, set(cat)
+assert set(cat) == {"deepseek", "glm", "kimi", "minimax", "stepfun", "qwen", "mimo", "openrouter"}, set(cat)
 for name, prov in cat.items():
     assert prov.models, f"{name} lists no models"
     assert prov.reasoning in P.REASONING_SHAPES, (name, prov.reasoning)
@@ -104,13 +105,31 @@ assert P.role_model("search") == "deepseek-flash" and P.role_model("nope") is No
 for v in list(os.environ):
     if v.startswith("ROCKYCODE_") and v.endswith("_API_KEY"):
         os.environ.pop(v, None)
-assert P.role_choice("sidecar") is None and P.sidecar_client() is None, "no key → no sidecar"
+assert P.role_choice("sidecar") is None and route_mod.sidecar_client() is None, "no key → no sidecar"
 os.environ["ROCKYCODE_API_KEY"] = "sk-rocky-home"
 assert P.role_choice("sidecar").id == "deepseek:deepseek-flash"
 os.environ.pop("ROCKYCODE_API_KEY")
 assert P.fmt_tokens(1_048_576) == "1M" and P.fmt_tokens(384_000) == "384K"
 assert P.fmt_tokens(65_536) == "64K" and P.fmt_tokens(131_072) == "128K" and P.fmt_tokens(1_000_000) == "1M"
 print("cache field normalizer · roles · fmt_tokens  ✓")
+
+# A user can select a different sidecar via models.toml. Its registry key is
+# for selection/pricing, not necessarily the case-sensitive API model ID.
+from unittest.mock import patch
+
+sidecar_provider = P.catalog()["minimax"]
+sidecar_choice = P.Choice(sidecar_provider, sidecar_provider.endpoints[0], "minimax-m3.1-flash")
+fake_sidecar_client = object()
+with patch.object(P, "role_choice", return_value=sidecar_choice), \
+     patch.dict(os.environ, {"ROCKYCODE_MINIMAX_API_KEY": "fixture-minimax"}), \
+     patch("openai.AsyncOpenAI", return_value=fake_sidecar_client) as create_client:
+    client, api_model = route_mod.sidecar_client()
+    assert client is fake_sidecar_client
+    assert api_model == "MiniMax-M3.1-Flash", api_model
+    assert sidecar_choice.model == "minimax-m3.1-flash", "selection identity stays canonical"
+    assert create_client.call_args.kwargs["base_url"] == sidecar_choice.endpoint.base_url
+    assert create_client.call_args.kwargs["api_key"] == "fixture-minimax"
+print("sidecar: endpoint and exact wire model travel together  ✓")
 
 # ── the engine reads the spec: cache normalization + limits at launch ────────
 import asyncio

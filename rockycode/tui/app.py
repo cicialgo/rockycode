@@ -15,31 +15,29 @@ Streaming discipline (this is the no-glitch contract):
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import os
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlsplit
-from urllib.request import url2pathname
 
 from rich.markup import escape
 from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Horizontal, VerticalScroll
 from textual.css.query import NoMatches
-from textual.message import Message
-from textual.screen import ModalScreen
 from textual.theme import Theme
-from textual.widgets import Button, Collapsible, Markdown, Static, TextArea
-from textual.worker import Worker, WorkerState, get_current_worker
+from textual.widgets import Collapsible, Markdown, Static
+from textual.worker import Worker, WorkerCancelled, WorkerFailed, WorkerState
 
 from rockycode.banner import ROCKY_TAGLINE
+from rockycode.i18n import tr, resolve_locale
+from rockycode.dream import reflect as reflect_mod
 from rockycode.engine import AgentState, Engine
+from rockycode.engine.approval import ToolApprover, tool_brief
 from rockycode.engine import cron as cron_mod
 from rockycode.engine import tools as tools_mod
-from rockycode.engine.effort import EFFORT_LEVELS, wire_tier
+from rockycode.engine.delivery import TurnDelivery
 from rockycode.engine.providers import fmt_tokens
 from rockycode.engine.events import (
     CacheReset,
@@ -56,13 +54,27 @@ from rockycode.engine.events import (
 
 from rockycode.palette import AMBER, LAVENDER, MUTED, PURPLE, RED, VIOLET
 from rockycode.onboarding import project_env_warnings
+from rockycode.tui.approval import ApprovalMixin
+from rockycode.tui.planflow import PlanMixin
+from rockycode.tui.modeflow import ModeMixin
+from rockycode.tui.evolve import EvolveMixin
+from rockycode.tui.loops import LoopsMixin
+from rockycode.tui.modelflow import ModelMixin
+from rockycode.tui.artifacts import ArtifactsMixin
+from rockycode.tui.goalflow import GoalMixin
+from rockycode.tui.sandboxflow import SandboxMixin
+from rockycode.tui.images import ImagesMixin
+from rockycode.tui.docs import DocsMixin
+from rockycode.tui.chatinput import ChatInput
+from rockycode.tui import commands
+from rockycode.tui.widgets import EditChip, ParkChip, PermChip
+from rockycode.tui.notestrip import NOTES, NoteStrip
 from rockycode.tui.mdterm import (
     enhance_markdown,
-    link_click_action,
     rocky_markdown_parser,
 )
-from rockycode.tui.mdview import TEXT_DOC_SUFFIXES, WIDTHS, DocDock
 from rockycode.tui.prompt_history import PromptHistory
+from rockycode.tui.removal import gone
 
 FLUSH_HZ = 10
 
@@ -96,474 +108,19 @@ ROCKY_THEME_LIGHT = Theme(
     dark=False,
 )
 
-# Rocky speaks in musical chords — the note cycles while he thinks/sings.
-NOTES = "♪♫♬♩"
 
+def _status_text(state: AgentState, note: str, language: str = "en") -> str:
+    if state == AgentState.IDLE:
+        return ""
+    return tr("app.status." + state.name.lower(), language, note=note)
 
-def _status_text(state: AgentState, note: str) -> str:
-    return {
-        AgentState.IDLE: "",
-        AgentState.THINKING: f"[italic {VIOLET}]{note} thinking…[/]",
-        AgentState.RESPONDING: f"[italic {LAVENDER}]{note} singing…[/]",
-        AgentState.TOOL: f"[italic {MUTED}]⚒ working…[/]",
-        AgentState.COMPACTING: f"[italic {MUTED}]♻ squeeze context…[/]",
-        AgentState.AMAZED: f"[bold {VIOLET}]✦ amaze! {note}[/]",
-        AgentState.ERROR: f"[{RED}]✗ no good[/]",
-    }[state]
 
-HELP_TEXT = f"""\
-[bold {VIOLET}]commands[/]
-  [{LAVENDER}]/help[/]    show this
-  [{LAVENDER}]/plan [topic|off][/]  plan first — read-only explore + brainstorm into a plan file you approve
-  [{LAVENDER}]/goal [objective][/]  go autonomous — plan → confirm → work, in its own view (needs Docker)
-  [{LAVENDER}]/loop 5m <prompt>[/]  check back every 5 minutes, in this chat — /loop lists · stop · pause · allow (also /cron)
-  [{LAVENDER}]/research[/]  research mode — pick how we work: deep-research · paper-reading · whiteboard
-  [{LAVENDER}]/learn[/]   learn mode — rocky tutors you through a paper, a codebase, or a concept
-  [{LAVENDER}]/model[/]   switch provider + model (deepseek · glm · kimi · minimax · stepfun · qwen · mimo · ollama = local, $0)
-  [{LAVENDER}]/paste[/]   attach a clipboard image (or ctrl+v in the input). a vision model sees it raw (deepseek-flash does); a text-only model gets it described by deepseek-flash or your own CLI (/config image_cli)
-  [{LAVENDER}]/sandbox[/]  sandbox on | off | status — isolate tools in a container
-  [{LAVENDER}]/lsp[/]     language-server status (diagnostics ride along read_file)
-  [{LAVENDER}]/artifact[/]  list | open | stop | live on/off — manage this session's artifacts
-  [{LAVENDER}]/prompt[/]  show rocky's system prompt
-  [{LAVENDER}]/mcp[/]     show connected MCP servers + tools
-  [{LAVENDER}]/skills[/]  show installed skills
-  [{LAVENDER}]/memory[/]  show what rocky remembers
-  [{LAVENDER}]/proposals[/]  review skills rocky drafted while dreaming (approve or archive)
-  [{LAVENDER}]/routines[/]  run or lease due routines (recurring, sandboxed, budgeted)
-  [{LAVENDER}]/remember <note>[/]  save a note to memory (feedback)
-  [{LAVENDER}]/config [key] [value][/]  show or set preferences — language auto|en|zh · theme · currency (restart to apply)
-  [{LAVENDER}]/effort [off|low|high|max][/]  how hard i think — applies from the next reply
-  [{LAVENDER}]/permission [yolo|ask|careful][/]  approval mode — bare opens the picker
-     [dim](or press shift+tab to cycle it · or click the 🔒 chip in the status bar)[/]
-  [{LAVENDER}]! <cmd>[/]  run a shell command; output goes into rocky's context
-  [{LAVENDER}]/clear[/]   clear the transcript
-  [{LAVENDER}]/exit[/]    quit (also /quit or ctrl+q)"""
 
-LOOP_HELP = (
-    f"[bold {VIOLET}]loops[/] [dim]— rocky checks back on something, in this chat, on an interval "
-    f"(also /cron)[/]\n"
-    f"  [{LAVENDER}]/loop 5m <prompt>[/]           every 5 minutes, until you stop it\n"
-    f"  [{LAVENDER}]/loop 10m for 3h <prompt>[/]   … with a duration · [{LAVENDER}]x12[/] a tick count · "
-    f"[{LAVENDER}]max $2[/] a spend ceiling (only enforced when you set one)\n"
-    f"  [{LAVENDER}]/loop[/] list · [{LAVENDER}]/loop stop|pause|resume|allow [id][/]\n"
-    f"  [dim]e.g. /loop 5m check whether results/run3 has a summary.json; if so give me the "
-    f"headline numbers. LOOP DONE when reported.[/]\n"
-    f"  [dim]ticks never prompt — anything needing approval pauses the loop. "
-    f"/permission yolo (or shift+tab) resumes it · /loop allow decides one call · "
-    f"overnight on a copy → /goal · every launch → /routines[/]"
-)
 
+LOOP_HELP = tr("app.loop_help")
 
-def _last_reply(history: list[dict], start: int) -> str:
-    """The final plain assistant message of the turn that began at history[start]."""
-    from rockycode.engine import images as images_mod
-    for m in reversed(history[start:]):
-        if m.get("role") == "assistant" and m.get("content") and not m.get("tool_calls"):
-            return images_mod.content_text(m["content"])
-    return ""
 
-
-WELCOME = (
-    f"[bold {PURPLE}]♪♫ rocky ▸[/]\n"
-    "hello hello! i rocky. you ask, we fix bug together. amaze!\n"
-    f"[{MUTED}]try: “read the README and explain this repo”[/]"
-)
-
-
-class TextViewerScreen(ModalScreen):
-    """Scrollable full-screen viewer for long text (system prompt, files).
-
-    A modal owns keyboard focus, so arrows/PageUp/PageDown scroll naturally —
-    in the transcript those keys belong to the Input.
-    """
-
-    BINDINGS = [("escape", "close", "close"), ("q", "close", "close")]
-
-    DEFAULT_CSS = """
-    TextViewerScreen { align: center middle; }
-    TextViewerScreen > VerticalScroll {
-        width: 90%;
-        height: 90%;
-        padding: 1 2;
-        background: $surface;
-        border: round $primary;
-        border-title-color: $text-muted;
-        border-subtitle-color: $text-muted;
-    }
-    """
-
-    def __init__(self, title: str, text: str) -> None:
-        super().__init__()
-        self._title = title
-        self._text = text
-
-    def compose(self) -> ComposeResult:
-        body = VerticalScroll(Static(self._text))
-        body.border_title = self._title
-        body.border_subtitle = "↑/↓/pgup/pgdn scroll · esc close"
-        yield body
-
-    def on_mount(self) -> None:
-        self.query_one(VerticalScroll).focus()
-
-    def action_close(self) -> None:
-        self.dismiss()
-
-
-class ArtifactLiveModal(ModalScreen):
-    """Ask once: open artifacts live (local server, auto-refresh) or static?
-
-    dismiss() → "live" | "static".  Esc → "static" (the safe default).
-    ↑↓/←→ move between the two choices, Enter picks the focused one.
-    """
-
-    BINDINGS = [
-        ("escape", "static", "static"),
-        # Buttons only move on Tab by default — let the arrows walk between them
-        # too (they sit side by side, so either axis feels natural). Enter on the
-        # focused button picks it (Button's own binding).
-        ("left", "prev", ""),
-        ("up", "prev", ""),
-        ("right", "next", ""),
-        ("down", "next", ""),
-    ]
-
-    CSS = """
-    ArtifactLiveModal { align: center middle; }
-    ArtifactLiveModal > Vertical {
-        width: 66; height: auto; padding: 1 2;
-        background: $surface; border: round $primary;
-    }
-    ArtifactLiveModal .q { margin-bottom: 1; }
-    ArtifactLiveModal Horizontal { height: auto; align: center middle; }
-    ArtifactLiveModal Button { margin: 0 1; }
-    """
-
-    def compose(self) -> ComposeResult:
-        with Vertical():
-            yield Static(
-                f"[bold {VIOLET}]rocky want show artifact![/]\n"
-                "open it [bold]live[/]? rocky start small local server so the "
-                "browser tab auto-refresh when rocky rebuild it. amaze!\n"
-                f"[{MUTED}](else just open once as a file — /artifact live on later)[/]",
-                classes="q",
-            )
-            with Horizontal():
-                yield Button("open live", variant="primary", id="live")
-                yield Button("just once", id="static")
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        self.dismiss(event.button.id)
-
-    def action_next(self) -> None:
-        self.focus_next()
-
-    def action_prev(self) -> None:
-        self.focus_previous()
-
-    def action_static(self) -> None:
-        self.dismiss("static")
-
-
-class ChatInput(TextArea):
-    """Multi-line chat input. Enter sends; Ctrl+J inserts a newline; paste keeps
-    its newlines. Grows with content up to MAX_LINES, then scrolls — so a
-    pasted error or a few lines of code are actually visible while you type.
-
-    (Shift+Enter would be the usual newline key, but the kitty keyboard
-    protocol is disabled for IME support, so it's indistinguishable from
-    Enter — Ctrl+J is the reliable alternative.)
-    """
-
-    MAX_LINES = 8
-
-    SLASH_COMMANDS = [
-        "/help", "/plan", "/goal", "/loop", "/cron", "/research", "/learn", "/sandbox", "/lsp", "/artifact",
-        "/artifacts",
-        "/paste",
-        "/prompt", "/config", "/model", "/effort", "/permission", "/mcp", "/skills", "/memory",
-        "/proposals", "/routines", "/remember", "/clear", "/exit", "/quit",
-    ]
-
-    class Submitted(Message):
-        def __init__(self, value: str) -> None:
-            self.value = value
-            super().__init__()
-
-    class PasteRequested(Message):
-        """Ctrl+V in the input: ask the app to read the OS clipboard — an image
-        becomes an attachment chip, text just pastes. (The terminal never
-        forwards image bytes itself, so this has to go around it.)"""
-
-    def __init__(self, *, history: PromptHistory | None = None, **kwargs) -> None:
-        super().__init__(soft_wrap=True, show_line_numbers=False, **kwargs)
-        # None → in-memory only (every direct construction in tests stays
-        # hermetic); the CLI injects a store so history survives restarts.
-        self._store = history
-        self._history: list[str] = list(history.items) if history else []
-        self._hist_idx: int | None = None
-        self._draft = ""                # the in-progress text before browsing history
-        self._suggest_widget: Static | None = None
-
-    def on_mount(self) -> None:
-        self._sync_height()
-
-    def _sync_height(self) -> None:
-        # Count VISUAL rows (soft-wrapped), not just logical newlines, so a
-        # single long line or a wrapped CJK/pasted block grows the box to fit
-        # instead of staying collapsed to one row. wrapped_document.height
-        # reflects the current wrap width; fall back to logical lines before the
-        # widget has been laid out (width still 0).
-        try:
-            lines = self.wrapped_document.height or self.document.line_count
-        except Exception:  # noqa: BLE001 — height math must never break typing
-            lines = self.document.line_count if self.document else 1
-        # +2 for the rounded border (border-box height includes it)
-        self.styles.height = min(max(lines, 1), self.MAX_LINES) + 2
-
-    def on_resize(self, _event: events.Resize) -> None:
-        # Terminal width changed → text re-wraps → recompute visual rows so the
-        # box still fits. TextArea._on_resize still runs its own re-wrap.
-        self._sync_height()
-
-    def _recall(self, text: str) -> None:
-        self.text = text
-        self.move_cursor(self.document.end)
-
-    def _cursor_visual_row(self) -> tuple[int, int]:
-        """(row, total) of the cursor among VISUAL rows — soft-wrap aware, so a
-        long line that wraps to several rows is counted by what's on screen, not
-        by newlines. cursor_location[0] is the *logical* line and would treat a
-        wrapped single line as one row (up/down would recall history mid-text)."""
-        try:
-            wd = self.wrapped_document
-            return wd.location_to_offset(self.cursor_location).y, wd.height
-        except Exception:  # noqa: BLE001 — cursor math must never break typing
-            return self.cursor_location[0], self.document.line_count
-
-    async def _on_key(self, event: events.Key) -> None:
-        if event.key == "enter":
-            event.prevent_default()
-            event.stop()
-            text = self.text.strip()
-            if text:
-                if not self._history or self._history[-1] != text:
-                    self._history.append(text)
-                if self._store is not None:
-                    self._store.append(text)
-                self._hist_idx = None
-                self._draft = ""
-                self.post_message(self.Submitted(text))
-                self.text = ""
-                self._sync_height()
-            return
-        if event.key == "ctrl+j":  # reliable manual newline
-            event.prevent_default()
-            event.stop()
-            self.insert("\n")
-            return
-        if event.key == "ctrl+v":  # OS-clipboard paste: image → chip, text → insert
-            event.prevent_default()
-            event.stop()
-            self.post_message(self.PasteRequested())
-            return
-        # Up/Down recall previous inputs — but only from the top/bottom VISUAL
-        # row, so while there's text above/below the cursor they just move a row
-        # within it (like an editor). Only past the top row does up reach into
-        # history — and the in-progress text is saved as the draft first.
-        vrow, vtotal = self._cursor_visual_row()
-        if event.key == "up" and vrow == 0 and self._history:
-            event.prevent_default()
-            event.stop()
-            if self._hist_idx is None:
-                self._draft = self.text
-                self._hist_idx = len(self._history) - 1
-            elif self._hist_idx > 0:
-                self._hist_idx -= 1
-            self._recall(self._history[self._hist_idx])
-            return
-        if event.key == "down" and self._hist_idx is not None \
-                and vrow == vtotal - 1:
-            event.prevent_default()
-            event.stop()
-            if self._hist_idx < len(self._history) - 1:
-                self._hist_idx += 1
-                self._recall(self._history[self._hist_idx])
-            else:
-                self._hist_idx = None
-                self._recall(self._draft)
-            return
-        if event.key == "tab":
-            text = self.text.strip()
-            if text.startswith("/"):
-                prefix = text.lower()
-                matches = [c for c in self.SLASH_COMMANDS if c.lower().startswith(prefix)]
-                if len(matches) == 1:
-                    event.prevent_default()
-                    event.stop()
-                    self.text = matches[0] + " "
-                    self.move_cursor(self.document.end)
-                    self._hide_suggestions()
-                    return
-        await super()._on_key(event)
-
-    @on(TextArea.Changed)
-    def _on_changed(self, _event: TextArea.Changed) -> None:
-        self._sync_height()
-        text = self.text.strip()
-        if text.startswith("/") and len(text) > 1 and "\n" not in text:
-            prefix = text.lower()
-            matches = [c for c in self.SLASH_COMMANDS if c.lower().startswith(prefix)]
-            if matches:
-                self._show_suggestions(matches, prefix)
-            else:
-                self._show_suggestions(["  ? no match — /help for all commands"], "")
-        else:
-            self._hide_suggestions()
-
-    def _show_suggestions(self, matches: list[str], prefix: str) -> None:
-        try:
-            hint = self.app.query_one("#hints", Static)
-        except Exception:  # noqa: BLE001
-            return
-        line = "  ".join(f"[bold]{m}[/]" if m.startswith(prefix) else m for m in matches[:8])
-        if self._suggest_widget is None:
-            hint.update(line)
-        self._suggest_widget = hint
-
-    def _hide_suggestions(self) -> None:
-        if self._suggest_widget is not None:
-            try:
-                self.app.query_one("#hints", Static).update(
-                    "/help · /model · /effort · /paste · /sandbox · /prompt · /config · /mcp · /skills · /memory · !cmd · /clear · /exit"
-                )
-            except Exception:  # noqa: BLE001
-                pass
-            self._suggest_widget = None
-
-    # Some terminals (iTerm2) route the wheel to the focused input instead of
-    # the widget under the pointer, so the transcript never scrolls. Forward
-    # wheel events from the input to the transcript so it scrolls regardless.
-    def _scroll_chat(self, dy: int) -> None:
-        try:
-            self.app.query_one("#transcript").scroll_relative(y=dy, animate=False)
-        except Exception:  # noqa: BLE001 — best effort; never break input on scroll
-            pass
-
-    def on_mouse_scroll_up(self, event) -> None:
-        self._scroll_chat(-3)
-        event.stop()
-
-    def on_mouse_scroll_down(self, event) -> None:
-        self._scroll_chat(3)
-        event.stop()
-
-
-class ImageRouteChoice(Vertical):
-    """Pick how rocky should understand attached images when the active model
-    has no vision. Same inline pattern as InlineApproval (permission.py): docked
-    above the input, transcript stays scrollable, ↑↓ + Enter, and the future
-    resolves 'provider' | 'provider_always' | 'cli' | 'cli_always' | 'skip'.
-    The *_always variants also persist image_route to config — ask once, not
-    every paste. Esc skips (sends the honest placeholder), never cancels the turn.
-    """
-
-    can_focus = True
-
-    BINDINGS = [
-        ("up", "move(-1)", "up"),
-        ("down", "move(1)", "down"),
-        ("enter", "confirm", "select"),
-        ("escape", "pick('skip')", "skip"),
-    ]
-
-    DEFAULT_CSS = """
-    ImageRouteChoice {
-        height: auto;
-        margin: 0 1 1 1;
-        padding: 1 2;
-        background: $surface;
-        border: round $primary;
-        border-title-color: $text-muted;
-    }
-    ImageRouteChoice .route-opt { height: 1; }
-    ImageRouteChoice #route-keys { color: $text-muted; margin-top: 1; }
-    """
-
-    def __init__(self, n_images: int, provider_label: str, cli_label: str,
-                 future: "asyncio.Future[str]") -> None:
-        super().__init__()
-        self._n = n_images
-        self._future = future
-        self._choices: list[tuple[str, str]] = []
-        if provider_label:
-            self._choices += [
-                ("provider", f"◈  describe via {provider_label} — this time"),
-                ("provider_always", f"✓  always describe via {provider_label}"),
-            ]
-        if cli_label:
-            # Name the tool, not "it": `mmx describe {path}` → always row says
-            # "always use mmx" so what gets saved to config is unmistakable.
-            cli_name = cli_label.split()[0] if cli_label.split() else cli_label
-            self._choices += [
-                ("cli", f"⌁  {cli_label} — this time"),
-                ("cli_always", f"✓  always use {cli_name} for images"),
-            ]
-        self._choices.append(("skip", "◦  send without pixels (model is told an image exists)"))
-        self._idx = 0
-
-    def compose(self):
-        for i in range(len(self._choices)):
-            yield Static("", id=f"route-opt-{i}", classes="route-opt")
-        yield Static(
-            f"[{LAVENDER}]↑↓[/] choose   [{LAVENDER}]↵[/] select   "
-            f"[{LAVENDER}]esc[/] skip   [dim]or switch to a model that sees "
-            f"natively: /model (kimi · minimax · stepfun)[/]",
-            id="route-keys",
-        )
-
-    def on_mount(self) -> None:
-        plural = "s" if self._n > 1 else ""
-        self.border_title = f"❖ {self._n} image{plural} — this model can't see"
-        self._render_choices()
-        self.focus()
-
-    def _render_choices(self) -> None:
-        for i, (_value, text) in enumerate(self._choices):
-            row = self.query_one(f"#route-opt-{i}", Static)
-            if i == self._idx:
-                row.update(f"[b {LAVENDER}]▸ {escape(text)}[/]")
-            else:
-                row.update(f"[{MUTED}]  {escape(text)}[/]")
-
-    def action_move(self, delta: int) -> None:
-        self._idx = (self._idx + delta) % len(self._choices)
-        self._render_choices()
-
-    def action_confirm(self) -> None:
-        self._resolve(self._choices[self._idx][0])
-
-    def action_pick(self, choice: str) -> None:
-        self._resolve(choice)
-
-    def _resolve(self, value: str) -> None:
-        if not self._future.done():
-            self._future.set_result(value)
-
-
-class PermChip(Static):
-    """The status-bar approval badge — and the clickable way to change it.
-
-    rockycode never ships an action reachable only by a keystroke, so this chip
-    does three jobs at once: it says which mode is live, it spells out the
-    shift+tab shortcut so the key is discoverable from the screen itself, and
-    clicking it opens the full picker."""
-
-    def on_click(self) -> None:
-        self.app.open_permission_picker()
-
-
-class RockyCodeApp(App):
+class RockyCodeApp(ApprovalMixin, PlanMixin, ModeMixin, EvolveMixin, LoopsMixin, ModelMixin, ArtifactsMixin, GoalMixin, SandboxMixin, ImagesMixin, DocsMixin, App):
     TITLE = "rockycode"
 
     CSS = """
@@ -618,6 +175,8 @@ class RockyCodeApp(App):
     #prompt:focus { border: round $primary; }
     #statusbar { height: 1; padding: 0 2; }
     #cwd { width: 1fr; color: $text-muted; }
+    #editchip { width: auto; margin: 0 2; display: none; }
+    #parkchip { width: auto; margin-right: 2; display: none; }
     #modechip { width: auto; margin-right: 2; }
     #permchip { width: auto; margin-right: 2; }
     #total { width: auto; color: $text-muted; content-align: right middle; }
@@ -652,34 +211,50 @@ class RockyCodeApp(App):
 
     def __init__(
         self, engine: Engine, *, resume: bool = False, resume_session=None, sandbox=None,
-        currency: str = "usd", theme: str = "dark",
+        currency: str = "usd", theme: str = "dark", language: str = "auto", ui_language: str = "auto",
         permission: str = "ask", permission_weakened: bool = False,
         prompt_history: PromptHistory | None = None,
-        exit_sheet: str = "auto", dream: str = "auto",
+        evolve: str = "auto",
     ) -> None:
         super().__init__()
         self.engine = engine
+        self.engine.enable_planning()
         self._prompt_history = prompt_history
         self._resume_requested = resume
         self._resume_session = resume_session  # SessionInfo → skip the picker
         self._titled = False  # one title record per session file (see _maybe_title)
         self._currency = currency
         self._theme_pref = theme
-        self._permission_mode = permission
+        # UI locale is independent of response language. Auto preserves the
+        # historical language=en/zh behavior, with English for auto/auto.
+        self._language = resolve_locale(ui_language, language)
         self._permission_weakened = permission_weakened
-        self._auto_approve: set[str] = set()    # non-bash tools OK'd this session
-        self._auto_approve_bins: set[str] = set()  # bash BINARIES OK'd this session
+        # The shared approval pipeline (engine/approval.py); this app is the
+        # host that answers its `ask` with the inline card. The mode, session
+        # grants, loop-tick state and the verifier all live on it.
+        self._approver = ToolApprover(
+            registry=engine.registry, workdir=engine.workdir, ask=self._ask_request,
+            mode=permission, engine=engine, notify=self._on_approval_note,
+            park=True)  # yolo never waits: a step only the user can allow goes to the waiting list (#parkchip)
+        # "Run it now": the message that tells rocky to pick the steps up → those steps. They are
+        # armed while that message's turn runs, and at no other time.
+        self._pickups: dict[str, list] = {}
+        self._parked_notes: list[str] = []  # "don't run it" decided mid-turn: told to rocky when the turn ends
+        if getattr(engine, "file_access", None) is not None:
+            engine.file_access.local_mode = lambda: self._permission_mode
         self._turn_worker: Worker | None = None  # captured so Esc can cancel it
+        self._delivery_mode = "interrupt"
+        self._delivery_worker: Worker | None = None
+        self._delivery_failed = False
+        self._waiting_external = False
+        self._delivery = TurnDelivery(self._run_delivery, on_change=self._render_status)
         # Loops (/loop — engine/cron.py). The CLI creates the book when it
         # registers loop_start/loop_stop (before the app exists); a bare Engine
         # (tests, serve) gets one here. Session state only — nothing persists.
         from rockycode.engine.cron import LoopBook
         self._loops: LoopBook = getattr(engine, "loop_book", None) or LoopBook(currency=currency)
         engine.loop_book = self._loops
-        self._tick_loop = None                 # the Loop whose tick runs right now
-        self._tick_blocked: dict | None = None  # first ask-tier denial in that tick
         self._cancelled_tick = None            # (loop, tick_no) for _after_cancel's line
-        self._tick_once: set[tuple[str, str]] = set()  # (tool, detail) one-shot grants from /loop allow
         self._quiet_lines: dict[int, Static] = {}      # loop id → its in-place quiet-streak line
         self._loop_hinted = False              # the one-time "want a ceiling?" hint
         from rockycode.pricing import UsageLedger
@@ -691,22 +266,26 @@ class RockyCodeApp(App):
         # an explicit value is the user's own).
         self.sandbox = sandbox  # ChatSandbox | None — created on /sandbox on
         self._local_registry: dict | None = None  # saved so we can swap back
+        self._local_file_access = getattr(engine, "file_access", None)
+        self._local_file_access = self.engine.file_access
         self._sandbox_starting = False  # guard concurrent /sandbox on
         self._lsp_connecting = False  # guard concurrent LSP start
-        # Artifact live mode: None = undecided (ask on first artifact), True/False set.
-        self._artifact_live = getattr(engine, "artifact_live", None)
+        # Preview is opt-in; saving always produces a card without opening a browser.
+        self._artifact_live = bool(getattr(engine, "artifact_live", False))
         self._artifact_server = None  # ArtifactServer once live mode starts
         # Set by the plan gate's "approve": the implement-turn text, submitted
         # from on_worker_state_changed once the current plan-mode turn finishes.
         self._plan_go: str | None = None
-        self._exit_sheet_open = False  # re-entry guard for /exit + ctrl+q
-        self._exit_sheet_fut: asyncio.Future | None = None  # so a 2nd /exit can skip
-        self._exit_sheet = exit_sheet  # "auto" | "on" | "off" (config; live via /config)
-        self._dream_mode = dream       # "auto" | "manual" — launch catch-up dream
-        # Did the launch probe find Ollama? None = not probed (dream off/manual,
-        # memory off, or exited before the worker ran). "auto" sheets key off
-        # this: no live dream consumer → the user is never asked for feedback.
-        self._ollama_ok: bool | None = None
+        # Evolve v2: "auto" | "off" (config; live via /config). Gates the
+        # launch catch-up dream AND the exit-time final reflect below.
+        self._evolve = evolve
+        # Launch-time inbox counts (proposals waiting, routines due) — they keep
+        # /proposals and /routines listed while evolve is off and something waits.
+        self._inbox: dict[str, int] = {}
+        self._exiting = False  # re-entry guard: a 2nd /exit or ctrl+q leaves NOW; nothing new starts once set
+        self._final_reflect = None  # the exit reflect while it runs (see _exit_with_reflect)
+        self._left = False  # exit() was called: Textual refuses every mount from then on
+        self._switch_target = None  # a TaskSwitch set by /task open; the exit flow returns it to the CLI loop
         # Image attachments pending for the NEXT message: chip number → file
         # path. A paste/attach inserts "[image #N]" into the input; submit sends
         # the images whose chip text survived (deleting a chip detaches it).
@@ -716,9 +295,17 @@ class RockyCodeApp(App):
     # animate=False on purpose: instant, snappy scroll (the default animation
     # lags on a fast keypress and, in headless pilot runs, hadn't applied yet).
     def action_transcript_up(self) -> None:
+        from rockycode.tui.plangate import InlinePlanGate
+        if self.query(InlinePlanGate):
+            self.query_one(InlinePlanGate).action_scroll_plan(-1)
+            return
         self._transcript().scroll_page_up(animate=False)
 
     def action_transcript_down(self) -> None:
+        from rockycode.tui.plangate import InlinePlanGate
+        if self.query(InlinePlanGate):
+            self.query_one(InlinePlanGate).action_scroll_plan(1)
+            return
         self._transcript().scroll_page_down(animate=False)
 
     def action_transcript_line_up(self) -> None:
@@ -735,13 +322,25 @@ class RockyCodeApp(App):
         history stays API-valid; on_worker_state_changed resets the status.
         With no turn running, esc closes the doc dock instead (interrupting
         always wins — while streaming, close the dock with its ✕)."""
+        from rockycode.tui.plangate import InlinePlanGate
+        if self.query(InlinePlanGate):
+            self.query_one(InlinePlanGate).action_pick("dismiss")
+            return
         w = self._turn_worker
+        if self._delivery.running:
+            self.run_worker(self._delivery.stop(), group="delivery-control", exclusive=False)
+            return
         if w is not None and w.is_running:
+            self._waiting_external = False
             w.cancel()
             return
         self.action_doc_close()
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
+        # The delivery runner awaits and finalizes its own worker before the
+        # next turn starts. An event handler must not race that cleanup.
+        if event.worker is self._delivery_worker:
+            return
         # A binding-Esc cancel raises CancelledError (BaseException), which the
         # _run_turn wrapper deliberately does NOT catch, so the worker ends
         # CANCELLED. The `is self._turn_worker` guard also excludes the prior
@@ -754,10 +353,17 @@ class RockyCodeApp(App):
             self.run_worker(self._after_cancel(), exclusive=False)
         # Plan gate "approve": the implement turn is submitted only AFTER the
         # plan-mode turn finishes (it can't self-submit from inside its own worker).
-        elif (event.worker is self._turn_worker
+        elif (event.worker is self._turn_worker and not self._exiting
               and event.state is WorkerState.SUCCESS and self._plan_go):
             text, self._plan_go = self._plan_go, None
             self._turn_worker = self._run_turn(text)
+        elif event.worker is self._turn_worker and self._waiting_external:
+            if event.state is WorkerState.SUCCESS:
+                self._waiting_external = False
+                if not self._delivery_failed:
+                    self.run_worker(self._delivery.resume(), exclusive=False)
+            elif event.state in (WorkerState.CANCELLED, WorkerState.ERROR):
+                self._waiting_external = False
 
     async def _after_cancel(self) -> None:
         await self._flush_buffers()
@@ -766,358 +372,44 @@ class RockyCodeApp(App):
         if ct is not None:  # Esc landed on a loop tick — the loop itself lives on
             loop, tick_no = ct
             await self._add(Static(
-                f"[{MUTED}]· loop #{loop.id} tick {tick_no} cancelled — it fires again in "
-                f"{cron_mod.fmt_duration(loop.interval_s)} (/loop stop to end it)[/]", classes="tool-line"))
+                self._t('app.loop_tick_cancelled', p1=loop.id, p2=tick_no, p3=cron_mod.fmt_duration(loop.interval_s)), classes="tool-line"))
         else:
-            await self._add(Static(f"[{MUTED}]· turn cancelled[/]", classes="tool-line"))
+            await self._add(Static(self._t('app.turn_cancelled'), classes="tool-line"))
         try:
             self.query_one(ChatInput).focus()
         except Exception:  # noqa: BLE001 — focus is best-effort during teardown
             pass
 
-    async def _approve_tool(self, name: str, args: dict) -> bool:
-        """Engine approver (wired in on_mount for ask/careful). Runs the pure
-        policy; only asks when it says 'ask' and the tool isn't already allowed
-        for the session. The prompt is shown INLINE (see _ask_inline) so the
-        transcript stays scrollable while it waits. Esc aborts the whole turn."""
-        from rockycode.engine.permission import decide, session_grantable, sniff_danger
-        from rockycode.tui.permission import CancelTurn
+    # ---- approval: the host side of engine/approval.py ----------------------
+    # The pipeline (static policy → session grants → loop-tick rules → verifier
+    # → ask) lives on self._approver. These properties are the names the rest
+    # of the app (and its tests) use for that state.
 
-        tool = self.engine.registry.get(name)
-        risk = getattr(tool, "risk", "risky")
-        verdict = decide(self._permission_mode, risk, args, self.engine.workdir,
-                         tool=name, read_grants=self.engine.read_grants)
-        if verdict == "block":
-            # A never-allowed command (e.g. sudo rm -rf /). Refuse in every mode —
-            # this is the system blocking, not the user denying, so say so loudly.
-            await self._add(Static(
-                f"[bold {RED}]⛔ blocked a dangerous command[/] "
-                f"[dim]{escape(self._tool_detail(name, args))}[/]", classes="error-msg"))
-            return False
-        if verdict == "allow":
-            return True  # in-jail (or already-granted) → nothing new to grant
-        # verdict == "ask": a session grant only covers non-dangerous calls, and
-        # for bash it's scoped to the BINARY, not "all bash" — approving `lake
-        # build` lets `lake …` run but a later `curl`/`rm` still prompts.
-        from rockycode.engine.permission import command_binary
-
-        if session_grantable(name, args):
-            if name == "bash":
-                binary = command_binary(str(args.get("command", "")))
-                if binary and binary in self._auto_approve_bins:
-                    return True
-            elif name in self._auto_approve:
-                self._grant_read_if_escaping(name, args)
-                return True
-        if self._tick_loop is not None:
-            # A loop tick NEVER prompts — the user may be away. Yolo does not
-            # reach this deny: decide() already allowed ask-tier (block-tier
-            # returned above), so a loop that yolo just resumed is not paused
-            # again by the same call. The loop tools answer for themselves
-            # (they refuse inside a tick with a teaching message); a one-shot
-            # grant from /loop allow covers exactly this call once; anything
-            # else is denied, the FIRST such call is recorded, and the loop
-            # pauses after the tick — unless the session is yolo by the time
-            # the tick settles (see _run_tick).
-            if name in ("loop_start", "loop_stop"):
-                return True
-            key = (name, self._tool_detail(name, args))
-            if key in self._tick_once:
-                self._tick_once.discard(key)
-                self._grant_read_if_escaping(name, args)
-                return True
-            if self._tick_blocked is None:
-                self._tick_blocked = {"tool": name, "args": args, "detail": key[1],
-                                      "risk": risk, "warning": sniff_danger(name, args)}
-            return False
-        # A dangerous bash command may NEVER be session-granted → no "allow"
-        # option is offered (session_label=None); only run-once or deny.
-        session_label = None
-        if session_grantable(name, args):
-            if name == "bash":
-                binary = command_binary(str(args.get("command", "")))
-                if binary:
-                    session_label = f"Allow `{binary}` for this session"
-            else:
-                session_label = f"Allow {name} for this session"
-        choice = await self._ask_inline(
-            name, self._tool_detail(name, args), risk, sniff_danger(name, args),
-            session_label=session_label,
-        )
-        if choice in ("once", "session"):
-            if choice == "session":
-                if name == "bash":
-                    b = command_binary(str(args.get("command", "")))
-                    if b:
-                        self._auto_approve_bins.add(b)
-                else:
-                    self._auto_approve.add(name)
-            self._grant_read_if_escaping(name, args)  # make the approval REAL: widen the read jail
-            return True
-        if choice == "cancel":
-            raise CancelTurn()
-        return False  # "deny" (or dismissed) → model gets a [denied] result
-
-    def _grant_read_if_escaping(self, name: str, args: dict) -> None:
-        """Approving an out-of-workdir read must actually let it happen — the hard
-        jail (tools._jail) blocks it otherwise, so the approval would be a lie.
-        Record the resolved path in engine.read_grants (reads only); the jail +
-        permission layer both consult it, so it now runs and won't re-prompt.
-        Secret files (_is_secret_file) are still refused inside a granted path."""
-        if name != "read_file":
-            return
-        p = args.get("path")
-        if not isinstance(p, str) or not p:
-            return
-        try:
-            target = Path(p)
-            if not target.is_absolute():
-                target = self.engine.workdir / target
-            target = target.resolve()
-            wd = self.engine.workdir.resolve()
-        except (OSError, ValueError, RuntimeError):
-            return
-        roots = (wd, *self.engine.allowed_roots, *self.engine.read_grants)
-        if not any(target == r or r in target.parents for r in roots):
-            self.engine.read_grants.add(target)  # escapes every root → grant it
+    def _t(self, key: str, **params) -> str:
+        return tr(key, self._language, **params)
 
     # ---- plan mode ----------------------------------------------------------
 
-    async def _handle_plan(self, text: str) -> None:
-        """/plan [topic] — enter plan mode; /plan off — leave it.
-
-        Plan mode makes the ENGINE read-only (engine/planmode.py gates every tool
-        call before the approver — even in yolo) except for one plan file the
-        model drafts. The instruction rides each user turn, so toggling never
-        touches the system prompt or tool schemas (the prefix cache stays warm)."""
-        from rockycode.engine import planmode
-
-        parts = text.split(maxsplit=1)
-        arg = parts[1].strip() if len(parts) > 1 else ""
-        if arg.lower() == "off":
-            if self.engine.plan_file is None:
-                await self._add(Static(f"[{MUTED}]plan mode is not on — /plan [topic] to start[/]",
-                                       classes="tool-line"))
-                return
-            kept = self.engine.plan_file.relative_to(self.engine.workdir)
-            self.engine.plan_file = None
-            self._render_cwd()
-            await self._add(Static(
-                f"[{VIOLET}]✦ plan mode off[/] [dim]— {kept} is kept for reference; "
-                "rocky acts on it only if you ask[/]", classes="tool-line"))
-            return
-        if self.engine.plan_file is not None:
-            await self._add(Static(
-                f"[{MUTED}]already planning → {self.engine.plan_file.relative_to(self.engine.workdir)} · "
-                f"/plan off to leave[/]", classes="tool-line"))
-            return
-        path = planmode.create_plan_file(self.engine.workdir, topic=arg)
-        self.engine.plan_file = path
-        self._render_cwd()
-        await self._add(Static(
-            f"[{VIOLET}]✦ plan mode[/] — read-only: rocky explores + brainstorms first, then drafts the plan\n"
-            f"  [dim]plan file:[/] {path.relative_to(self.engine.workdir)}\n"
-            f"  [dim]code stays untouched · /plan off to leave[/]", classes="tool-line"))
-
-    def _plan_digest(self) -> "str | None":
-        """Content hash of the plan file (None when plan mode is off / unreadable).
-        Compared before/after a turn: a change IS the handoff signal."""
-        pf = self.engine.plan_file
-        if pf is None:
-            return None
-        try:
-            return hashlib.sha1(pf.read_bytes()).hexdigest()
-        except OSError:
-            return None
-
-    async def _maybe_plan_gate(self, before: "str | None") -> None:
-        """Show the plan-approval gate (inline) when this plan-mode turn changed
-        the plan file. Fires at turn END only, so a mid-turn draft never
-        interrupts. approve → mode off + implement turn (submitted once this
-        worker finishes); discuss → keep planning, input prefilled; exit → mode
-        off, file kept; Esc → keep planning silently."""
-        from rockycode.tui.plangate import InlinePlanGate
-
-        pf = self.engine.plan_file
-        if pf is None:
-            return
-        after = self._plan_digest()
-        if after is None or after == before:
-            return
-        try:
-            plan_text = pf.read_text(errors="replace").strip()
-        except OSError:
-            return
-        if not plan_text:
-            return
-        rel = pf.relative_to(self.engine.workdir)
-        fut: asyncio.Future[str] = asyncio.get_running_loop().create_future()
-        widget = InlinePlanGate(str(rel), plan_text, fut)
-        await self.mount(widget, before=self.query_one("#prompt"))
-        try:
-            choice = await fut
-        finally:
-            if widget.is_mounted:
-                await widget.remove()
-            try:
-                self.query_one(ChatInput).focus()
-            except Exception:  # noqa: BLE001
-                pass
-        if choice == "approve":
-            self.engine.plan_file = None
-            self._render_cwd()
-            await self._add(Static(
-                f"[{VIOLET}]✦ plan approved[/] [dim]— plan mode off, building now[/]", classes="tool-line"))
-            self._plan_go = (f"Plan approved — implement the plan in {rel} now, phase by phase. "
-                             "Stay inside its scope.")
-        elif choice == "goal":
-            # Hand the approved plan to goal: it executes the SAME plan file in the
-            # sandbox (skipping its own planner), then pops back to chat.
-            await self._plan_to_goal(pf, rel)
-        elif choice == "discuss":
-            inp = self.query_one(ChatInput)
-            inp.text = "revise the plan: "
-            inp.focus()
-        elif choice == "exit":
-            self.engine.plan_file = None
-            self._render_cwd()
-            await self._add(Static(
-                f"[{VIOLET}]✦ plan mode off[/] [dim]— {rel} is kept for reference; "
-                "rocky acts on it only if you ask[/]", classes="tool-line"))
-        # "dismiss" (Esc) → keep planning silently
-
-    async def _plan_to_goal(self, plan_file, rel) -> None:
-        """Hand an approved plan file to goal: it runs the SAME plan in the sandbox
-        (skipping its own planner), then pops back to chat. Docker-gated."""
-        import shutil
-
-        self.engine.plan_file = None   # leaving plan mode; goal takes over
-        self._render_cwd()
-        if shutil.which("docker") is None or not await self._docker_ready():
-            await self._add(Static(
-                f"[{AMBER}]◆ goal needs Docker running[/] [dim]— start it, then run /goal; "
-                f"or approve to build {rel} here instead. Your plan {rel} is kept.[/]",
-                classes="tool-line"))
-            return
-        from rockycode.tui.goal_screen import GoalScreen
-
-        backend = self._make_goal_backend(f"implement the approved plan ({rel})", plan_file=plan_file)
-        await self._add(Static(
-            f"[bold {VIOLET}]◆ goal[/] [dim]— running your approved plan in the sandbox "
-            f"(autonomous, isolated); back here when it's done.[/]", classes="tool-line"))
-        summary = await self.push_screen_wait(GoalScreen(backend, f"plan: {rel}"))
-        await self._on_goal_return(summary)
-
-    async def _ask_inline(
-        self, tool: str, detail: str, risk: str, warning: str | None,
-        session_label: str | None = None,
-    ) -> str:
-        """Mount an InlineApproval just above the input and await the user's
-        choice. Docking it into the chat (rather than a modal that owns the
-        screen) keeps the transcript visible and scrollable — pageup / shift+↑↓
-        / the wheel all still work while the prompt waits. Returns one of
-        'once' | 'session' | 'deny' | 'cancel'."""
-        from rockycode.tui.permission import InlineApproval
-
-        fut: asyncio.Future[str] = asyncio.get_running_loop().create_future()
-        widget = InlineApproval(tool, detail, risk, warning, fut, session_label=session_label)
-        await self.mount(widget, before=self.query_one("#prompt"))
-        try:
-            return await fut
-        finally:
-            if widget.is_mounted:
-                await widget.remove()
-            # give focus back to the input so the user can keep typing / scrolling
-            try:
-                self.query_one(ChatInput).focus()
-            except Exception:  # noqa: BLE001 — app may be tearing down
-                pass
-
-    def _tool_detail(self, name: str, args: dict) -> str:
-        """A human-readable one-liner of what the call will do, for the modal."""
-        if name == "bash":
-            return args.get("command", "") or "(no command)"
-        if name == "web_fetch":
-            return args.get("url", "") or "(no url)"
-        if name == "view_image":
-            q = args.get("question", "")
-            return f"look at {args.get('path', '?')}" + (f" — {q}" if q else "")
-        if name in ("write_file", "edit_file"):
-            return f"{name} → {args.get('path', '?')}"
-        if name == "remember":
-            return f"remember: {str(args.get('name') or args.get('content', ''))[:140]}"
-        if name == "loop_start":
-            budget = " · ".join(p for p in (
-                f"for {args['for']}" if args.get("for") else "",
-                f"x{args['count']}" if args.get("count") else "",
-                f"max {args['max_spend']}" if args.get("max_spend") else "") if p) or "no budget"
-            return f"every {args.get('interval', '?')} — {str(args.get('prompt', ''))[:200]} · {budget}"
-        if name == "loop_stop":
-            return f"stop loop #{args.get('id', '?')}"
-        try:
-            return json.dumps(args)[:400]
-        except (TypeError, ValueError):
-            return str(args)[:400]
-
-    def _permission_note(self) -> str:
-        return {
-            "yolo": "yolo — no prompts (esc still stops a turn)",
-            "careful": "careful — every write & command asks first (esc stops a turn)",
-        }.get(self._permission_mode, "ask — risky actions ask first (esc stops a turn)")
-
-    def _perm_chip(self) -> str:
-        """The always-visible status-bar permission indicator (red for yolo)."""
-        if self._permission_mode == "yolo":
-            return f"[{RED}]🔓 yolo · no prompts[/]"
-        if self._permission_mode == "careful":
-            return f"[{MUTED}]🔒 careful[/]"
-        return f"[{MUTED}]🔒 ask[/]"
-
-    def _effort_note(self) -> str:
-        """Current effort-dial reading, wire-honest: names what the provider is
-        actually sent when the dial value and its tier differ (high → medium
-        on an OpenAI-style provider; off → the lowest tier on a model that
-        can't switch thinking off; nothing on a provider without tiers)."""
-        eng = self.engine
-        prov = eng.provider_name
-        if not eng.thinking:
-            if eng.thinking_off:
-                return (f"[{LAVENDER}]off[/] [dim](thinking disabled — "
-                        f"{eng.reasoning_effort} kept for when it's back on)[/]")
-            low = wire_tier("low", eng.reasoning_policy, eng.efforts)
-            return (f"[{LAVENDER}]off[/] [dim]({prov} can't switch thinking off — "
-                    f"sends its lowest tier{f', {low}' if low else ''})[/]")
-        eff = eng.reasoning_effort
-        sent = wire_tier(eff, eng.reasoning_policy, eng.efforts)
-        if sent is None:
-            wire = f" [dim]({prov} has no effort tiers — thinking on, dial not sent)[/]"
-        elif sent != eff:
-            wire = f" [dim](sends {sent} to {prov})[/]"
-        else:
-            wire = ""
-        return f"[{LAVENDER}]{eff}[/]{wire}"
-
     def _render_cwd(self) -> None:
-        plan = f"   [{VIOLET}]📋 plan[/]" if self.engine.plan_file is not None else ""
+        plan = self._t('app.plan') if self.engine.plan_file is not None else ""
         registry = getattr(self.engine, "artifact_registry", None)
         artifacts = ""
-        if registry is not None and registry.count:
+        count = registry.count if registry is not None else 0  # read once: it asks the store
+        if count:
             opened = registry.open_clients
-            open_note = f" · {opened} open" if opened else ""
-            plural = "" if registry.count == 1 else "s"
-            artifacts = f"   [{VIOLET}]▣ {registry.count} artifact{plural}{open_note}[/]"
+            open_note = self._t('app.open', p0=opened) if opened else ""
+            plural = "" if count == 1 or self._language == "zh" else "s"
+            artifacts = self._t('app.artifact', p1=count, p2=plural, p3=open_note)
         # Loops: always visible while any is live — a loop spends while you're
         # away (same reasoning as the yolo chip). A clock while a tick runs.
         loops = ""
         live = self._loops.live()
         if self._tick_loop is not None:
-            loops = (f"   [{VIOLET}]{cron_mod.clock_face(datetime.now())} loop "
-                     f"#{self._tick_loop.id} ticking…[/]")
+            loops = (self._t('app.loop_ticking', p1=cron_mod.clock_face(datetime.now()), p2=self._tick_loop.id))
         elif live:
             nxt = self._loops.next_due()
-            when = f" · next {datetime.fromtimestamp(nxt.next_due):%H:%M}" if nxt else " · paused"
-            loops = (f"   [{VIOLET}]⏱ {len(live)} loop{'s' if len(live) != 1 else ''} · "
-                     f"{self._sym()}{sum(lp.spend for lp in live):.2f}{when}[/]")
+            when = self._t('app.next', p0=datetime.fromtimestamp(nxt.next_due)) if nxt else self._t('app.paused')
+            loops = (self._t('app.loop', p1=len(live), p2='s' if len(live) != 1 and self._language == 'en' else '', p3=self._sym(), p4=sum((lp.spend for lp in live)), p5=when))
         try:
             self.query_one("#cwd", Static).update(
                 f"[{MUTED}]📁 {self.engine.workdir.name}[/]{plan}{artifacts}{loops}"
@@ -1126,129 +418,6 @@ class RockyCodeApp(App):
             pass  # a screen is on top of chat — the badge isn't visible now
         self._render_perm_chip()
 
-    def _render_perm_chip(self) -> None:
-        """Repaint the approval badge. It carries its own key hint (shift+tab)
-        and a hover tooltip, so neither the mode nor the way to change it is
-        ever something you have to remember."""
-        try:
-            chip = self.query_one("#permchip", PermChip)
-        except NoMatches:
-            return  # a screen is on top of chat
-        chip.update(f"{self._perm_chip()} [dim]· shift+tab[/]")
-        chip.tooltip = "click to switch approval mode — shift+tab cycles it"
-
-    def _set_permission_mode(self, mode: str) -> None:
-        """Flip the approval mode for this session (does NOT persist — use /config
-        for that). Tightening clears the session allowlist so tools previously
-        OK'd via 'allow all' will ask again; loosening leaves it untouched."""
-        rank = {"yolo": 0, "ask": 1, "careful": 2}
-        if rank[mode] > rank[self._permission_mode]:
-            self._auto_approve.clear()
-            self._auto_approve_bins.clear()  # tightening revokes bash binary grants too
-        self._permission_mode = mode
-        self._render_cwd()
-
-    def _resume_paused_loops(self) -> int:
-        """Loops paused FOR AN APPROVAL back to running, due now — yolo means
-        there is nothing left to approve. A manual /loop pause is the user's
-        own decision and stays paused (LoopBook.resume_blocked)."""
-        return len(self._loops.resume_blocked())
-
-    async def _apply_permission_switch(self, mode: str) -> None:
-        """Flip the mode, say so in the transcript, re-run the yolo-on-host
-        nudge. Shared by shift+tab, the chip picker and /permission, so the
-        three routes can't drift apart — whichever one you take, the transcript
-        records the switch and names the other two.
-
-        Landing on yolo resumes every loop paused for an approval. Leaving
-        them paused would stick the next check: yolo allows ask-tier, so there
-        is nothing left to approve. A manual /loop pause stays. The receipt
-        says how many came back."""
-        self._set_permission_mode(mode)
-        await self._add(Static(
-            f"[{VIOLET}]✦ permission → {self._permission_note()}[/] "
-            f"[dim](shift+tab · or click the chip)[/]",
-            classes="tool-line"))
-        if mode == "yolo":
-            n = self._resume_paused_loops()
-            if n:
-                noun = "loop" if n == 1 else "loops"
-                await self._add(Static(
-                    f"[{VIOLET}]▶ resumed {n} {noun} paused for approval[/] [dim]— next tick "
-                    f"as soon as the chat is idle (a /loop pause stays paused)[/]",
-                    classes="tool-line"))
-                self._loop_pump()
-        await self._maybe_nudge_yolo_host()
-
-    async def action_cycle_permission(self) -> None:
-        """shift+tab: step the approval mode one notch looser (careful → ask →
-        yolo, then back to careful) for this session — the same switch
-        /permission makes, minus the typing.
-
-        No-ops while an approval prompt or the picker is waiting (changing the
-        rules under a question you're mid-answer to is nonsense) and while a
-        screen sits on top of chat, where the transcript isn't even mounted."""
-        from rockycode.engine.permission import next_mode
-        from rockycode.tui.permission import InlineApproval, PermissionPicker
-
-        if len(self.query(InlineApproval)) or len(self.query(PermissionPicker)):
-            return
-        try:
-            self._transcript()
-        except NoMatches:
-            return
-        await self._apply_permission_switch(next_mode(self._permission_mode))
-
-    @work
-    async def open_permission_picker(self) -> None:
-        """The clickable route to the same switch: an inline card listing all
-        three modes and what each one actually allows. Opened by clicking the
-        status-bar chip or by a bare /permission. Runs as a worker so a click
-        handler can start it without blocking the message pump."""
-        from rockycode.tui.permission import InlineApproval, PermissionPicker
-
-        if len(self.query(PermissionPicker)) or len(self.query(InlineApproval)):
-            return
-        try:
-            self._transcript()
-        except NoMatches:
-            return
-        fut: asyncio.Future[str] = asyncio.get_running_loop().create_future()
-        widget = PermissionPicker(self._permission_mode, fut)
-        await self.mount(widget, before=self.query_one("#prompt"))
-        try:
-            choice = await fut
-        finally:
-            if widget.is_mounted:
-                await widget.remove()
-            try:  # give focus back to the input so typing just works again
-                self.query_one(ChatInput).focus()
-            except Exception:  # noqa: BLE001 — app may be tearing down
-                pass
-        if choice and choice != self._permission_mode:
-            await self._apply_permission_switch(choice)
-
-    def _in_sandbox(self) -> bool:
-        return self.sandbox is not None and self.sandbox.is_running
-
-    async def _maybe_nudge_yolo_host(self) -> None:
-        """When yolo is on but tools run on the real machine (no sandbox), say
-        plainly what that means and point at /sandbox to contain it. Only fires in
-        the exposed state, so it's quiet once a sandbox is on or the mode tightens."""
-        if self._permission_mode != "yolo" or self._in_sandbox():
-            return
-        await self._add(Static(
-            f"[bold {AMBER}]⚠ yolo runs on your machine[/] [dim]— no prompts, so installs, network "
-            f"and git push happen for real. (rocky still refuses the truly destructive.)[/]\n"
-            f"  [dim]want it contained? → [/][{LAVENDER}]/sandbox on[/][dim] runs tools in a throwaway "
-            f"box: offline, your files untouched.[/]",
-            classes="tool-line"))
-
-    # Wheel anywhere scrolls the transcript. Textual scrolls a widget natively
-    # when the pointer is over it; these app-level handlers catch wheel events
-    # that bubble up (e.g. over the input or a gap), so the transcript scrolls
-    # regardless of where the pointer is — works the same in iTerm2, Ghostty,
-    # and the VS Code terminal (all send mouse events; Textual enables them).
     def on_mouse_scroll_up(self, event) -> None:
         self._transcript().scroll_relative(y=-3, animate=False)
 
@@ -1269,8 +438,8 @@ class RockyCodeApp(App):
         #                               the terminal blocks OSC 52 (iTerm2 default)
         self.clear_selection()
         n = len(text.splitlines())
-        what = f"{n} lines" if n > 1 else (f"{len(text)} chars" if len(text) > 24 else repr(text))
-        self.notify(f"⧉ copied {what}", timeout=2)
+        what = self._t('app.lines', p0=n) if n > 1 else (self._t('app.chars', p0=len(text)) if len(text) > 24 else repr(text))
+        self.notify(self._t('app.copied', p0=what), timeout=2)
 
     def _pbcopy(self, text: str) -> bool:
         """Write the system clipboard directly (macOS pbcopy). iTerm2 ships
@@ -1296,6 +465,8 @@ class RockyCodeApp(App):
         with Horizontal(id="topbar"):
             yield Static(self._title_text(), id="title-block")
             yield Static("", id="status")
+        # This project's tasks as clickable notes; hidden until there are two.
+        yield NoteStrip(id="notestrip")
         # #workspace: the doc dock mounts beside the transcript in here, so a
         # docked paper narrows the chat instead of covering it.
         with Horizontal(id="workspace"):
@@ -1309,15 +480,17 @@ class RockyCodeApp(App):
             transcript.can_focus = False
             yield transcript
         prompt = ChatInput(id="prompt", history=self._prompt_history)
-        prompt.border_title = "ask rocky"
-        prompt.border_subtitle = "enter ↵ send · ctrl+j newline · shift+↑↓ / pgup·pgdn scroll history"
+        prompt.border_title = self._t('app.ask_rocky')
+        prompt.border_subtitle = self._t('app.input_keys')
         yield prompt
         with Horizontal(id="statusbar"):
             yield Static(f"[{MUTED}]📁 {self.engine.workdir.name}[/]", id="cwd")
+            yield EditChip("", id="editchip")
+            yield ParkChip("", id="parkchip")
             yield Static("", id="modechip")
             yield PermChip("", id="permchip")
             yield Static("", id="total")
-        yield Static(f"[{MUTED}]drag text = copy · /help · /research · /learn · /model · /effort · /paste · /sandbox · /artifact · /loop · /permission · /config · /mcp · /skills · /memory · /proposals · !cmd · /clear · /exit[/]", id="hints")
+        yield Static(self._t('app.hints_bar'), id="hints")
 
     async def on_mount(self) -> None:
         self.register_theme(ROCKY_THEME)
@@ -1325,9 +498,13 @@ class RockyCodeApp(App):
         self.theme = "rocky-light" if self._theme_pref == "light" else "rocky"
         # Wire the interactive approver — always, even in yolo, so /permission can
         # flip modes mid-session; decide() short-circuits yolo to "allow" (no modal)
-        # at negligible cost. Headless/bench never set an approver, so they keep the
+        # unless explicit shadow-all observation adds a bounded model call.
+        # Headless/bench never set an approver, so they keep the
         # engine's zero-overhead always-allow default.
-        self.engine.approver = self._approve_tool
+        self.engine.approver = self._approver
+        # Running tool calls: call id → (its transcript line, its arguments). The
+        # line a call starts with becomes its result line.
+        self._tool_lines: dict[str, tuple[Static, dict]] = {}
         # Streaming buffers; the flush timer is the only writer to widgets.
         self._think_buf = ""
         self._reply_buf = ""
@@ -1345,16 +522,18 @@ class RockyCodeApp(App):
         # path as /loop; the pump starts a due tick only when the chat is idle.
         self._loops.notify = self._on_loop_event
         self.set_interval(1.0, self._loop_pump)
-        self._transcript().border_title = "♪ chat"
+        # Another terminal can create a task or leave mail; the strip catches up.
+        self.set_interval(5.0, self.refresh_notes)
+        self._transcript().border_title = self._t('app.chat')
         # Persistent permission reminder in the bottom bar — always visible, so a
         # no-prompt (yolo) session can't be forgotten mid-research.
+        self._setup_artifacts()
         self._render_cwd()
         self._render_mode_chip()  # a launch-time config mode lights the chip
         if self._permission_weakened:
+            warning = self._t("app.permission_weakened", mode=self._permission_mode)
             await self._add(Static(
-                f"[bold {RED}]⚠ this folder's .rockycode/config.toml lowered permission to "
-                f"'{self._permission_mode}' — rocky runs with fewer prompts here than your "
-                f"default. (see the chip in the status bar)[/]", classes="error-msg"))
+                f"[bold {RED}]⚠ {warning}[/]", classes="error-msg"))
         # Inside the TUI, not the pre-launch console — the alt screen covers
         # anything printed before the app starts (found in cici's live test:
         # the warning was only visible after exit, i.e. exactly too late).
@@ -1362,8 +541,7 @@ class RockyCodeApp(App):
             await self._add(Static(f"[{AMBER}]· {escape(w)}[/]", classes="tool-line"))
         if os.environ.get("TERM_PROGRAM") == "iTerm.app":
             await self._add(Static(
-                "[dim]· iterm2: clicks, links and drag-copy need Settings → Profiles → "
-                "Terminal → 'Enable mouse reporting' (⌥-drag keeps native selection)[/]",
+                self._t('app.iterm2_mouse_hint'),
                 classes="tool-line"))
         if self._resume_session is not None:
             await self._load_session(self._resume_session)  # direct: --resume <id>
@@ -1376,69 +554,43 @@ class RockyCodeApp(App):
         await self._maybe_nudge_yolo_host()
         # Catch-up dream over past sessions (background; silent when idle-less).
         self._dream_catchup()
-        # Dream proposals waiting from earlier passes — one muted, clickable-by-
-        # command line; the inbox never nags beyond this.
-        try:
-            from rockycode.dream.proposals import ProposalStore
-            from rockycode.session import get_project
-            n = len(ProposalStore().list(project_id=get_project(self.engine.workdir).id))
-            if n:
-                await self._add(Static(
-                    f"[{MUTED}]🌙 {n} dream proposal(s) waiting — /proposals to review[/]",
-                    classes="tool-line"))
-        except Exception:  # noqa: BLE001 — the inbox must never break startup
-            pass
-        # Due routines: leased ones run themselves (that's what the lease
-        # bought); the rest get one muted line. Catch-up, never a daemon.
-        try:
-            from rockycode.routines import RoutineStore
-            from rockycode.session import get_project
-            rstore = RoutineStore()
-            due = rstore.due(project_id=get_project(self.engine.workdir).id)
-            leased = [r for r in due if rstore.lease_active(r)]
-            manual = [r for r in due if not rstore.lease_active(r)]
-            if manual:
-                names = ", ".join(r.name for r in manual)
-                await self._add(Static(
-                    f"[{MUTED}]⏰ routine(s) due: {names} — /routines to run[/]",
-                    classes="tool-line"))
-            for r in leased:
-                self._run_routine_bg(r)
-        except Exception:  # noqa: BLE001 — routines must never break startup
-            pass
+        await self._evolve_startup()
 
     async def _greet(self) -> None:
-        await self._add(Static(WELCOME, classes="rocky-label"))
+        from rockycode.tui.tasks import attach
+        attach(self)
+        await self._add(Static(self._t("app.welcome"), classes="rocky-label"))
+        label = self._t("app.permission")
+        hint = self._t("app.perm_switch")
         await self._add(Static(
-            f"[dim]· permission: {self._permission_note()}[/]\n"
-            f"[dim]  switch it any time: shift+tab cycles, or click the 🔒 chip in the "
-            f"status bar (also /permission)[/]", classes="tool-line"))
+            f"[dim]· {label}: {self._permission_note()}[/]\n[dim]  {hint}[/]", classes="tool-line"))
+        if self._evolve == "auto" and reflect_mod.attached(self.engine) is not None:
+            await self._maybe_evolve_disclosure()
         for fname in getattr(self.engine, "project_notes", []) or []:
-            await self._add(Static(f"[dim]· loaded {fname} (project instructions)[/]", classes="tool-line"))
+            await self._add(Static(self._t('app.loaded_project_instructions', p0=fname), classes="tool-line"))
         n_skills = len(getattr(self.engine, "skills", []) or [])
         if n_skills:
             await self._add(
-                Static(f"[dim]· {n_skills} skill(s) available — /skills to list[/]", classes="tool-line")
+                Static(self._t('app.skill_s_available_skills_to_list', p0=n_skills), classes="tool-line")
             )
         if getattr(self.engine, "web_enabled", False):
             order = " → ".join(getattr(self.engine, "web_order", ()) or ())
-            await self._add(Static(f"[dim]· web tools on (search: {order})[/]", classes="tool-line"))
+            await self._add(Static(self._t('app.web_tools_on_search', p0=order), classes="tool-line"))
         if getattr(self.engine, "mcp_manager", None) and self.engine.mcp_manager.configs:
             names = ", ".join(self.engine.mcp_manager.configs)
-            await self._add(Static(f"[dim]· connecting mcp servers: {names}…[/]", classes="tool-line"))
+            await self._add(Static(self._t('app.connecting_mcp_servers', p0=names), classes="tool-line"))
             self._connect_mcp()
         if getattr(self.engine, "lsp_manager", None) is not None:
-            await self._add(Static("[dim]· connecting lsp…[/]", classes="tool-line"))
+            await self._add(Static(self._t('app.connecting_lsp'), classes="tool-line"))
             self._connect_lsp()
-        # Artifacts are lazy: create_artifact calls _artifact_target, which asks
-        # once (unless --live) and starts the server on demand. No idle server.
+        # An explicit live preference lazily starts the preview server.
         self.engine.artifact_target = self._artifact_target
 
     @work
     async def _resume_flow(self) -> None:
         from rockycode.tui.resume import ResumePicker
 
-        info = await self.push_screen_wait(ResumePicker(self.engine.workdir))
+        info = await self.push_screen_wait(ResumePicker(self.engine.workdir, language=self._language))
         if info is None:
             await self._greet()  # cancelled → fresh session
         else:
@@ -1448,124 +600,33 @@ class RockyCodeApp(App):
     async def _load_session(self, info) -> None:
         """Carry a stored session into this one — shared by the picker and the
         direct `--resume <id>` path."""
-        from rockycode.session import load_history, public_id
+        from rockycode.session import load_history, load_planning_state, public_id
 
-        carried = self.engine.resume(load_history(info.path), from_session=info.session_id)
+        try:
+            carried = self.engine.resume(load_history(info.path), from_session=info.session_id,
+                                         planning_state=load_planning_state(info.path))
+        except ValueError as exc:
+            await self._add(Static(escape(self._t('app.session_not_loaded', p0=exc)), classes="error-msg"))
+            return
+        from rockycode.tui.tasks import attach
+        attach(self, info)
+        self._render_cwd()
         await self._replay(carried)
         await self._add(Static(
-            f"[dim]· resumed {public_id(info.session_id)} · {escape(info.display_title)} · "
-            f"{info.n_messages} msgs[/]", classes="tool-line"))
+            self._t('app.resumed_msgs', p0=public_id(info.session_id), p1=escape(info.display_title), p2=info.n_messages), classes="tool-line"))
+        if self.engine.planning.active:
+            await self._add(Static(self._t('app.plan_mode_restored'),
+                                   classes="tool-line"))
         if self.engine.resumed_mode:
             from rockycode.engine.modes import discover
             fam = next((f for f, ms in discover(self.engine.workdir).items()
                         if self.engine.resumed_mode in ms), "research")
             await self._add(Static(
-                f"[dim]· mode {escape(self.engine.resumed_mode)} was active in that session — "
-                f"/{fam} {escape(self.engine.resumed_mode)} to re-enter[/]",
+                self._t('app.mode_was_active', p0=escape(self.engine.resumed_mode), p1=fam, p2=escape(self.engine.resumed_mode)),
                 classes="tool-line"))
+        label = self._t("app.permission")
         await self._add(Static(
-            f"[dim]· permission: {self._permission_note()}[/]", classes="tool-line"))
-
-    def _render_mode_chip(self) -> None:
-        name = self.engine.mode_name
-        self.query_one("#modechip", Static).update(
-            f"[{LAVENDER}]◉ {name}[/]" if name else "")
-
-    async def _handle_mode_cmd(self, family: str, text: str) -> None:
-        """/research and /learn — bare opens the picker (or applies the single
-        typeless mode), `<name>` is the direct path, `off` leaves, `always`
-        makes it this folder's launch default, `never` clears that default."""
-        from rockycode.engine.modes import discover, resolve
-
-        args = text.split()[1:]
-        arg = args[0].lower() if args else ""
-        if arg == "off":
-            if self.engine.mode_name is None:
-                await self._add(Static(f"[{MUTED}]· no mode active[/]", classes="tool-line"))
-            else:
-                self.engine.clear_mode()
-                self._render_mode_chip()
-                await self._add(Static(
-                    f"[{MUTED}]· mode off — plain rocky again[/]", classes="tool-line"))
-            return
-        if arg == "always":
-            name = args[1].lower() if len(args) > 1 else (self.engine.mode_name or "")
-            if not name:
-                await self._add(Static(
-                    f"[{MUTED}]· nothing to persist — enter a mode first (/{family}), "
-                    f"then /{family} always[/]", classes="tool-line"))
-                return
-            # Built-ins only: a folder default is applied silently at launch, so a
-            # cloned repo's local mode file must never ride in through it.
-            mode, err = resolve(family, name, workdir=self.engine.workdir, builtin_only=True)
-            if mode is None:
-                await self._add(Static(
-                    f"[{MUTED}]· {escape(err)} (only built-in modes can be a folder default)[/]",
-                    classes="tool-line"))
-                return
-            from rockycode.config import set_project_value
-            _v, werr = set_project_value(self.engine.workdir, "mode", mode.name)
-            if werr:
-                await self._add(Static(f"[{AMBER}]? {escape(werr)}[/]", classes="tool-line"))
-                return
-            if self.engine.mode_name != mode.name:
-                await self._apply_mode(family, mode)
-            await self._add(Static(
-                f"[{MUTED}]· saved — rocky starts in {mode.name} mode in this folder "
-                f"(undo: /{family} never)[/]", classes="tool-line"))
-            return
-        if arg == "never":
-            from rockycode.config import set_project_value
-            _v, werr = set_project_value(self.engine.workdir, "mode", "")
-            await self._add(Static(
-                f"[{AMBER}]? {escape(werr)}[/]" if werr else
-                f"[{MUTED}]· folder default cleared — modes are per-session again[/]",
-                classes="tool-line"))
-            return
-        if arg:
-            mode, err = resolve(family, arg, workdir=self.engine.workdir)
-            if mode is None:
-                await self._add(Static(f"[{MUTED}]· {escape(err)}[/]", classes="tool-line"))
-                return
-            await self._apply_mode(family, mode)
-            return
-        # Bare command: a single-mode family (typeless /learn) applies directly;
-        # otherwise — or when a mode is active, so "off" stays reachable — picker.
-        modes = list(discover(self.engine.workdir).get(family, {}).values())
-        if not modes:
-            await self._add(Static(f"[{MUTED}]· no {family} modes installed[/]", classes="tool-line"))
-        elif len(modes) == 1 and self.engine.mode_name is None:
-            await self._apply_mode(family, modes[0])
-        else:
-            self._mode_picker_flow(family, modes)
-
-    @work
-    async def _mode_picker_flow(self, family: str, modes: list) -> None:
-        from rockycode.tui.modepicker import ModePicker
-
-        result = await self.push_screen_wait(
-            ModePicker(family, modes, active=self.engine.mode_name))
-        if result == "off":
-            self.engine.clear_mode()
-            self._render_mode_chip()
-            await self._add(Static(
-                f"[{MUTED}]· mode off — plain rocky again[/]", classes="tool-line"))
-        elif result is not None:
-            await self._apply_mode(family, result)
-        self.query_one(ChatInput).focus()
-
-    async def _apply_mode(self, family: str, mode) -> None:
-        """Swap the contract in + the entry card that teaches the direct path
-        (same teach-at-use pattern as the resume exit card)."""
-        self.engine.set_mode(mode.name, mode.body)
-        self._render_mode_chip()
-        await self._add(Static(
-            f"[bold {LAVENDER}]◉ {mode.name}[/] [{MUTED}]— {escape(mode.description)}[/]",
-            classes="tool-line"))
-        direct = f"/{family}" if mode.name == family else f"/{family} {mode.name}"
-        await self._add(Static(
-            f"[{MUTED}]  leave with /{family} off · folder default: /{family} always · "
-            f"next time, jump straight in: {direct}[/]", classes="tool-line"))
+            f"[dim]· {label}: {self._permission_note()}[/]", classes="tool-line"))
 
     def _maybe_title(self) -> None:
         """Name the session once its first exchange exists: a background flash
@@ -1597,6 +658,8 @@ class RockyCodeApp(App):
         t = await generate_title(self.engine.client, first_user, first_reply, model=self.engine.model)
         if t:
             self.engine.trajectory.title(t)
+            if getattr(self, "_task_session", None):
+                self._task_session.retitle(t)  # an untitled task's note takes the session's name
 
     async def _replay(self, messages: list[dict]) -> None:
         """Render a carried conversation so the prior session is visible."""
@@ -1616,7 +679,12 @@ class RockyCodeApp(App):
             elif role == "assistant":
                 if m.get("tool_calls"):
                     for tc in m["tool_calls"]:
-                        await self._add(Static(f"  [{PURPLE}]⚒[/] {tc['function']['name']}", classes="tool-line"))
+                        try:
+                            args = json.loads(tc["function"].get("arguments") or "{}")
+                        except (TypeError, ValueError):
+                            args = {}
+                        await self._add(Static(self._tool_text(f"[{PURPLE}]⚒[/]", tc["function"]["name"], args),
+                                               classes="tool-line"))
                 if isinstance(content, str) and content.strip():
                     await self._add(Static(f"[bold {PURPLE}]♪♫ rocky ▸[/]", classes="rocky-label"))
                     md = Markdown(
@@ -1630,234 +698,58 @@ class RockyCodeApp(App):
     @work(group="mcp", exclusive=False)
     async def _connect_mcp(self) -> None:
         mgr = self.engine.mcp_manager
-        await mgr.start()
-        self.engine.registry.update(mgr.tools())
+        runtime = getattr(self.engine, "runtime", None)
+        if runtime is not None:
+            await runtime.start_mcp()
+        else:
+            await mgr.start()
+            self.engine.registry.update(mgr.tools())
         ok = len(mgr.actors)
         n_tools = len(mgr.tools())
-        line = f"[dim]· mcp ready: {ok} server(s), {n_tools} tools[/]"
+        line = self._t('app.mcp_ready_server_s_tools', p0=ok, p1=n_tools)
         if mgr.failures:
-            line += f" [{MUTED}]({len(mgr.failures)} failed — /mcp for details)[/]"
+            line += self._t('app.failed_mcp_for_details', p1=len(mgr.failures))
         await self._add(Static(line, classes="tool-line"))
-
-    async def _artifact_target(self):
-        """Decide live vs static for artifacts, lazy-starting the server.
-
-        Called by create_artifact. Asks once (unless --live already decided),
-        remembers the answer for the session, and returns the running
-        ArtifactServer (live) or None (static file://).
-        """
-        if self._artifact_live is False:
-            return None
-        if self._artifact_live is None:
-            choice = await self.push_screen_wait(ArtifactLiveModal())
-            self._artifact_live = choice == "live"
-            if not self._artifact_live:
-                await self._add(Static(
-                    "[dim]· artifacts: static (file://) — /artifact live on to enable live updates[/]",
-                    classes="tool-line"))
-                return None
-        if self._artifact_server is None:
-            from rockycode.engine.artifact import ArtifactServer
-            srv = ArtifactServer(
-                self.engine.workdir,
-                registry=getattr(self.engine, "artifact_registry", None),
-            )
-            await srv.start()
-            self._artifact_server = srv
-            self.engine.artifact_server = srv
-            await self._add(Static(
-                f"[dim]· artifacts live at {srv.base_url} — tab auto-refreshes on rebuild[/]",
-                classes="tool-line"))
-        return self._artifact_server
 
     @work(group="lsp", exclusive=False)
     async def _connect_lsp(self) -> None:
         mgr = self.engine.lsp_manager
         try:
-            await mgr.start()  # default session
-            await asyncio.wait_for(mgr.ready, timeout=30)
-            await mgr.start_cleanup_loop()
-            # Register the 4 active LSP tools now that the server is ready.
+            runtime = getattr(self.engine, "runtime", None)
             from rockycode.engine.lsp import build_lsp_tools
+            if runtime is not None:
+                await runtime.start_lsp()
+                if runtime.lsp_error:
+                    raise RuntimeError(runtime.lsp_error)
+            else:
+                await mgr.start()
+                await asyncio.wait_for(mgr.ready, timeout=30)
+                await mgr.start_cleanup_loop()
+                self.engine.registry.update(build_lsp_tools(mgr))
             lsp_tools = build_lsp_tools(mgr)
-            self.engine.registry.update(lsp_tools)
             n_tools = len(lsp_tools)
             await self._add(
-                Static(f"[dim]· lsp ready ({mgr.command.split('/')[-1]}) — "
-                       f"diagnostics + {n_tools} tools[/]",
+                Static(self._t('app.lsp_ready', p0=mgr.command.split('/')[-1], p1=n_tools),
                        classes="tool-line")
             )
         except Exception as exc:
             await self._add(
-                Static(f"[dim]· lsp unavailable: {exc} — diagnostics disabled[/]",
+                Static(self._t('app.lsp_unavailable', p0=exc),
                        classes="tool-line")
             )
 
-    @work(group="dream", exclusive=True, exit_on_error=False)
-    async def _dream_catchup(self) -> None:
-        """Phase 1 slice: the catch-up dream. At launch, quietly consolidate
-        this project's UN-DREAMED past sessions on local Ollama (free, private
-        — the only reader allowed to see exit-sheet feedback). Silent unless
-        it actually dreamed: no memory store / no Ollama / lock held / nothing
-        pending → no noise. The current session is excluded; it gets its turn
-        on a future launch, after its outcome record exists."""
-        import httpx
-
-        from rockycode.dream.core import OLLAMA_URL, DreamRunner
-
-        if self._dream_mode != "auto" or getattr(self.engine, "memory_store", None) is None:
-            return
-        try:
-            async with httpx.AsyncClient(timeout=2.0) as http:
-                (await http.get(f"{OLLAMA_URL}/api/tags")).raise_for_status()
-        except Exception:  # noqa: BLE001 — no ollama, no dream, no nagging
-            self._ollama_ok = False
-            return
-        self._ollama_ok = True
-        index = None
-        try:
-            from rockycode.memory.index import MemoryIndex
-            index = MemoryIndex(self.engine.memory_store)
-            index.conn()
-        except Exception:  # noqa: BLE001 — semantic index is optional
-            index = None
-        # The judge reuses the LIVE engine's client + model — no new auth, and
-        # the sheet never reaches it (condense's default hides feedback).
-        from rockycode.dream.judge import TranscriptJudge
-        runner = DreamRunner(
-            self.engine.workdir,
-            exclude={self.engine.trajectory.session_id},
-            judge=TranscriptJudge(self.engine.client, self.engine.model),
-        )
-        try:
-            report = await runner.run(limit=5, index=index)
-        except RuntimeError:
-            return  # another dream holds the lock — it's being handled
-        except Exception:  # noqa: BLE001 — a failed dream must never disturb chat
-            return
-        if report.sessions_digested:
-            drafted = " · drafted a proposal, /proposals" if report.proposals_drafted else ""
-            await self._add(Static(
-                f"[{MUTED}]🌙 rocky dreamed over {report.sessions_digested} past session(s) — "
-                f"+{report.facts_added} facts, {report.facts_updated} updated · "
-                f"/memory to browse{drafted}[/]",
-                classes="tool-line"))
-
-    @work(group="proposals", exclusive=True, exit_on_error=False)
-    async def _review_proposals(self) -> None:
-        """Walk this project's pending dream proposals, one inline card each.
-        Approve installs the skill globally; archive keeps the file; later
-        stops the walk and leaves the rest pending. The card is the trust
-        boundary — dream drafts, only a human installs."""
-        from rockycode.dream.proposals import ProposalStore
-        from rockycode.session import get_project
-        from rockycode.tui.proposalcard import ProposalCard
-
-        store = ProposalStore()
-        pending = store.list(project_id=get_project(self.engine.workdir).id)
-        if not pending:
-            await self._add(Static(
-                f"[{MUTED}]no pending proposals — rocky drafts them while dreaming, "
-                f"when a pattern keeps coming back[/]", classes="tool-line"))
-            return
-        for p in pending:
-            fut: asyncio.Future[str] = asyncio.get_running_loop().create_future()
-            card = ProposalCard(p, fut)
-            await self.mount(card, before=self.query_one("#prompt"))
-            try:
-                choice = await fut
-            finally:
-                if card.is_mounted:
-                    await card.remove()
-            if choice == "install":
-                installed = store.approve(p)
-                await self._add(Static(
-                    f"[{VIOLET}]✦ skill '{p.name}' installed[/] "
-                    f"[dim]→ {installed.parent} · loads next session (/skills)[/]",
-                    classes="tool-line"))
-            elif choice == "archive":
-                store.archive(p)
-                await self._add(Static(
-                    f"[{MUTED}]· archived '{p.name}' — kept under proposals/archived[/]",
-                    classes="tool-line"))
-            else:  # later — stop walking, leave the rest pending
-                await self._add(Static(
-                    f"[{MUTED}]· later — /proposals when you're ready[/]", classes="tool-line"))
-                break
-        try:
-            self.query_one(ChatInput).focus()
-        except Exception:  # noqa: BLE001 — focus is best-effort
-            pass
-
-    @work(group="routines", exclusive=False, exit_on_error=False)
-    async def _run_routine_bg(self, r) -> None:
-        """Run one routine detached (sandboxed exec) and report a single line.
-        Docker down / any failure = a loud line, never a broken chat."""
-        from rockycode.routines import RoutineStore, run_routine
-
-        store = RoutineStore()
-        await self._add(Static(
-            f"[{MUTED}]⏰ routine {r.name} running (sandboxed)…[/]", classes="tool-line"))
-        try:
-            res = await run_routine(store, r, model=self.engine.model,
-                                    client=self.engine.client)
-        except Exception as e:  # noqa: BLE001
-            await self._add(Static(
-                f"[{AMBER}]⏰ routine {r.name} failed: {e}[/]", classes="tool-line"))
-            return
-        where = r.output_dir or "last-run.md (beside the routine)"
-        await self._add(Static(
-            f"[{MUTED}]🌙 routine {r.name}: {res['status']} · ${res['cost']:.4f} · "
-            f"see {where} · {res['session']}[/]", classes="tool-line"))
-
-    @work(group="routines", exclusive=True, exit_on_error=False)
-    async def _review_routines(self) -> None:
-        """Walk due routines, one inline card each: run / lease / later / off."""
-        from rockycode.routines import RoutineStore
-        from rockycode.session import get_project
-        from rockycode.tui.routinecard import RoutineCard
-
-        store = RoutineStore()
-        due = store.due(project_id=get_project(self.engine.workdir).id)
-        if not due:
-            await self._add(Static(
-                f"[{MUTED}]no routines due — they come back on their cadence[/]",
-                classes="tool-line"))
-            return
-        for r in due:
-            fut: asyncio.Future[str] = asyncio.get_running_loop().create_future()
-            card = RoutineCard(r, store.state(r).lease_spent, fut)
-            await self.mount(card, before=self.query_one("#prompt"))
-            try:
-                choice = await fut
-            finally:
-                if card.is_mounted:
-                    await card.remove()
-            if choice == "run":
-                self._run_routine_bg(r)
-            elif choice == "auto":
-                store.grant_lease(r, days=7, budget=r.budget_lease)
-                await self._add(Static(
-                    f"[{VIOLET}]✦ auto lease granted[/] [dim]— {r.name} runs itself for 7 days "
-                    f"or ${r.budget_lease:.2f}, whichever ends first; renew from this card[/]",
-                    classes="tool-line"))
-                self._run_routine_bg(r)
-            elif choice == "off":
-                r.enabled = False
-                store.save(r)
-                await self._add(Static(
-                    f"[{MUTED}]· {r.name} turned off — re-enable in its routine.toml[/]",
-                    classes="tool-line"))
-            else:  # later — stop walking
-                await self._add(Static(
-                    f"[{MUTED}]· later — /routines when you're ready[/]", classes="tool-line"))
-                break
-        try:
-            self.query_one(ChatInput).focus()
-        except Exception:  # noqa: BLE001 — focus is best-effort
-            pass
-
     async def on_unmount(self) -> None:
+        registry = getattr(self.engine, "artifact_registry", None)
+        if registry is not None:
+            registry.unsubscribe(self._artifact_changed)
+        await self._delivery.close()
+        if getattr(self, "_task_session", None):
+            self._task_session.close()
+        runtime = getattr(self.engine, "runtime", None)
+        if runtime is not None:
+            runtime.sandbox = self.sandbox  # includes /sandbox toggles
+            await runtime.close()
+            return
         mgr = getattr(self.engine, "mcp_manager", None)
         if mgr is not None:
             try:
@@ -1881,324 +773,7 @@ class RockyCodeApp(App):
             except Exception:  # noqa: BLE001
                 pass
 
-    # ---- loops (/loop · /cron — engine/cron.py) ------------------------------
-
-    def _sym(self) -> str:
-        return "¥" if self._currency == "cny" else "$"
-
-    def _idle_for_tick(self) -> bool:
-        """A tick may start only when nobody — human or engine — is mid-anything:
-        no turn running, no screen over the chat (goal, picker, modal), no inline
-        card awaiting a human (approval, plan gate, routine/proposal/loop card,
-        image route, exit sheet), no sandbox start in flight."""
-        w = self._turn_worker
-        if w is not None and w.is_running:
-            return False
-        if len(self.screen_stack) > 1 or self._exit_sheet_open or self._sandbox_starting:
-            return False
-        from rockycode.tui.loopcard import LoopCard
-        from rockycode.tui.permission import InlineApproval, PermissionPicker
-        from rockycode.tui.plangate import InlinePlanGate
-        from rockycode.tui.proposalcard import ProposalCard
-        from rockycode.tui.routinecard import RoutineCard
-        for cls in (InlineApproval, InlinePlanGate, RoutineCard, ProposalCard, LoopCard,
-                    ImageRouteChoice, PermissionPicker):
-            if len(self.query(cls)):
-                return False
-        return True
-
-    def _loop_pump(self) -> None:
-        """1 Hz timer: start the oldest due loop's tick when the session is idle.
-        Sync and cheap. The tick is a worker in the SAME group as user turns —
-        a submit cancels it — and because the pump only starts one when idle, a
-        tick can never cancel a user turn. Missed ticks never stack: due() hands
-        a loop over once however long the session was busy."""
-        if self._tick_loop is not None:
-            return
-        due = self._loops.due()
-        if not due or not self._idle_for_tick():
-            return
-        self._turn_worker = self._run_tick(due[0])
-
-    @work(group="turn", exclusive=True)
-    async def _run_tick(self, loop) -> None:
-        """One tick = one ordinary turn on the session engine, with three twists:
-        the marker rides the user turn (cron.tick_marker), the approver never
-        prompts (_approve_tool), and a QUIET tick is folded away — its widgets
-        replaced by one streak line and its messages rolled back out of live
-        context (the trajectory keeps them). NOTE stays; DONE ends the loop; a
-        denied ask pauses it unless the session is yolo by the time the tick
-        settles (ask-tier then runs, so pausing would stick a resumed loop);
-        a user-set budget stops it; otherwise maybe one muted running-cost
-        reminder."""
-        book = self._loops
-        now = datetime.now()
-        tick_no = book.begin_tick(loop)
-        self._tick_loop, self._tick_blocked = loop, None
-        n_hist = len(self.engine.history)
-        n_widgets = len(self._transcript().children)
-        cost_before = self._ledger.cost(self._currency)
-        header = Static(
-            f"[{MUTED}]{cron_mod.clock_face(now)} loop #{loop.id} · tick {tick_no} · {now:%H:%M}[/]",
-            classes="tool-line")
-        await self._add(header)
-        self._render_cwd()
-        completed = cancelled = False
-        try:
-            await self._drive_turn(cron_mod.tick_marker(loop, tick_no, now))
-            completed = True
-        except asyncio.CancelledError:
-            cancelled = True  # a submit (worker replaced) or Esc (same worker)
-            raise
-        except Exception as e:  # noqa: BLE001 — one tick must never take the app down
-            try:
-                await self._flush_buffers()
-                await self._finalize_reply()
-            except Exception:  # noqa: BLE001
-                pass
-            self._set_status(AgentState.IDLE)
-            await self._add(Static(
-                f"✗ loop #{loop.id} tick {tick_no}: {escape(f'{type(e).__name__}: {e}')}",
-                classes="error-msg"))
-        finally:
-            self._tick_loop = None
-            if not completed:
-                # Settle so the loop stays alive and fires again; nothing to fold.
-                book.end_tick(loop, "cancelled" if cancelled else "error",
-                              cost=max(0.0, self._ledger.cost(self._currency) - cost_before))
-                if cancelled and get_current_worker() is self._turn_worker:
-                    self._cancelled_tick = (loop, tick_no)  # Esc: _after_cancel says so
-                self._render_cwd()
-        if not completed:
-            return
-
-        cost = max(0.0, self._ledger.cost(self._currency) - cost_before)
-        verdict, msg = cron_mod.parse_tick_reply(_last_reply(self.engine.history, n_hist))
-        blocked, self._tick_blocked = self._tick_blocked, None
-        reason = book.end_tick(loop, verdict, cost=cost, message=msg)
-        at = datetime.now()
-        face = cron_mod.clock_face(at)
-        sym = self._sym()
-        if verdict == cron_mod.QUIET and not blocked:
-            # Fold: the widgets go, the messages leave LIVE context (trajectory
-            # keeps every record), one streak line updates in place.
-            for w in list(self._transcript().children)[n_widgets:]:
-                await w.remove()
-            self.engine.rollback(n_hist, reason=f"loop #{loop.id} quiet tick {tick_no}")
-            text = f"[{MUTED}]{face} loop #{loop.id} · quiet ×{loop.quiet_streak} · last {at:%H:%M}[/]"
-            line = self._quiet_lines.get(loop.id)
-            if line is not None and line.is_mounted:
-                line.update(text)
-            else:
-                line = Static(text, classes="tool-line")
-                self._quiet_lines[loop.id] = line
-                await self._add(line)
-        else:
-            self._quiet_lines.pop(loop.id, None)  # the next quiet starts a fresh streak line
-            header.update(
-                f"[{VIOLET}]{face} loop #{loop.id} · tick {tick_no} · {at:%H:%M} · {verdict}[/]")
-        # A denial recorded before a mid-tick switch to yolo must not pause:
-        # yolo allows ask-tier, so the loop stays on its schedule. Block-tier
-        # never sets `blocked` — that refusal already printed on its own.
-        if blocked and loop.status == "running" and self._permission_mode != "yolo":
-            book.pause(loop, blocked_on=blocked)
-            await self._add(Static(
-                f"[{AMBER}]{face} loop #{loop.id} paused[/] [dim]— tick {tick_no} needed approval "
-                f"for[/] {escape(str(blocked['detail'])[:160])}\n"
-                f"  [{LAVENDER}]/permission yolo[/] [dim](or shift+tab until yolo) resumes it and runs "
-                f"unattended · [/][{LAVENDER}]/loop allow {loop.id}[/] [dim]decides this call · "
-                f"[/][{LAVENDER}]/loop resume {loop.id}[/] [dim]retries without a grant[/]",
-                classes="tool-line"))
-        elif verdict == cron_mod.DONE:
-            await self._add(Static(
-                f"[{VIOLET}]{face} ✓ loop #{loop.id} done · {at:%H:%M}[/]"
-                + (f" [dim]— {escape(msg)}[/]" if msg else "")
-                + f" [dim]· {loop.ticks} tick(s) · {sym}{loop.spend:.2f}[/]", classes="tool-line"))
-        elif reason:
-            await self._add(Static(
-                f"[{VIOLET}]{face} ✓ loop #{loop.id} stopped[/] [dim]— {escape(reason)} · "
-                f"{loop.ticks} tick(s) · {sym}{loop.spend:.2f}[/]", classes="tool-line"))
-        else:
-            r = book.reminder_due(loop)
-            if r is not None:
-                iv = cron_mod.fmt_duration(loop.interval_s)
-                await self._add(Static(
-                    f"[{MUTED}]{face} loop #{loop.id} · {cron_mod.fmt_duration(r['hours'] * 3600)} · "
-                    f"{r['ticks']} ticks · {sym}{r['spend']:.2f} so far · /loop stop to end · "
-                    f"/loop {iv} max {sym}2 … to cap[/]", classes="tool-line"))
-        self._render_cwd()
-
-    async def _handle_loop(self, text: str) -> None:
-        """/loop [<interval> [for <dur>] [x<N>] [max $<amt>] <prompt>] — or /loop
-        (list) · /loop stop|pause|resume|allow [id]. /cron is the same command."""
-        parts = text.split(maxsplit=1)
-        rest = parts[1].strip() if len(parts) > 1 else ""
-        book = self._loops
-        if not rest or rest.lower() in ("list", "ls"):
-            if book.live():
-                self._review_loops()
-            else:
-                await self._add(Static(LOOP_HELP, classes="tool-line"))
-            return
-        verb, _, arg = rest.partition(" ")
-        verb = verb.lower()
-        if verb in ("stop", "pause", "resume", "allow"):
-            loop, err = book.resolve(arg.strip() or None)
-            if loop is None:
-                await self._add(Static(f"[{AMBER}]? {escape(err)}[/]", classes="tool-line"))
-                return
-            if verb == "allow":
-                # awaits a human (the inline approval) → a worker, never the pump
-                self.run_worker(self._loop_verb(loop, "allow"), group="loops", exclusive=True)
-            else:
-                await self._loop_verb(loop, verb)
-            return
-        spec, err = cron_mod.parse_loop_args(rest)
-        if spec is None:
-            await self._add(Static(f"[{AMBER}]? {escape(err)}[/]\n{LOOP_HELP}", classes="tool-line"))
-            return
-        loop = book.add(spec["prompt"], spec["interval_s"], for_s=spec["for_s"],
-                        count=spec["count"], max_spend=spec["max_spend"])
-        await self._on_loop_event("start", loop)
-
-    async def _on_loop_event(self, kind: str, loop) -> None:
-        """The receipt (a loop started — by /loop, or by rocky via loop_start) or
-        the stop line (loop_stop). The book calls this for the tools; /loop calls
-        it directly, so both paths read the same."""
-        sym = self._sym()
-        if kind == "start":
-            tokens = self.engine._projected_prompt_tokens()
-            est = cron_mod.tick_cost_estimate(
-                tokens, self._ledger.rate(self.engine.model, self._currency))
-            iv = cron_mod.fmt_duration(loop.interval_s)
-            budget = loop.budget_note(sym)
-            until = ("no budget — runs until /loop stop or the session ends"
-                     if budget == "no budget" else budget)
-            who = (f" [dim](rocky set it up — “{escape(loop.prompt[:100])}”)[/]"
-                   if loop.origin == "model" else "")
-            perm = ("" if self._permission_mode == "yolo" else
-                    f"\n  [dim]ticks never prompt — anything needing approval pauses the loop. "
-                    f"[/][{LAVENDER}]/permission yolo[/][dim] (or shift+tab) resumes it · "
-                    f"[/][{LAVENDER}]/loop allow[/][dim] decides one call · running under "
-                    f"{self._permission_mode}[/]")
-            await self._add(Static(
-                f"[{VIOLET}]{cron_mod.clock_face(datetime.now())} loop #{loop.id}[/]{who} "
-                f"[dim]· every {iv} · {until} · ~{sym}{est:.4f} per tick right now "
-                f"(prefix ≈ {tokens:,} tokens, cache-hit) · first tick in {iv}[/]{perm}",
-                classes="tool-line"))
-            if budget == "no budget" and not self._loop_hinted:
-                self._loop_hinted = True
-                await self._add(Static(
-                    f"  [{MUTED}]want a ceiling? /loop {iv} for 3h … · /loop {iv} max {sym}2 … · "
-                    f"/loop {iv} x12 …  (only enforced when you set one)[/]", classes="tool-line"))
-            await self._maybe_nudge_yolo_host()
-        elif kind == "stop":
-            await self._add(Static(
-                f"[{MUTED}]✓ loop #{loop.id} stopped by rocky · {loop.ticks} tick(s) · "
-                f"{sym}{loop.spend:.2f}[/]", classes="tool-line"))
-        self._render_cwd()
-
-    @work(group="loops", exclusive=True, exit_on_error=False)
-    async def _review_loops(self) -> None:
-        """/loop with loops live: one inline card per loop — pause/resume · stop ·
-        decide a pending approval · leave it. Esc stops the walk."""
-        from rockycode.tui.loopcard import LoopCard
-
-        for loop in list(self._loops.live()):
-            fut: asyncio.Future[str] = asyncio.get_running_loop().create_future()
-            card = LoopCard(loop, self._sym(), fut)
-            await self.mount(card, before=self.query_one("#prompt"))
-            try:
-                choice = await fut
-            finally:
-                if card.is_mounted:
-                    await card.remove()
-            if choice == "close":
-                break
-            await self._loop_verb(loop, choice)
-        self._render_cwd()
-        try:
-            self.query_one(ChatInput).focus()
-        except Exception:  # noqa: BLE001 — focus is best-effort
-            pass
-
-    async def _loop_verb(self, loop, verb: str) -> None:
-        """stop · pause · resume · allow on one loop — shared by /loop <verb> and
-        the card. `allow` awaits a human, so callers run it in a worker."""
-        book, sym = self._loops, self._sym()
-        if verb == "stop":
-            book.stop(loop, "stopped by you")
-            await self._add(Static(
-                f"[{MUTED}]✓ loop #{loop.id} stopped · {loop.ticks} tick(s) · {sym}{loop.spend:.2f}[/]",
-                classes="tool-line"))
-        elif verb == "pause":
-            if loop.status == "running":
-                book.pause(loop)
-                await self._add(Static(
-                    f"[{MUTED}]‖ loop #{loop.id} paused — /loop resume {loop.id} brings it back[/]",
-                    classes="tool-line"))
-            else:
-                await self._add(Static(f"[{MUTED}]· loop #{loop.id} is already paused[/]", classes="tool-line"))
-        elif verb == "resume":
-            if loop.status == "paused":
-                book.resume(loop)
-                await self._add(Static(
-                    f"[{VIOLET}]▶ loop #{loop.id} resumed[/] [dim]— next tick as soon as the chat is idle[/]",
-                    classes="tool-line"))
-            else:
-                await self._add(Static(f"[{MUTED}]· loop #{loop.id} isn't paused[/]", classes="tool-line"))
-        elif verb == "allow":
-            await self._loop_allow(loop)
-        self._render_cwd()
-
-    async def _loop_allow(self, loop) -> None:
-        """A paused loop's recorded ask, decided NOW while you're here: `once`
-        lets exactly that call run on the next tick; `session` grants the tool
-        (bash: its binary) like any approval — session_grantable still applies,
-        so a dangerous command can't be session-granted from here either; deny
-        keeps the loop paused."""
-        b = loop.blocked_on
-        if loop.status != "paused" or not b:
-            await self._add(Static(
-                f"[{MUTED}]· loop #{loop.id} isn't waiting on an approval[/]", classes="tool-line"))
-            return
-        from rockycode.engine.permission import command_binary, session_grantable
-
-        name, args = b["tool"], b.get("args", {})
-        session_label = None
-        if session_grantable(name, args):
-            if name == "bash":
-                binary = command_binary(str(args.get("command", "")))
-                if binary:
-                    session_label = f"Allow `{binary}` for this session"
-            else:
-                session_label = f"Allow {name} for this session"
-        choice = await self._ask_inline(name, b["detail"], b.get("risk", "risky"),
-                                        b.get("warning"), session_label=session_label)
-        if choice in ("once", "session"):
-            if choice == "session":
-                if name == "bash":
-                    bn = command_binary(str(args.get("command", "")))
-                    if bn:
-                        self._auto_approve_bins.add(bn)
-                else:
-                    self._auto_approve.add(name)
-            else:
-                self._tick_once.add((name, b["detail"]))
-            self._grant_read_if_escaping(name, args)
-            self._loops.resume(loop)
-            how = "allowed for this session" if choice == "session" else "that call may run once"
-            await self._add(Static(
-                f"[{VIOLET}]▶ loop #{loop.id} resumed[/] [dim]— {how}; the next tick retries as soon "
-                f"as the chat is idle[/]", classes="tool-line"))
-        else:
-            await self._add(Static(
-                f"[{MUTED}]· loop #{loop.id} stays paused — [/][{LAVENDER}]/loop resume {loop.id}[/] "
-                f"[dim]retries without it · [/][{LAVENDER}]/permission yolo[/] [dim](or shift+tab) "
-                f"resumes it · [/][{LAVENDER}]/loop stop {loop.id}[/] [dim]ends it[/]",
-                classes="tool-line"))
-
-    # ---- transcript helpers -------------------------------------------------
+    # ---- loops (/loop — engine/cron.py) --------------------------------------
 
     def _transcript(self) -> VerticalScroll:
         return self.query_one("#transcript", VerticalScroll)
@@ -2213,10 +788,19 @@ class RockyCodeApp(App):
         return t.scroll_offset.y >= t.max_scroll_y - 2
 
     async def _add(self, widget) -> None:
+        if self._left:
+            return  # rocky was told to leave: a late line is dropped, it must not fail the exit
+        try:
+            transcript = self._transcript()
+        except NoMatches:
+            # The app is tearing down (a late loop tick or worker after exit) or
+            # a screen is on top of chat: nothing to append to, and a crashed
+            # worker must not fail the exit.
+            return
         stick = self._at_bottom()
-        await self._transcript().mount(widget)
+        await transcript.mount(widget)
         if stick:
-            self._transcript().scroll_end(animate=False)
+            transcript.scroll_end(animate=False)
 
     # NOT named _flush: Textual's App._flush(stderr=...) is a real method it
     # calls internally to flush its output streams. Overriding it shadowed
@@ -2255,171 +839,13 @@ class RockyCodeApp(App):
         # one-line session badge here so browser-tab counts never go stale.
         self._render_cwd()
 
-    async def _handle_model(self, text: str) -> None:
-        """/model — switch provider AND exact model live. Bare opens the PICKER
-        over the options you've KEYED (↑↓/click + ↵, so an EN/CN catalog stays
-        short) with an "N more" row; `/model all` opens the full catalog. A spec
-        (provider, provider-region, provider:model, or a unique model id) still
-        switches directly — the picker's guide line teaches that path."""
-        from rockycode.engine import providers as P
-
-        parts = text.split(maxsplit=1)
-        arg = parts[1].strip() if len(parts) > 1 else ""
-
-        if not arg or arg == "all":
-            show_all = arg == "all"
-            picks = P.choices() if show_all else P.configured_choices()
-            hidden = 0 if show_all else len(P.choices()) - len(picks)
-            self._model_picker_flow(picks, hidden)
-            return
-
-        resolved = P.resolve(arg)
-        if resolved is None:
-            # a LOCAL provider that isn't ready gets its exact fix, not the
-            # generic shrug — "ollama isn't running — start it: ollama serve"
-            hint = P.local_hint(arg)
-            msg = hint or ("unknown or ambiguous — /model to see your options, "
-                           "/model all for the catalog")
-            await self._add(Static(f"[{AMBER}]· {escape(msg)}[/]", classes="tool-line"))
-            return
-        prov, ep, model = resolved
-        await self._apply_model_choice(prov, ep, model)
-
-    @work
-    async def _model_picker_flow(self, picks: list, hidden: int) -> None:
-        from rockycode.engine import providers as P
-        from rockycode.tui.modelpicker import EndpointPicker, ModelPicker
-
-        current = f"{self.engine.provider_name}:{self.engine.model}"
-        hints = P.local_hints()  # "ollama — not running · start it: …" rows
-        result = await self.push_screen_wait(
-            ModelPicker(picks, current=current, hidden=hidden, hints=hints))
-        if result == "all":  # the "N more" row reopens over the full catalog
-            result = await self.push_screen_wait(
-                ModelPicker(P.choices(), current=current, hidden=0, hints=hints))
-        if isinstance(result, list):  # a model group — model first, URL second
-            if len(result) == 1:  # one endpoint: nothing to ask, switch now
-                result = result[0]
-            else:
-                group = result
-                result = await self.push_screen_wait(
-                    EndpointPicker(group, current=current))
-                if isinstance(result, tuple) and result[0] == "custom":
-                    # persist the typed URL as <provider>-custom, then pick it
-                    eid, err = P.set_custom_url(group[0].provider.name, result[1])
-                    result = None
-                    if err:
-                        await self._add(Static(f"[{AMBER}]· {escape(err)}[/]",
-                                               classes="tool-line"))
-                    else:
-                        hit = P.resolve(f"{eid}:{group[0].model}")
-                        if hit is not None:
-                            result = P.Choice(*hit)
-        if isinstance(result, P.Choice):
-            await self._apply_model_choice(result.provider, result.endpoint, result.model)
-        self.query_one(ChatInput).focus()
-
-    async def _apply_model_choice(self, prov, ep, model: str) -> None:
-        """The one switch path — picker picks and typed specs both land here.
-        A LOCAL target runs a readiness preflight FIRST (server up? model
-        pulled? tools? serving ctx?) — not ready means the engine is left
-        untouched and the card says exactly what to fix; ready means the
-        switch proceeds with context_window paced to the server's reality."""
-        prev_model = self.engine.model
-        try:
-            from rockycode.onboarding import provider_key
-            key = provider_key(ep.key_env, ep.key_aliases)
-        except Exception as e:  # noqa: BLE001 — missing key: say exactly what to set
-            await self._add(Static(f"[{AMBER}]· {escape(str(e))}[/]", classes="tool-line"))
-            return
-        from openai import AsyncOpenAI
-        from rockycode.engine.providers import Choice
-        vision = Choice(prov, ep, model).vision  # model-level, not provider-level
-        pf = None
-        if prov.local:
-            from rockycode.engine.localcheck import preflight
-            pf = await asyncio.to_thread(preflight, ep.base_url, model)
-            await self._add(Static(self._preflight_card(pf, ep.eid),
-                                   classes="tool-line"))
-            if not pf.ok:
-                return  # nothing changed — the card carries the fixes + retry
-            vision = vision or pf.vision  # the server said it sees
-        client = AsyncOpenAI(api_key=key, base_url=ep.base_url, max_retries=5, timeout=300.0)
-        # The switch adopts the model's registry spec — wire shape, tiers,
-        # cache field, and (unless pinned via /config) its context window and
-        # output cap — so a cloud→cloud switch re-paces itself and a
-        # local→cloud one undoes the local pacing by construction.
-        self.engine.switch_provider(
-            client, model, provider_name=ep.eid,
-            reasoning_policy=prov.reasoning, tools_enabled=(prov.tools == "native"),
-            vision=vision, local=prov.local, provider=prov, endpoint=ep,
-        )
-        if pf is not None and not self.engine._explicit_limits["context_window"]:
-            self.engine.context_window = pf.context_window  # the server's VERIFIED ctx wins
-        if prov.local:
-            self._ledger.mark_free(model)  # $0 · local — never the price nag
-        self._render_status()
-        # The topbar title bakes the model name in at compose() time — repaint
-        # it here or it shows the launch model forever.
-        self.query_one("#title-block", Static).update(self._title_text())
-        note = "" if prov.tools == "native" else " [dim](tools off — plain responder)[/]"
-        if vision:
-            note += " [dim]· sees images — /paste or ctrl+v to attach[/]"
-        await self._add(Static(
-            f"[{VIOLET}]✦ model → {escape(ep.eid)}:{escape(model)}[/]{note} "
-            f"[dim]applies from the next reply[/]", classes="tool-line"))
-        # Cost reminder on a real switch: the new model's API rate, and that the
-        # prompt cache resets (first turn on it is all cache-miss → pricier).
-        if model != prev_model:
-            await self._add(Static(self._model_cost_note(model), classes="tool-line"))
-
-    def _preflight_card(self, pf, eid: str) -> str:
-        """The local-readiness checklist as one transcript card. Every ✗/⚠
-        line carries its exact fix — the card IS the setup guide, so a not-
-        ready switch teaches instead of dead-ending."""
-        head = (f"[{VIOLET}]✦ {escape(eid)} preflight — {escape(pf.model)}[/]"
-                if pf.ok else
-                f"[{AMBER}]✦ {escape(eid)} preflight — not ready "
-                f"(model unchanged)[/]")
-        mark = {"ok": f"[{MUTED}]✓", "warn": f"[{AMBER}]⚠",
-                "fail": f"[{AMBER}]✗", "info": f"[{MUTED}]·"}
-        lines = [head]
-        for c in pf.checks:
-            lines.append(f"  {mark[c.status]} {escape(c.text)}[/]")
-            if c.fix:
-                lines.append(f"    [{LAVENDER}]fix: {escape(c.fix)}[/]")
-        if pf.ok:
-            how = "verified" if pf.ctx_verified else "local default"
-            lines.append(f"  [{MUTED}]✓ rocky context_window → "
-                         f"{pf.context_window:,} ({how}) — compaction paced "
-                         f"to the local window[/]")
-        else:
-            lines.append(f"  [{MUTED}]fix the ✗ line, then: "
-                         f"[{LAVENDER}]/model {escape(eid)}:{escape(pf.model)}[/][/]")
-        return "\n".join(lines)
-
-    def _model_cost_note(self, model: str) -> str:
-        """One-line API-fee reminder for a just-switched model: its input/output
-        rate in the session currency, or a nudge to set it. All pricing is
-        per-token API fee (not membership/plan) — the ledger prices each turn by
-        the model that produced it."""
-        sym = "¥" if self._currency == "cny" else "$"
-        if model in self._ledger.free_models:
-            return (f"[dim]· {escape(model)} runs on this machine — $0 API fee, "
-                    f"as private as your disk[/]")
-        if self._ledger.priced(model):
-            r = self._ledger.rate(model, self._currency)
-            body = (f"[dim]· {escape(model)} · API fee {sym}{r['in_miss']:.4g} in / "
-                    f"{sym}{r['out']:.4g} out per 1M tok — cache resets on switch "
-                    f"(first turn all-miss)[/]")
-        else:
-            body = (f"[{AMBER}]· {escape(model)} has no price set — add its API fee to "
-                    f"~/.rockycode/pricing.toml or cost shows 0. cache resets on switch.[/]")
-        return body
-
     def _render_status(self) -> None:
         note = NOTES[self._note_i % len(NOTES)]
-        base = _status_text(self._state, note)
+        base = _status_text(self._state, note, self._language)
+        base += " " + self._t("app.delivery_mode", mode=self._delivery_mode)
+        if self._delivery.pending:
+            key = "app.queue_paused" if self._delivery.paused else "app.queue_count"
+            base += " " + self._t(key, count=len(self._delivery.pending))
         if self.sandbox is not None and self.sandbox.is_running:
             base += f" [{VIOLET}]⬢[/]"
         try:
@@ -2427,766 +853,60 @@ class RockyCodeApp(App):
         except NoMatches:
             pass  # a screen is on top of chat — the status bar isn't visible now
 
-    async def _stop_artifact_server(self) -> bool:
-        server = self._artifact_server
-        if server is None:
-            return False
-        await server.stop()
-        self._artifact_server = None
-        self.engine.artifact_server = None
-        self._render_cwd()
-        return True
+    def refresh_notes(self, width: int | None = None) -> None:
+        """Redraw the note strip from the task store (cheap; unchanged = no repaint)."""
+        tasks = getattr(self, "_task_session", None)
+        try:
+            strip = self.query_one(NoteStrip)
+        except NoMatches:
+            return  # a screen is on top of chat
+        strip.show(tasks.notes() if tasks else [], tasks.id if tasks and tasks.registered else None,
+                   self._t, width or self.size.width)
 
-    async def _handle_artifact(self, text: str) -> None:
-        """Manage the current session's Artifact inventory and live server."""
-        parts = text.split(maxsplit=2)
-        sub = parts[1].lower() if len(parts) > 1 else "status"
-        arg = parts[2].strip() if len(parts) > 2 else ""
-        registry = getattr(self.engine, "artifact_registry", None)
+    def on_resize(self, event: events.Resize) -> None:
+        self.refresh_notes(event.size.width)  # App.size still holds the old width in this handler
 
-        if sub == "live" and arg.lower() == "on":
-            self._artifact_live = True
-            await self._artifact_target()
-        elif sub == "live" and arg.lower() == "off":
-            self._artifact_live = False
-            await self._stop_artifact_server()
-        elif sub == "stop":
-            stopped = await self._stop_artifact_server()
-            note = "stopped; saved files remain" if stopped else "already stopped"
-            await self._add(Static(
-                f"[{MUTED}]· artifact server {note}[/]", classes="tool-line"))
-            return
-        elif sub == "list":
-            records = registry.records() if registry is not None else []
-            if not records:
-                await self._add(Static(
-                    f"[{MUTED}]no artifacts in this session yet[/]", classes="tool-line"))
-                return
-            lines = [f"[bold {VIOLET}]artifacts[/] [dim]this session[/]"]
-            for i, record in enumerate(records, 1):
-                mark = f"[{VIOLET}]●[/]" if record.open_clients else f"[{MUTED}]○[/]"
-                state = (f"{record.open_clients} open" if record.open_clients
-                         else "saved")
-                mode = "live" if record.live else "static"
-                lines.append(
-                    f"  {mark} [{LAVENDER}]{i}. {escape(record.title)}[/] "
-                    f"[dim]({mode} · {state}) · {escape(record.name)}[/]")
-            lines.append("[dim]  /artifact open <number|name> · /artifact stop[/]")
-            await self._add(Static("\n".join(lines), classes="tool-line"))
-            return
-        elif sub == "open":
-            records = registry.records() if registry is not None else []
-            record = None
-            if arg.isdigit() and 1 <= int(arg) <= len(records):
-                record = records[int(arg) - 1]
-            else:
-                folded = arg.casefold()
-                record = next((r for r in records
-                               if r.name.casefold() == folded
-                               or r.title.casefold() == folded), None)
-            if record is None:
-                await self._add(Static(
-                    f"[{AMBER}]? artifact not found — /artifact list[/]", classes="tool-line"))
-                return
-            from rockycode.engine.artifact import _open_browser
-            server_live = self._artifact_server is not None and self._artifact_server.is_running
-            url = record.url if (not record.live or server_live) else record.path.resolve().as_uri()
-            _open_browser(url)
-            suffix = "" if (not record.live or server_live) else " (saved copy; live server is stopped)"
-            await self._add(Static(
-                f"[{MUTED}]· opened {escape(record.title)}{escape(suffix)}[/]",
-                classes="tool-line"))
-            return
-        elif sub not in ("status", "live"):
-            await self._add(Static(
-                f"[{MUTED}]usage: /artifact list | open <number|name> | stop | live on|off[/]",
-                classes="tool-line"))
-            return
-
-        state = ("live" if self._artifact_live else
-                 "static (file://)" if self._artifact_live is False else
-                 "undecided — rocky asks on first artifact")
-        url = (f" [dim]{self._artifact_server.base_url}[/]"
-               if self._artifact_server is not None else "")
-        count = registry.count if registry is not None else 0
-        opened = registry.open_clients if registry is not None else 0
-        await self._add(Static(
-            f"[bold {VIOLET}]artifact[/] [{LAVENDER}]{state}[/]{url}\n"
-            f"  [dim]{count} saved this session · {opened} browser connection(s)\n"
-            f"  /artifact list | open <number|name> | stop | live on|off[/]",
-            classes="tool-line"))
-
-    # ---- exit + slash commands -----------------------------------------------
+    def open_task_note(self, task_id: str | None) -> None:
+        """A click on a note: the same path as typing `/task open <id>` (the
+        `+N` note lists the older tasks instead)."""
+        from rockycode.tui import tasks as tasks_mod
+        text = f"/task open {task_id}" if task_id else "/task list"
+        self.run_worker(tasks_mod.command(self, text), group="task-note", exclusive=True)
 
     async def action_quit(self) -> None:
-        """ctrl+q — same path as /exit, so the feedback sheet isn't bypassed."""
+        """ctrl+q — same path as /exit, so the final reflect isn't bypassed."""
         self._request_exit()
 
+    def exit(self, *args, **kwargs) -> None:
+        """From this call on there is no screen to draw on: Textual refuses every
+        mount. Work that is still unwinding must find that normal (see _add)."""
+        self._left = True
+        if self._final_reflect is not None:
+            self._final_reflect.cancel()  # a second /exit or ctrl+q: no reflect after leaving
+        super().exit(*args, **kwargs)
+
     def _request_exit(self) -> None:
-        """Start the exit flow WITHOUT blocking the caller. The sheet awaits a
-        Future, so it must run in a worker — awaiting it inside a message
-        handler (slash command / binding) would block the App's message pump
-        and deadlock the whole UI (the same reason _after_cancel is a worker)."""
-        self.run_worker(self._exit_with_sheet(), exclusive=False)
-
-    async def _exit_with_sheet(self) -> None:
-        """Leave the app, offering the one-click exit feedback sheet first —
-        only when a real exchange happened. The answer lands as a `feedback`
-        trajectory record, which is LOCAL ONLY: never placed in a cloud-bound
-        prompt; the local dream reads it later (self-evolve phase 0)."""
-        from rockycode.tui.exitsheet import NEVER, ExitSheet
-
-        self.engine.loops_at_exit = len(self._loops.live())  # the exit card says so
-        if self._exit_sheet_open:
-            # A second /exit or ctrl+q while the sheet waits = "skip, leave now".
-            if self._exit_sheet_fut is not None and not self._exit_sheet_fut.done():
-                self._exit_sheet_fut.set_result(None)
-            return
-        # "auto" (the default) asks ONLY when the dream pipeline is alive this
-        # session — the probe succeeded, so the feedback has a real local
-        # consumer. Users who never dream are never asked (and never left
-        # wondering whether a rating goes to the model provider).
-        wanted = self._exit_sheet == "on" or (
-            self._exit_sheet == "auto" and self._ollama_ok is True)
-        if (not wanted
-                or self.engine.stats.turns == 0
-                or self.engine.trajectory.path is None):
-            self.exit()  # sheet off / no dream consumer / nothing to rate
-            return
-        self._exit_sheet_open = True
-        fut: asyncio.Future = asyncio.get_running_loop().create_future()
-        self._exit_sheet_fut = fut
-        widget = ExitSheet(fut)
-        try:
-            await self.mount(widget, before=self.query_one("#prompt"))
-        except Exception:  # noqa: BLE001 — a covered screen must never block exit
-            self._exit_sheet_open = False
-            self.exit()
-            return
-        try:
-            result = await fut
-        finally:
-            self._exit_sheet_open = False
-            if widget.is_mounted:
-                await widget.remove()
-        if result == NEVER:
-            # Persist the off-switch from where the annoyance is; /config
-            # exit_sheet on brings it back.
-            from rockycode.config import set_value
-            set_value("exit_sheet", "off")
-            self._exit_sheet = "off"
-        elif result is not None:
-            self.engine.trajectory.feedback({**result, "local_only": True})
-        self.exit()
+        """Start the exit flow WITHOUT blocking the caller. The final reflect
+        awaits an API call, so it must run in a worker — awaiting it inside a
+        message handler (slash command / binding) would block the App's message
+        pump and deadlock the whole UI (the same reason _after_cancel is a worker)."""
+        self.run_worker(self._exit_with_reflect(), exclusive=False)
 
     async def _handle_slash(self, text: str) -> None:
-        cmd = text.split()[0].lower()
-        if cmd in ("/exit", "/quit"):
-            self._request_exit()
-        elif cmd == "/proposals":
-            self._review_proposals()
-        elif cmd == "/routines":
-            self._review_routines()
-        elif cmd == "/clear":
-            await self._transcript().remove_children()
-        elif cmd == "/help":
-            await self._add(Static(HELP_TEXT, classes="tool-line"))
-        elif cmd == "/paste":
-            self._paste_worker(text_fallback=False)
-        elif cmd in ("/research", "/learn"):
-            await self._handle_mode_cmd(cmd[1:], text)
-        elif cmd == "/config":
-            from rockycode.config import DEFAULTS, GLOBAL_PATH, load, set_value
-            parts = text.split(maxsplit=2)
-            if len(parts) >= 3:  # /config key value  → set
-                v, err = set_value(parts[1], parts[2])
-                if err:
-                    await self._add(Static(f"[{AMBER}]? {err}[/]", classes="tool-line"))
-                else:
-                    # Model limits take effect on the live engine at once; other
-                    # keys (currency/theme/language) are read at startup.
-                    if parts[1] in ("context_window", "max_tokens"):
-                        # a number pins the limit across /model switches;
-                        # 0 unpins it → back to the active model's registry value
-                        self.engine.set_limit(parts[1], v)
-                        note = ("applied now — pinned across /model" if v
-                                else f"applied now — follows the model ({getattr(self.engine, parts[1]):,})")
-                    elif parts[1] == "exit_sheet":
-                        self._exit_sheet = v
-                        note = "applied now"
-                    elif parts[1] == "dream":
-                        self._dream_mode = v
-                        note = "applies at next launch"
-                    elif parts[1] in ("image_route", "image_cli", "image_provider"):
-                        # Re-read from disk at every paste/view_image — a false
-                        # "restart to apply" here sends new users on a pointless
-                        # restart right at the end of image setup.
-                        note = "applied now — read at each use"
-                    elif parts[1] == "model":
-                        note = "applies at next launch — /model switches this session"
-                    elif parts[1] == "vision_models":
-                        note = "applies from the next /model switch or launch"
-                    else:
-                        note = "restart to apply"
-                    await self._add(Static(
-                        f"[{VIOLET}]✦ saved: {parts[1]} = {v}[/] [dim]({note})[/]",
-                        classes="tool-line"))
-            else:  # /config  → show
-                cfg = load(self.engine.workdir)
-                lines = [f"[bold {VIOLET}]config[/] [dim]{GLOBAL_PATH}[/]"]
-                lines += [f"  [{LAVENDER}]{k}[/] = {cfg[k]}" for k in DEFAULTS]
-                lines.append("[dim]  /config <key> <value> to set[/]")
-                await self._add(Static("\n".join(lines), classes="tool-line"))
-        elif cmd == "/prompt":
-            await self.push_screen(
-                TextViewerScreen(
-                    "system prompt — edit in rockycode/prompts/rocky.py",
-                    self.engine.history[0]["content"],
-                )
-            )
-        elif cmd == "/skills":
-            skills = getattr(self.engine, "skills", []) or []
-            if not skills:
-                await self._add(
-                    Static(
-                        "[dim]no skills found (.claude/skills, .rockycode/skills, "
-                        "~/.claude/skills, ~/.codex/prompts)[/]",
-                        classes="tool-line",
-                    )
-                )
-            else:
-                lines = [f"[bold {VIOLET}]skills[/]"]
-                lines += [f"  [{LAVENDER}]{s.name}[/] — {s.description} [dim]({s.source})[/]" for s in skills]
-                await self._add(Static("\n".join(lines), classes="tool-line"))
-        elif cmd == "/memory":
-            store = getattr(self.engine, "memory_store", None)
-            memories = store.load_all() if store is not None else []
-            if store is None:
-                await self._add(Static("[dim]memory is off (--no-memory)[/]", classes="tool-line"))
-            elif not memories:
-                await self._add(
-                    Static(
-                        "[dim]i remember nothing yet. tell me things with /remember "
-                        "— files land in .rockycode/memory/[/]",
-                        classes="tool-line",
-                    )
-                )
-            else:
-                lines = [f"[bold {VIOLET}]memory[/]"]
-                lines += [f"  [{LAVENDER}]{m.name}[/] [dim]({m.type})[/dim] — {m.description}" for m in memories]
-                lines.append("[dim]  rockycode memory show <name> · files in .rockycode/memory/[/]")
-                await self._add(Static("\n".join(lines), classes="tool-line"))
-        elif cmd == "/remember":
-            store = getattr(self.engine, "memory_store", None)
-            note = text[len("/remember"):].strip()
-            if store is None:
-                await self._add(Static("[dim]memory is off (--no-memory)[/]", classes="tool-line"))
-            elif not note:
-                await self._add(Static(f"[{MUTED}]usage: /remember <note>[/]", classes="tool-line"))
-            else:
-                from rockycode.memory import Memory
-                mem = Memory(name="", type="feedback", description=note[:80], body=note, origin="user")
-                path = store.save(mem)
-                await self._add(
-                    Static(
-                        f"[{VIOLET}]✦ amaze! i remember:[/] {note}\n[dim]  {path}[/]",
-                        classes="tool-line",
-                    )
-                )
-        elif cmd == "/plan":
-            await self._handle_plan(text)
-        elif cmd == "/goal":
-            self._handle_goal(text)  # worker: probes Docker without blocking the pump
-        elif cmd in ("/loop", "/cron"):
-            await self._handle_loop(text)
-        elif cmd == "/sandbox":
-            self._handle_sandbox(text)  # worker; don't block the pump
-        elif cmd == "/lsp":
-            mgr = getattr(self.engine, "lsp_manager", None)
-            if mgr is None:
-                await self._add(Static("[dim]lsp is off (--no-lsp)[/]", classes="tool-line"))
-            elif not mgr.is_running:
-                await self._add(Static(f"[dim]lsp: configured ({mgr.command}) but not connected[/]", classes="tool-line"))
-            else:
-                tools = ", ".join(sorted(mgr.available_tools)) or "(listing…)"
-                await self._add(
-                    Static(
-                        f"[{VIOLET}]lsp[/] [{LAVENDER}]connected[/]\n"
-                        f"  [dim]server: {mgr.command}\n"
-                        f"  tools: {tools}[/]",
-                        classes="tool-line",
-                    )
-                )
-        elif cmd in ("/artifact", "/artifacts"):
-            await self._handle_artifact(text)
-        elif cmd == "/mcp":
-            mgr = getattr(self.engine, "mcp_manager", None)
-            if mgr is None:
-                await self._add(Static("[dim]mcp is off (--no-mcp)[/]", classes="tool-line"))
-            else:
-                lines = [f"[bold {VIOLET}]mcp[/]"]
-                lines += [f"  {line}" for line in mgr.status()]
-                tools = sorted(mgr.tools())
-                if tools:
-                    lines.append(f"  [dim]{' · '.join(tools)}[/]")
-                await self._add(Static("\n".join(lines), classes="tool-line"))
-        elif cmd == "/effort":
-            parts = text.split()
-            arg = parts[1].lower() if len(parts) > 1 else ""
-            if arg in EFFORT_LEVELS:
-                if arg == "off":
-                    self.engine.thinking = False
-                else:
-                    self.engine.thinking = True
-                    self.engine.reasoning_effort = arg
-                await self._add(Static(
-                    f"[{VIOLET}]✦ effort → {self._effort_note()}[/] "
-                    f"[dim]applies from the next reply (this session)[/]",
-                    classes="tool-line"))
-            else:
-                await self._add(Static(
-                    f"[bold {VIOLET}]effort[/] [dim](how hard i think — this session)[/]\n"
-                    f"  now: {self._effort_note()}\n"
-                    f"  [dim]/effort off | low | high | max — off skips thinking (a model that "
-                    f"can't: its lowest tier); each provider's own tiers come from the registry[/]",
-                    classes="tool-line"))
-        elif cmd == "/model":
-            await self._handle_model(text)
-        elif cmd == "/permission":
-            parts = text.split()
-            if len(parts) >= 2 and parts[1].lower() in ("yolo", "ask", "careful"):
-                await self._apply_permission_switch(parts[1].lower())
-            else:
-                # Bare (or a typo'd mode) → the picker, same as clicking the
-                # chip: it shows the three modes and what each one allows,
-                # instead of a help line you have to translate yourself.
-                self.open_permission_picker()
-        else:
-            await self._add(
-                Static(
-                    f"[{MUTED}]?[/] i no know [bold]{cmd}[/]. try [{LAVENDER}]/help[/]",
-                    classes="tool-line",
-                )
-            )
-
-    def _gather_host_tools(self) -> dict:
-        """Return tools that should stay on the host (not enter the sandbox)."""
-        host_names = {"web_search", "web_research", "web_fetch", "create_artifact",
-                      "lsp_lookup", "lsp_symbol_search", "lsp_file_symbols", "lsp_diagnostics",
-                      "loop_start", "loop_stop"}
-        if self._local_registry is None:
-            return {}
-        return {k: v for k, v in self._local_registry.items() if k in host_names}
-
-    def _restore_host_tools(self) -> None:
-        """Re-add host-side tools after a sandbox→local swap (lost in the swap)."""
-        host_tools = self._gather_host_tools()
-        if host_tools:
-            self.engine.registry.update(host_tools)
-
-    @work(group="goal", exclusive=True, exit_on_error=False)
-    async def _handle_goal(self, text: str) -> None:
-        """/goal [objective] — go autonomous. With an objective AND Docker ready it
-        opens the goal SCREEN on top of chat (plan → confirm → work → summary) and
-        pops back here when done. Without an objective (or Docker) it just guides.
-        Worker: the docker probe must not block the message pump."""
-        import shutil
-
-        obj = text[len("/goal"):].strip()
-        if shutil.which("docker") is None:
-            docker_up = False
-            docker_line = (f"  [{AMBER}]✗ Docker not found[/] — goal needs it for the sandbox. "
-                           f"install Docker Desktop, start it, then /goal again.")
-        else:
-            docker_up = await self._docker_ready()
-            docker_line = (f"  [{VIOLET}]✓ Docker ready[/]" if docker_up else
-                           f"  [{AMBER}]✗ Docker installed but not running[/] — start Docker Desktop, then /goal again.")
-
-        # Run the goal IN A SCREEN on top of chat (plan → confirm → milestones →
-        # summary all rendered here), then pop back — no dropping to a bare terminal.
-        if obj and docker_up:
-            from rockycode.tui.goal_screen import GoalScreen
-
-            backend = self._make_goal_backend(obj)
-            await self._add(Static(
-                f"[bold {VIOLET}]◆ goal[/] [dim]— opening the goal view (plan → confirm → work). "
-                f"you'll come back here when it's done.[/]\n  [dim]{escape(obj)}[/]",
-                classes="tool-line"))
-            summary = await self.push_screen_wait(GoalScreen(backend, obj))
-            await self._on_goal_return(summary)
-            return
-
-        # Otherwise: guide (no objective, or Docker not ready).
-        lines = [
-            f"[bold {VIOLET}]goal mode[/] — hand rocky an objective and it works "
-            f"unattended: on an isolated COPY of your repo, in a Docker sandbox, "
-            f"under a budget, committing each milestone. You wake up to a branch to review.",
-            docker_line,
-        ]
-        if not obj:
-            lines.append("  [dim]give it an objective:[/] [italic]/goal fix the failing auth test[/]")
-        else:
-            lines.append("  [dim]once Docker's running, run[/] "
-                         f"[{LAVENDER}]/goal {escape(obj)}[/] [dim]again — it opens the goal view here.[/]")
-        await self._add(Static("\n".join(lines), classes="tool-line"))
-
-    async def _docker_ready(self) -> bool:
-        """True if the Docker daemon answers. Separate so /goal wiring is testable
-        without a real daemon."""
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "docker", "info",
-                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-            return (await asyncio.wait_for(proc.wait(), timeout=8)) == 0
-        except Exception:  # noqa: BLE001
-            return False
-
-    def _make_goal_backend(self, objective: str, *, plan_file=None):
-        """Build the live goal backend from the session's model + config. Separate
-        so a test can swap in a fake backend and drive the whole /goal loop.
-        plan_file (from a /plan handoff) makes goal skip its planner and execute
-        the already-approved plan."""
-        from rockycode.config import load as load_config
-        from rockycode.engine.budget import recommended
-        from rockycode.engine.goal_session import LiveGoalBackend
-
-        currency = load_config(self.engine.workdir)["currency"]
-        reviewer = os.getenv("ROCKYCODE_REVIEWER_MODEL") or self.engine.model
-        return LiveGoalBackend(
-            objective, "" if plan_file else self._chat_digest(),
-            model=self.engine.model, reviewer_model=reviewer,
-            budget=recommended(currency), workdir=self.engine.workdir,
-            currency=currency, plan_file=plan_file,
-        )
-
-    def _chat_digest(self, max_chars: int = 4000) -> str:
-        """A compact recap of the chat for the goal — recent user/assistant turns,
-        truncated, so the goal continues what we were doing."""
-        from rockycode.engine import images as images_mod
-        parts = []
-        for m in self.engine.history:
-            role, content = m.get("role"), images_mod.content_text(m.get("content"))
-            if role in ("user", "assistant") and content.strip():
-                parts.append(f"{role}: {content.strip()}")
-        return "\n".join(parts[-12:])[-max_chars:]
-
-    async def _on_goal_return(self, summary) -> None:
-        """Back in chat after the goal screen dismissed. Recap the outcome for the
-        user AND seed the model's context so 'review it' / 'keep going' just work."""
-        self.query_one(ChatInput).focus()
-        if summary is None:
-            return
-        if summary.status == "cancelled":
-            await self._add(Static(f"[{MUTED}]· goal cancelled — nothing ran.[/]", classes="tool-line"))
-            return
-        colour = VIOLET if summary.status == "done" else AMBER
-        recap = f"[bold {colour}]◆ goal {escape(summary.status)}[/] — {escape(summary.reason)}"
-        recap += (f"\n  [dim]{summary.milestones_done}/{summary.milestones_total} milestones"
-                  f"{f' · branch {escape(summary.branch)}' if summary.branch else ''}[/]")
-        if summary.branch:
-            recap += (f"\n  [{AMBER}]⚠ the changes are on branch {escape(summary.branch)} in a separate "
-                      f"worktree — your current files are untouched.[/]")
-            recap += f"\n  [dim]review:[/] [{LAVENDER}]{escape(summary.review_cmd)}[/]"
-            recap += f"\n  [dim]merge:[/]  [{LAVENDER}]git -C {escape(summary.origin)} merge {escape(summary.branch)}[/]  [dim](or ask me to)[/]"
-        if summary.log:
-            recap += f"\n  [dim]log: {escape(summary.log)}[/]"
-        await self._add(Static(recap, classes="tool-line"))
-        # Seed the model with the exact facts so "review it" / "merge it" work and
-        # it never assumes the changes are in the current working tree.
-        if summary.branch:
-            note = (f'I just ran an autonomous goal: {summary.status} — '
-                    f'{summary.milestones_done}/{summary.milestones_total} milestones. The changes are '
-                    f'COMMITTED ON BRANCH {summary.branch} in a separate git worktree ({summary.workspace}), '
-                    f'NOT in the current working tree — the user\'s current files are unchanged. '
-                    f'If they ask to REVIEW it, call the review_goal_branch tool with branch '
-                    f'"{summary.branch}". If they ask to MERGE it, call the merge_goal_branch tool with '
-                    f'branch "{summary.branch}" — it guards the merge (refuses a dirty tree, aborts on '
-                    f'conflict) so use it instead of raw git. Always remind them the work is in a '
-                    f'separate worktree.')
-        else:
-            note = (f'I just ran an autonomous goal: {summary.status} — '
-                    f'{summary.milestones_done}/{summary.milestones_total} milestones. {summary.reason}')
-        self.engine.history.append({"role": "user", "content": f"[system] {note}"})
-
-    @work(group="sandbox", exclusive=True, exit_on_error=False)
-    async def _handle_sandbox(self, text: str) -> None:
-        """Handle /sandbox on|off|status.
-
-        A worker (not the message pump): the first `/sandbox on` may pull a
-        Docker image, which is unbounded — awaiting it inline froze the UI with
-        no way to cancel or quit. Own group so a turn won't cancel a start."""
-        parts = text.split()
-        sub = parts[1].lower() if len(parts) > 1 else "status"
-
-        if sub == "status":
-            if self.sandbox is not None and self.sandbox.is_running:
-                await self._add(
-                    Static(
-                        f"[{LAVENDER}]sandbox[/] [{VIOLET}]on[/] "
-                        f"[dim]({self.sandbox.container_id[:12]}…)[/]",
-                        classes="tool-line",
-                    )
-                )
-            else:
-                await self._add(Static(f"[{LAVENDER}]sandbox[/] [dim]off — /sandbox on to start[/]", classes="tool-line"))
-            return
-
-        if sub == "off":
-            if self.sandbox is None or not self.sandbox.is_running:
-                await self._add(Static("[dim]sandbox is not running[/]", classes="tool-line"))
-                return
-            await self.sandbox.stop()
-            self.sandbox = None
-            if self._local_registry is not None:
-                self.engine.swap_registry(self._local_registry)
-            # Re-add host-side tools that were stripped during sandbox swap.
-            self._restore_host_tools()
-            self._render_status()
-            await self._add(
-                Static(
-                    f"[{LAVENDER}]sandbox[/] [dim]stopped — tools back on host filesystem[/]",
-                    classes="tool-line",
-                )
-            )
-            await self._maybe_nudge_yolo_host()  # if yolo, the host is exposed again
-            return
-
-        if sub == "on":
-            if self.sandbox is not None and self.sandbox.is_running:
-                await self._add(Static("[dim]sandbox is already running[/]", classes="tool-line"))
-                return
-            if self._sandbox_starting:
-                await self._add(Static("[dim]sandbox is already starting…[/]", classes="tool-line"))
-                return
-            self._sandbox_starting = True
-            try:
-                from rockycode.engine.sandbox import ChatSandbox, build_sandbox_registry
-                want_net = len(parts) > 2 and parts[2].lower() in ("network", "net", "online")
-                await self._add(Static(f"[{LAVENDER}]sandbox[/] [dim]starting…[/]", classes="tool-line"))
-                sb = await ChatSandbox.start(self.engine.workdir, network=want_net)
-                self.sandbox = sb
-                host_tools = self._gather_host_tools()
-                self.engine.swap_registry(build_sandbox_registry(sb, extras=host_tools))
-                self._render_status()
-                net_note = (f"[{VIOLET}]network on[/]" if want_net
-                            else "[dim]offline (no network) · /sandbox on network to allow[/]")
-                await self._add(
-                    Static(
-                        f"[{LAVENDER}]sandbox[/] [{VIOLET}]on[/] "
-                        f"[dim]container {sb.container_id[:12]}… · "
-                        f"tools execute in /workspace · [/]{net_note}[dim] · /sandbox off to stop[/]",
-                        classes="tool-line",
-                    )
-                )
-            except Exception as exc:
-                await self._add(
-                    Static(
-                        f"[{RED}]sandbox start failed: {exc}[/]",
-                        classes="tool-line error-msg",
-                    )
-                )
-            finally:
-                self._sandbox_starting = False
-            return
-
-        await self._add(Static(f"[{MUTED}]usage: /sandbox on | off | status[/]", classes="tool-line"))
-
-    # ---- image attachments ---------------------------------------------------
-
-    @on(ChatInput.PasteRequested)
-    def _on_paste_requested(self, _event: ChatInput.PasteRequested) -> None:
-        self._paste_worker(text_fallback=True)
-
-    @work(group="paste", exclusive=True, exit_on_error=False)
-    async def _paste_worker(self, *, text_fallback: bool) -> None:
-        """Read the OS clipboard (a worker — osascript/xclip block). An image
-        becomes a pending [image #N] chip; with text_fallback (the Ctrl+V key,
-        not /paste) clipboard TEXT is inserted instead, so the key always
-        pastes something."""
-        from rockycode.engine import images as images_mod
-        from rockycode.tui import clipboard
-
-        dest = images_mod.assets_dir(self.engine.trajectory.session_id)
-        path = await asyncio.to_thread(clipboard.grab_image, dest)
-        if path is not None:
-            # cap huge pastes (Retina screenshots) before they hit the wire —
-            # vision providers bill image tokens by dimensions
-            path = await asyncio.to_thread(images_mod.downscale_for_api, path)
-            await self._attach_image(str(path))
-            return
-        if text_fallback:
-            text = await asyncio.to_thread(clipboard.grab_text)
-            if text:
-                self.query_one(ChatInput).insert(text)
-                return
-        self.notify("no image on the clipboard", timeout=3)
-
-    async def _attach_image(self, path: str) -> None:
-        """Register a pending image + drop its chip into the input box."""
-        self._img_seq += 1
-        n = self._img_seq
-        self._pending_images[n] = path
-        inp = self.query_one(ChatInput)
-        inp.insert(f"[image #{n}] ")
-        inp.focus()
-        kb = max(1, Path(path).stat().st_size // 1024)
-        self.notify(f"❖ image #{n} · {Path(path).name} · {kb} KB", timeout=3)
-        if not self.engine.vision_enabled:
-            # Say what will ACTUALLY happen under the current route, and name
-            # the config vocabulary right where it matters — the picker says
-            # "once/always" but the switch is /config image_route ask|cli|….
-            from rockycode.config import load as load_config
-            route = load_config(self.engine.workdir)["image_route"]
-            from rockycode.engine import vision as vision_mod
-            eyes = vision_mod.sidecar_choice(load_config(self.engine.workdir)["image_provider"])
-            how = {
-                "cli": "your image CLI will describe it on send",
-                "provider": "a vision provider will describe it on send",
-                "off": "image_route is off — the model is only told it exists",
-                "ask": "on send you'll pick a route (a vision provider / your image CLI)",
-            }.get(route, (f"{eyes.model} will describe it on send" if eyes is not None
-                          else "no vision route yet — the model is only told it exists"))
-            await self._add(Static(
-                f"[{MUTED}]· {escape(self.engine.model)} can't see images itself — {escape(how)} · "
-                f"[/][{LAVENDER}]/model deepseek-flash[/][{MUTED}] sees them · "
-                f"[/][{LAVENDER}]/config image_route auto|ask|provider|cli|off[/]",
-                classes="tool-line"))
-
-    async def _route_images(self, text: str, images: list[str]) -> list:
-        """The no-vision path: decide a route (config image_route, or the
-        inline picker on `ask`), then describe each image ONCE via
-        engine/vision.py and store the description on its image_path part —
-        history/trajectory carry it, images._flatten emits it. Any failure
-        degrades to the honest placeholder; the turn always proceeds."""
-        from rockycode.config import load as load_config, set_value
-        from rockycode.engine import images as images_mod
-        from rockycode.engine import vision
-
-        cfg = load_config(self.engine.workdir)
-        route = cfg["image_route"]
-        choice = vision.sidecar_choice(cfg["image_provider"])
-        template = (cfg["image_cli"] or "").strip()
-        if route == "off":
-            return images
-        if route == "provider" and choice is None:
-            await self._add(Static(
-                f"[{AMBER}]· image_route=provider but no vision endpoint is keyed — "
-                f"sending a placeholder. key one (deepseek · kimi · minimax · glm · qwen · mimo · stepfun) "
-                f"or /config image_route auto[/]",
-                classes="tool-line"))
-            return images
-        if route == "cli" and not template:
-            await self._add(Static(
-                f"[{AMBER}]· image_route=cli but image_cli is empty — sending a placeholder. "
-                f"set it: [/][{LAVENDER}]/config image_cli mmx[/]",
-                classes="tool-line"))
-            return images
-        if route == "auto":
-            # the smooth path: no picker — the registry's sidecar (deepseek-flash
-            # on the home key) describes silently; your CLI if you set one;
-            # otherwise one line saying how to get eyes, and the turn proceeds.
-            if template:
-                route = "cli"
-            elif choice is not None:
-                route = "provider"
-            else:
-                await self._add(Static(
-                    f"[{AMBER}]· {escape(self.engine.model)} can't see images and nothing can describe "
-                    f"them yet — sending a placeholder.[/] [dim]give it eyes:[/] "
-                    f"[{LAVENDER}]/model deepseek-flash[/] [dim]· or[/] "
-                    f"[{LAVENDER}]/config image_cli mmx[/]",
-                    classes="tool-line"))
-                return images
-        if route == "ask":
-            if choice is None and not template:
-                await self._add(Static(
-                    f"[{AMBER}]· {escape(self.engine.model)} can't see images and no route is set up. "
-                    f"three ways:[/]\n"
-                    f"  [dim]· switch to a vision model →[/] [{LAVENDER}]/model deepseek-flash[/] "
-                    f"[dim](your existing key; other vision providers: kimi · minimax · glm · qwen · mimo · stepfun, "
-                    f"pin one: /config image_provider kimi:kimi-k3)[/]\n"
-                    f"  [dim]· use a vision CLI →[/] [{LAVENDER}]/config image_cli mmx[/] "
-                    f"[dim](or a full command template with {{path}})[/]\n"
-                    f"  [dim]· or continue text-only — the model is told an image exists[/]",
-                    classes="tool-line"))
-                return images
-            picked = await self._ask_image_route(
-                len(images), choice.id if choice else "", template)
-            if picked.endswith("_always"):
-                picked = picked.removesuffix("_always")
-                _v, err = set_value("image_route", picked)
-                if not err:
-                    await self._add(Static(
-                        f"[{VIOLET}]✦ saved: image_route = {picked}[/] "
-                        f"[dim]— /config image_route auto for the silent default, ask to be asked[/]",
-                        classes="tool-line"))
-            if picked == "skip":
-                return images
-            route = picked
-        out: list = []
-        question = text[:500]  # the user's message focuses the description
-        for pth in images:
-            part = pth if isinstance(pth, dict) else images_mod.image_part(pth)
-            name = Path(part["path"]).name
-            await self._add(Static(f"[{MUTED}]❖ looking at {escape(name)}…[/]",
-                                   classes="tool-line"))
-            try:
-                desc, src = await vision.describe(
-                    part["path"], question, route=route,
-                    preferred=cfg["image_provider"], template=template)
-                part["description"], part["described_by"] = desc, src
-                await self._add(Static(
-                    f"[{LAVENDER}]❖ {escape(name)}[/] [dim]— seen by {escape(src)}[/]",
-                    classes="tool-line"))
-            except vision.VisionError as e:
-                await self._add(Static(
-                    f"[{AMBER}]✗ {escape(name)}: {escape(str(e))} — sending a placeholder[/]",
-                    classes="tool-line"))
-            out.append(part)
-        return out
-
-    async def _ask_image_route(self, n: int, provider_label: str, cli_label: str) -> str:
-        """Dock the route picker above the input and await the choice — same
-        inline mechanics as _ask_inline, so the transcript stays scrollable."""
-        fut: asyncio.Future[str] = asyncio.get_running_loop().create_future()
-        widget = ImageRouteChoice(n, provider_label, cli_label, fut)
-        await self.mount(widget, before=self.query_one("#prompt"))
-        try:
-            return await fut
-        finally:
-            if widget.is_mounted:
-                await widget.remove()
-            try:
-                self.query_one(ChatInput).focus()
-            except Exception:  # noqa: BLE001 — app may be tearing down
-                pass
-
-    def _collect_images(self, text: str) -> list[str]:
-        """Images riding this message: every [image #N] chip still present in
-        the text (deleting a chip detaches that image), plus any image-file
-        path typed or dragged into the message — on a no-vision model those go
-        through the describe route (_route_images), so drag-and-drop works
-        everywhere. Pending chips clear on submit either way."""
-        import re
-        from rockycode.engine import images as images_mod
-
-        found: list[str] = []
-        for m in re.finditer(r"\[image #(\d+)\]", text):
-            p = self._pending_images.get(int(m.group(1)))
-            if p and p not in found:
-                found.append(p)
-        self._pending_images.clear()
-        for p in images_mod.extract_image_paths(text):
-            if str(p) not in found:
-                found.append(str(p))
-        return found
-
-    # ---- input → engine ------------------------------------------------------
+        await commands.dispatch(self, text)
 
     @on(ChatInput.Submitted)
     async def _on_submit(self, event: ChatInput.Submitted) -> None:
         text = event.value.strip()
         if not text:
+            return
+        if self._exiting:
+            # rocky is leaving: nothing new starts. A second /exit still means "leave now".
+            if text.split()[0] == "/exit":
+                self._request_exit()
+            else:
+                await self._add(Static(self._t("app.message_unsent", error=self._t("app.leaving"),
+                                               text=escape(text)), classes="tool-line"))
             return
         if text.startswith("!"):
             self._run_shell(text[1:].strip())  # worker; don't block the pump
@@ -3195,18 +915,111 @@ class RockyCodeApp(App):
             await self._handle_slash(text)
             return
         images = self._collect_images(text)
-        await self._add(Static(f"[bold {VIOLET}]you ▸[/] {escape(text)}", classes="user-msg"))
-        if images:
-            names = " · ".join(Path(p).name for p in images)
-            await self._add(Static(
-                f"  [{LAVENDER}]❖ {len(images)} image{'s' if len(images) > 1 else ''}[/] "
-                f"[dim]{escape(names)}[/]", classes="tool-line"))
-        if self._tick_loop is not None:
-            lp = self._tick_loop
-            await self._add(Static(
-                f"[{MUTED}]· loop #{lp.id} tick {lp.ticks} interrupted by your message — it fires "
-                f"again in {cron_mod.fmt_duration(lp.interval_s)}[/]", classes="tool-line"))
-        self._turn_worker = self._run_turn(text, images)
+        # Cancellation may await tool cleanup; keep it off the UI message pump.
+        self.run_worker(self._submit_delivery(text, images, self._delivery_mode, self._artifact_edit_target),
+                        group="delivery-input", exclusive=False)
+
+    async def _submit_delivery(self, text, images, mode, artifact_target=None):
+        worker = self._turn_worker
+        if mode == "queue" and not self._delivery.running and worker and worker.is_running:
+            self._delivery.paused = True
+            self._waiting_external = True
+        elif mode == "interrupt":
+            self._waiting_external = False
+        try:
+            receipt = await self._delivery.submit(text, images=images, mode=mode)
+            if artifact_target:
+                self._artifact_turn_contexts[receipt["message_id"]] = dict(artifact_target)
+                if self._artifact_edit_target == artifact_target:
+                    self._cancel_artifact_edit()
+            if receipt["status"] == "queued":
+                await self._add(Static(self._t("app.message_queued", text=escape(text[:120])), classes="tool-line"))
+            return receipt
+        except ValueError as exc:
+            await self._add(Static(self._t("app.message_unsent", error=escape(str(exc)), text=escape(text)), classes="tool-line"))
+            return None
+
+    async def _run_delivery(self, item):
+        if self._exiting:
+            return False  # rocky is leaving: a message that was still on its way starts no turn
+        steps = self._pickups.pop(item.prompt, ())
+        self._approver.arm(steps)  # the steps the user allowed may run in THIS turn, the one that asks for them
+        try:
+            return await self._deliver(item)
+        finally:
+            self._approver.disarm(steps)  # a pass the turn did not use ends with it
+
+    @staticmethod
+    async def _ended(worker) -> str:
+        """How a turn worker ended: "done", "cancelled" or "failed". It never
+        raises. _deliver waits for it behind a shield, and since Python 3.14 the
+        event loop reports a shielded task that ends in an error by itself
+        ("WorkerCancelled exception in shielded future") on every stopped turn."""
+        try:
+            await worker.wait()
+        except WorkerCancelled:
+            return "cancelled"
+        except WorkerFailed:
+            return "failed"
+        return "done"
+
+    async def _deliver(self, item):
+        previous = self._turn_worker
+        if previous and previous.is_running:
+            if item.mode == "interrupt":
+                if self._tick_loop is not None:
+                    lp = self._tick_loop
+                    await self._add(Static(
+                        self._t('commands.loop_interrupted', p1=lp.id, p2=lp.ticks, p3=cron_mod.fmt_duration(lp.interval_s)), classes="tool-line"))
+                self._delivery_worker = previous
+                previous.cancel()
+            waiter = asyncio.create_task(self._ended(previous))
+            try:
+                ended = await asyncio.shield(waiter)
+            except asyncio.CancelledError:
+                previous.cancel()
+                await waiter
+                await self._after_cancel()
+                self._delivery_worker = None
+                return False
+            if ended == "cancelled":
+                await self._after_cancel()
+            elif ended == "failed":
+                self._delivery_worker = None
+                return False
+        await self._add(Static(self._t('commands.you', p1=escape(item.prompt)), classes="user-msg"))
+        if item.images:
+            names = " · ".join(Path(p).name for p in item.images)
+            await self._add(Static(self._t('commands.image_count', p0=LAVENDER, p1=len(item.images), p2=('s' if len(item.images)>1 else '') if self._language=='en' else '', p3=escape(names)), classes="tool-line"))
+        target = self._artifact_turn_contexts.pop(item.id, None)
+        text, images = self._artifact_prompt(item.prompt, target), item.images
+        try:
+            while True:
+                self._delivery_failed = False
+                worker = self._run_turn(text, images)
+                self._turn_worker = self._delivery_worker = worker
+                waiter = asyncio.create_task(self._ended(worker))
+                try:
+                    ended = await asyncio.shield(waiter)
+                except asyncio.CancelledError:
+                    worker.cancel()
+                    await waiter
+                    if self._turn_worker is worker:
+                        await self._after_cancel()
+                    self._plan_go = None
+                    return False
+                if ended != "done":
+                    if self._turn_worker is worker:
+                        await self._after_cancel()
+                    return False
+                if self._delivery_failed:
+                    return False
+                if not self._plan_go:
+                    return True
+                text, self._plan_go = self._plan_go, None
+                images = None
+        finally:
+            self._delivery_worker = None
 
     @work(group="shell", exclusive=True, exit_on_error=False)
     async def _run_shell(self, cmd: str) -> None:
@@ -3218,16 +1031,16 @@ class RockyCodeApp(App):
         minutes, and awaiting it inline froze the whole UI — no typing, no
         ctrl+q — until it finished. Its own group so a new turn won't cancel it."""
         if not cmd:
-            await self._add(Static(f"[{MUTED}]usage: ! <shell command>[/]", classes="tool-line"))
+            await self._add(Static(self._t('commands.shell_usage'), classes="tool-line"))
             return
         if "bash" not in self.engine.registry:
-            await self._add(Static("[dim]no bash tool in this session[/]", classes="tool-line"))
+            await self._add(Static(self._t('commands.shell_unavailable'), classes="tool-line"))
             return
         await self._add(Static(f"[bold {AMBER}]$[/] {escape(cmd)}", classes="user-msg"))
         output, _ok = await tools_mod.execute(
             self.engine.registry, "bash", json.dumps({"command": cmd})
         )
-        shown = output if len(output) <= 3000 else output[:3000] + "\n… [truncated in view]"
+        shown = output if len(output) <= 3000 else output[:3000] + self._t('commands.view_truncated')
         await self._add(Static(escape(shown), classes="tool-line"))
         # Into history via the engine so the trajectory logs it too.
         self.engine._append(
@@ -3249,17 +1062,19 @@ class RockyCodeApp(App):
                           for p in images]
             if images and not self.engine.vision_enabled:
                 images = await self._route_images(text, images)
-            plan_before = self._plan_digest()
             await self._drive_turn(text, images)
-            await self._maybe_plan_gate(plan_before)  # no-op unless plan mode + file changed
+            await self._after_parking()
+            await self._maybe_plan_gate()
             self._maybe_title()  # first completed turn names the session (async, free)
         except CancelTurn:
+            self._delivery_failed = True
             await self._flush_buffers()
             await self._finalize_reply()
             self._set_status(AgentState.IDLE)
-            await self._add(Static(f"[{MUTED}]· turn cancelled[/]", classes="tool-line"))
+            await self._add(Static(self._t('app.turn_cancelled'), classes="tool-line"))
             self.query_one(ChatInput).focus()
         except Exception as e:  # noqa: BLE001
+            self._delivery_failed = True
             # Never let one turn crash the whole app. The @work default
             # exit_on_error tears down the TUI on any uncaught exception — a
             # mid-stream network drop (loop iterates the stream outside its own
@@ -3276,6 +1091,27 @@ class RockyCodeApp(App):
             await self._add(Static(f"✗ {escape(f'{type(e).__name__}: {e}')}", classes="error-msg"))
             self.query_one(ChatInput).focus()
 
+    def _error_text(self, ev: EngineError) -> str:
+        """A failed request in rocky's words: what happened and the next step,
+        then the provider's own text, dimmed, for whoever needs it."""
+        key = f"errors.{ev.kind}"
+        worded = key
+        if ev.kind:
+            facts = {name: escape(str(value)) for name, value in ev.params.items()}
+            try:
+                worded = self._t(key, **facts)
+            except (KeyError, IndexError, ValueError):
+                worded = key
+        if worded == key:  # not a model request failure, or a kind with no sentence: the engine's own
+            return f"✗ {escape(ev.message)}"
+        return "✗ " + worded + (f"\n  [dim]{escape(ev.detail[:300])}[/]" if ev.detail else "")
+
+    @staticmethod
+    def _tool_text(mark: str, tool: str, args: dict) -> str:
+        """`  ✓ bash python -m pytest -q` — the mark, the tool, what it acts on."""
+        brief = tool_brief(tool, args)
+        return f"  {mark} {tool}" + (f" [{LAVENDER}]{escape(brief)}[/]" if brief else "")
+
     async def _drive_turn(self, text: str, images: list[str] | None = None) -> None:
         self._think_buf = ""
         self._reply_buf = ""
@@ -3284,6 +1120,9 @@ class RockyCodeApp(App):
         self._think_widget = None
         self._think_box = None
         self._reply_widget = None
+        # The engine's first state arrives with the model's first token; until
+        # then the screen used to sit still, however long the network took.
+        self._set_status(AgentState.THINKING)
 
         async for ev in self.engine.run_turn(text, images=images):
             if isinstance(ev, StateChanged):
@@ -3298,7 +1137,7 @@ class RockyCodeApp(App):
                     # stream below already guards against).
                     self._think_widget = Static(markup=False, classes="thinking-body")
                     self._think_box = Collapsible(
-                        self._think_widget, title="♪ rocky thinking", collapsed=False
+                        self._think_widget, title=self._t('app.rocky_thinking'), collapsed=False
                     )
                     await self._add(self._think_box)
                 self._think_buf += ev.text
@@ -3313,19 +1152,25 @@ class RockyCodeApp(App):
                 self._reply_buf += ev.text
 
             elif isinstance(ev, ToolStarted):
-                await self._add(
-                    Static(f"  [{PURPLE}]⚒[/] {ev.tool} …", classes="tool-line")
-                )
+                # One line per call, naming what it acts on: the command, the file,
+                # the query. The same line becomes the result when the call ends.
+                line = Static(self._tool_text(f"[{PURPLE}]⚒[/]", ev.tool, ev.args) + " [dim]…[/]", classes="tool-line")
+                self._tool_lines[ev.call_id] = (line, ev.args)
+                await self._add(line)
 
             elif isinstance(ev, ToolFinished):
                 mark = f"[{PURPLE}]✓[/]" if ev.ok else f"[{RED}]✗[/]"
                 first = ev.output.strip().splitlines()[0] if ev.output.strip() else ""
-                await self._add(
-                    Static(
-                        f"  {mark} {ev.tool} [dim]({ev.duration_s:.1f}s)[/] [dim]{escape(first[:80])}[/]",
-                        classes="tool-line",
-                    )
-                )
+                line, args = self._tool_lines.pop(ev.call_id, (None, {}))
+                text = (self._tool_text(mark, ev.tool, args)
+                        + f" [dim]({ev.duration_s:.1f}s)[/] [dim]{escape(first[:80])}[/]")
+                if not ev.ok and first.startswith("[parked]"):
+                    # Not a failure: yolo kept the step for the user. The sentence after "[parked]" is for the model.
+                    text = self._tool_text(f"[{AMBER}]⏸[/]", ev.tool, args) + " " + self._t('parked.tool_line')
+                if line is not None and line.is_attached:
+                    line.update(text)
+                else:  # no start was seen for this call: still say how it ended
+                    await self._add(Static(text, classes="tool-line"))
                 # Fresh thinking + reply blocks after each tool round, so a
                 # post-tool summary lands BELOW the tool output as its own
                 # bubble instead of merging into an earlier one.
@@ -3334,8 +1179,7 @@ class RockyCodeApp(App):
             elif isinstance(ev, Compacted):
                 await self._add(
                     Static(
-                        f"  [dim]♻ context squeezed: ~{ev.tokens_before:,} → "
-                        f"~{ev.tokens_after:,} tokens ({ev.strategy})[/dim]",
+                        self._t('app.context_squeezed_tokens', p0=ev.tokens_before, p1=ev.tokens_after, p2=ev.strategy),
                         classes="tool-line",
                     )
                 )
@@ -3347,9 +1191,7 @@ class RockyCodeApp(App):
                 idle_m = ev.idle_s / 60
                 await self._add(
                     Static(
-                        f"  [{MUTED}]↺ prompt cache evicted upstream after "
-                        f"{idle_m:.0f}m idle — this turn re-read the prefix "
-                        f"({ev.hit_tokens:,}/{ev.expected_tokens:,} tokens hit)[/]",
+                        self._t('app.cache_evicted', p1=idle_m, p2=ev.hit_tokens, p3=ev.expected_tokens),
                         classes="tool-line",
                     )
                 )
@@ -3357,31 +1199,31 @@ class RockyCodeApp(App):
             elif isinstance(ev, ContextReminder):
                 await self._add(
                     Static(
-                        f"  [dim]◐ context at ~{ev.pct:.0%} of {fmt_tokens(ev.window)} — models get "
-                        f"sloppier past the half. type [/][{LAVENDER}]/clear[/][dim] to start "
-                        f"fresh, or keep going (auto-compacts near full).[/]",
+                        self._t('app.context_reminder', p0=ev.pct, p1=fmt_tokens(ev.window)),
                         classes="tool-line",
                     )
                 )
 
             elif isinstance(ev, EngineError):
-                await self._add(Static(f"✗ {escape(ev.message)}", classes="error-msg"))
+                if not ev.message.startswith("compaction summary failed"):
+                    self._delivery_failed = True
+                await self._add(Static(self._error_text(ev), classes="error-msg"))
 
             elif isinstance(ev, TurnFinished):
                 u = ev.usage
                 if u:
                     await self._add(
                         Static(
-                            f"[dim]· {ev.steps} step(s) · "
-                            f"{u.get('prompt_tokens', 0):,} in / "
-                            f"{u.get('completion_tokens', 0):,} out · "
-                            f"cache hit {u.get('prompt_cache_hit_tokens', 0):,}[/]",
+                            self._t('app.step_s_in_out_cache_hit', p0=ev.steps, p1=u.get('prompt_tokens', 0), p2=u.get('completion_tokens', 0), p3=u.get('prompt_cache_hit_tokens', 0)),
                             classes="usage-line",
                         )
                     )
                     self._ledger.add(self.engine.model, u)
                     self._update_total()
 
+        if self._approver.stop_turn and self._tick_loop is None:
+            # The engine ended the turn at the park limit: queued messages wait for the user, as after Esc.
+            self._delivery_failed = True
         await self._flush_buffers()
         await self._finalize_reply()
 
@@ -3390,8 +1232,16 @@ class RockyCodeApp(App):
         when the reply block is done — markdown is parsed once, not per flush."""
         if self._reply_widget is None:
             return
-        text = self._reply_buf
-        if text.strip():
+        # Claimed before the first await: a turn stopped in the middle of the swap
+        # below is finalized again by its clean-up, and must find nothing left to do.
+        # (It used to mount the rendered reply after a line that was already going.)
+        widget, text = self._reply_widget, self._reply_buf
+        self._reply_widget, self._reply_buf, self._reply_flushed = None, "", 0
+        try:
+            transcript = None if self._left else self._transcript()
+        except NoMatches:
+            transcript = None  # the app is closing under the turn: nothing to draw on
+        if text.strip() and transcript is not None:
             # width=0 before first layout → None → links yes, wrapping no.
             md = Markdown(
                 enhance_markdown(text, width=self._reply_width(),
@@ -3399,96 +1249,8 @@ class RockyCodeApp(App):
                 parser_factory=rocky_markdown_parser,
                 open_links=False,
             )
-            await self._transcript().mount(md, after=self._reply_widget)
-            await self._reply_widget.remove()
-        self._reply_buf = ""
-        self._reply_flushed = 0
-        self._reply_widget = None
-
-    async def on_markdown_link_clicked(self, event: Markdown.LinkClicked) -> None:
-        """Clicks are for checking things — the paper, the docs, the web —
-        never for running things. Text docs dock beside the chat, other
-        reading files open with the system default; code and everything else
-        get a dim note (open_links=False everywhere, so this is the only
-        click path — including for links inside a docked doc)."""
-        href = event.href
-        dock = self._dock()
-        if href.startswith("#"):  # heading anchor inside the docked doc
-            if dock is not None:
-                dock.query_one("#docdock-md", Markdown).goto_anchor(href[1:])
-            return
-        if (dock is not None and dock.current is not None
-                and not urlsplit(href).scheme and not href.startswith("/")):
-            # a docked doc's relative link ("figs/x.md") — resolve against the
-            # doc, then through the same policy gate as every other click
-            href = str((dock.current.parent / url2pathname(href)).resolve())
-        action, target = link_click_action(href)
-        if action == "open" and Path(urlsplit(target).path).suffix.lower() in TEXT_DOC_SUFFIXES:
-            await self._open_doc(target)
-        elif action in ("browser", "open"):
-            self.open_url(target)
-        elif action == "missing":
-            await self._add(Static(
-                f"[dim]· link target missing (moved or renamed?): {escape(target)}[/]",
-                classes="tool-line"))
-        else:
-            await self._add(Static(
-                f"[dim]· not opened by click — only reading files (md/pdf/…) and "
-                f"web links auto-open: {escape(target)}[/]",
-                classes="tool-line"))
-
-    # ---- doc dock: read beside the chat, never over it ----------------------
-
-    def _dock(self) -> DocDock | None:
-        try:
-            return self.query_one(DocDock)
-        except NoMatches:
-            return None
-
-    def _reply_width(self) -> int | None:
-        """Fence-wrap width for replies: the TRANSCRIPT's width, not the
-        app's — with a doc docked the chat column is narrower. 0 before
-        first layout → None → links yes, wrapping no."""
-        return self._transcript().container_size.width or self.size.width or None
-
-    async def _open_doc(self, uri: str) -> None:
-        path = Path(url2pathname(urlsplit(uri).path))
-        dock = self._dock()
-        if dock is None:
-            dock = DocDock()
-            await self.query_one("#workspace").mount(dock)
-        await dock.load(path)
-
-    def action_doc_close(self) -> None:
-        """Sync on purpose: the ✕ lives in the dock's own header, so this
-        action runs on the clicked widget's message pump. Awaiting remove()
-        there gathers the dock's child pumps — including the header's own,
-        which is blocked on this very handler — and the app wedges for good.
-        Schedule the removal, hand focus back, return."""
-        dock = self._dock()
-        if dock is not None:
-            self._transcript().display = True  # in case it closed while ⛶ full
-            dock.remove()
-            self.query_one(ChatInput).focus()
-
-    async def action_doc_back(self) -> None:
-        dock = self._dock()
-        if dock is not None:
-            await dock.back()
-
-    def action_doc_wider(self) -> None:
-        dock = self._dock()
-        if dock is not None and not dock.is_full:
-            dock.width_i = (dock.width_i + 1) % len(WIDTHS)
-            dock.styles.width = WIDTHS[dock.width_i]
-
-    def action_doc_full(self) -> None:
-        dock = self._dock()
-        if dock is None:
-            return
-        dock.is_full = not dock.is_full
-        self._transcript().display = not dock.is_full
-        dock.styles.width = "100%" if dock.is_full else WIDTHS[dock.width_i]
+            await transcript.mount(md, after=widget)
+            await gone(widget)
 
     def _update_total(self) -> None:
         # Price directly in the chosen currency from its own official table —
@@ -3501,14 +1263,13 @@ class RockyCodeApp(App):
             # every turn ran on this machine: $0 by design, and the cache-rate
             # story is an API-provider thing — say `local` instead.
             self.query_one("#total", Static).update(
-                f"[{MUTED}]Σ $0 · {t['prompt']:,} in · "
-                f"{t['completion']:,} out · local[/]")
+                self._t('app.0_in_out_local', p1=t['prompt'], p2=t['completion']))
             return
-        note = "" if self._ledger.configured(self._currency) else " [dim](prices unset)[/]"
+        note = (self._t('app.search_fees_incomplete') if not self._ledger.search_usage_complete else
+                "" if self._ledger.configured(self._currency) else self._t('app.prices_unset'))
         rate = (t["hit"] / t["prompt"] * 100) if t["prompt"] else 0.0
         self.query_one("#total", Static).update(
-            f"[{MUTED}]Σ {sym}{amt:.4f} · {t['prompt']:,} in · "
-            f"{t['completion']:,} out · cache {rate:.0f}%{note}[/]"
+            self._t('app.in_out_cache', p1=sym, p2=amt, p3=t['prompt'], p4=t['completion'], p5=rate, p6=note)
         )
 
     async def _reset_step_blocks(self) -> None:
@@ -3527,16 +1288,16 @@ class RockyCodeApp(App):
 
 def run_app(
     engine: Engine, *, resume: bool = False, resume_session=None, sandbox=None,
-    currency: str = "usd", theme: str = "dark",
+    currency: str = "usd", theme: str = "dark", language: str = "auto", ui_language: str = "auto",
     permission: str = "ask", permission_weakened: bool = False,
-    exit_sheet: str = "auto", dream: str = "auto",
+    evolve: str = "auto",
 ):
     """Run the chat TUI. /goal runs in its own screen inside the app and pops back,
     so this just runs the app to normal exit."""
     return RockyCodeApp(
         engine, resume=resume, resume_session=resume_session, sandbox=sandbox,
-        currency=currency, theme=theme,
+        currency=currency, theme=theme, language=language, ui_language=ui_language,
         permission=permission, permission_weakened=permission_weakened,
         prompt_history=PromptHistory(),  # the real CLI persists; tests stay in-memory
-        exit_sheet=exit_sheet, dream=dream,
+        evolve=evolve,
     ).run()

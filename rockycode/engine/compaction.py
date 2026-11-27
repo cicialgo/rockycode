@@ -17,6 +17,8 @@ little early costs a few cache misses; compacting late kills the turn.
 """
 from __future__ import annotations
 
+from rockycode.engine.model_protocol import GENERIC, ModelProtocol
+
 CHARS_PER_TOKEN = 3
 MSG_OVERHEAD_TOKENS = 8
 
@@ -47,19 +49,20 @@ IMAGE_PART_EST_TOKENS = 1_200
 
 
 def estimate_msg_tokens(msg: dict) -> int:
+    reasoning_chars = len(msg.get("reasoning_content") or "")
     content = msg.get("content")
     if isinstance(content, list):  # image-bearing user turn (engine/images.py)
         chars = sum(len(p.get("text") or "") for p in content
                     if isinstance(p, dict) and p.get("type") == "text")
         images = sum(1 for p in content
                      if isinstance(p, dict) and p.get("type") == "image_path")
-        return (MSG_OVERHEAD_TOKENS + chars // CHARS_PER_TOKEN
+        return (MSG_OVERHEAD_TOKENS + (chars + reasoning_chars) // CHARS_PER_TOKEN
                 + images * IMAGE_PART_EST_TOKENS)
     chars = len(content or "")
     for tc in msg.get("tool_calls") or []:
         fn = tc.get("function", {})
         chars += len(fn.get("name", "")) + len(fn.get("arguments", ""))
-    return MSG_OVERHEAD_TOKENS + chars // CHARS_PER_TOKEN
+    return MSG_OVERHEAD_TOKENS + (chars + reasoning_chars) // CHARS_PER_TOKEN
 
 
 def estimate_tokens(messages: list[dict]) -> int:
@@ -169,19 +172,22 @@ def truncate_oversized(history: list[dict], max_chars: int = MAX_MSG_CHARS) -> i
 
 async def summarize(client, model: str, history: list[dict], tools: list[dict],
                     reasoning: str = "thinking", *, efforts=None,
-                    thinking_off: bool = True) -> tuple[str, dict]:
+                    thinking_off: bool = True, protocol: ModelProtocol | None = None) -> tuple[str, dict]:
     """One non-streaming call: history + instruction → state document.
 
     `tools` is passed through (with tool_choice="none") so the request body
     matches the main loop's shape and the prefix cache can hit; thinking is
     off — a summary needs no chain of thought. Callers pass tools=[] for a
-    LOCAL provider (its compat layer ignores tool_choice, and a model handed
-    schemas may answer with a tool call instead of a summary) — then neither
-    param is sent at all. `reasoning` shapes the thinking-off field per the
+    LOCAL provider. Contracts such as MiMo that ignore tool_choice="none"
+    also omit both parameters; a model handed schemas may request a tool
+    instead of a summary. `reasoning` shapes the thinking-off field per the
     provider's policy (effort.build_extra_body), keeping the body clean for
     strict endpoints instead of always sending one provider's knob.
     """
     from rockycode.engine.effort import build_extra_body
+    protocol = protocol or GENERIC
+    if not protocol.tool_choice_none:
+        tools = []
     kwargs: dict = {}
     if tools:
         kwargs.update(tools=tools, tool_choice="none")
@@ -190,12 +196,20 @@ async def summarize(client, model: str, history: list[dict], tools: list[dict],
         kwargs["extra_body"] = extra
     resp = await client.chat.completions.create(
         model=model,
-        messages=history + [{"role": "user", "content": SUMMARIZE_INSTRUCTION}],
-        max_tokens=SUMMARY_MAX_TOKENS,
+        messages=protocol.messages(history, tools=bool(tools)) + [
+            {"role": "user", "content": SUMMARIZE_INSTRUCTION}],
         stream=False,
+        **protocol.output_cap(SUMMARY_MAX_TOKENS),
         **kwargs,
     )
-    summary = (resp.choices[0].message.content or "").strip()
+    # A non-empty preamble or truncated answer is not a completed state document.
+    # Raise before replacing history; the engine already falls back to pruning.
+    choice = resp.choices[0]
+    if getattr(choice, "finish_reason", None) != "stop" or getattr(choice.message, "tool_calls", None):
+        raise ValueError("summary did not finish with stop and no tool calls")
+    summary = (choice.message.content or "").strip()
+    if not summary:
+        raise ValueError("model returned an empty summary")
     usage: dict = {}
     if resp.usage is not None:
         try:

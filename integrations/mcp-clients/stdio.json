@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "rocky": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "--locked", "--directory", "/absolute/rockycode-dev", "rockycode", "mcp"]
+    }
+  }
+}

@@ -61,23 +61,34 @@ _SHAPES: list[tuple[re.Pattern[str], str]] = [
 ]
 
 
-def _known_values() -> list[str]:
+def _known_values(names: re.Pattern[str] = _SENSITIVE_ENV) -> list[str]:
     vals = {
         v for k, v in os.environ.items()
-        if v and len(v) >= _MIN_VALUE_LEN and _SENSITIVE_ENV.search(k)
+        if v and len(v) >= _MIN_VALUE_LEN and names.search(k)
     }
     # Longest first: if one secret value is a substring of another, redact the
     # bigger match before the smaller can partially hit it.
     return sorted(vals, key=len, reverse=True)
 
 
-def redact(text: str) -> str:
+def redact(text: str, *, names: re.Pattern[str] = _SENSITIVE_ENV) -> str:
     """Return *text* with known secret values and secret-shaped tokens masked."""
     if not text:
         return text
-    for value in _known_values():
+    for value in _known_values(names):
         if value in text:
             text = text.replace(value, "[redacted]")
     for rx, repl in _SHAPES:
         text = rx.sub(repl, text)
     return text
+
+
+# A line the USER typed is kept for the up-arrow list and written to disk. There
+# the wide name list would eat ordinary words (an OPENAI_BASE_URL, a model id in
+# ANTHROPIC_MODEL), so only the value of a key-named variable counts as known.
+_KEY_NAMED = re.compile(r"(API_KEY|_TOKEN|_SECRET|PASSWORD|PASSWD)", re.I)
+
+
+def redact_typed(text: str) -> str:
+    """A typed line with any key masked: a pasted key must not be kept."""
+    return redact(text, names=_KEY_NAMED)

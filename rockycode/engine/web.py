@@ -10,7 +10,7 @@ Verified live against the DeepSeek API (2026-06-22):
   on blocked sites — a known limitation; native search covers most needs.
 
 Search backends are tiered and polite:
-  native (DeepSeek) → brave (opt-in) → bing (keyless) → duckduckgo (keyless)
+  native (DeepSeek or explicitly selected MiniMax) → brave (opt-in) → bing (keyless) → duckduckgo (keyless)
 Native is the one that matters — and the only one that reliably works behind
 restrictive networks: the client only needs api.deepseek.com, and the search
 + page-reading happen on DeepSeek's servers. Among the scrapers, Bing is
@@ -37,11 +37,27 @@ import socket
 from urllib.parse import parse_qs, urlparse
 
 from rockycode.engine.tools import Tool, _fn_schema, _truncate
-from rockycode.onboarding import KEY_ENV, current_key, require_base_url
+from rockycode.onboarding import require_base_url
 
 SEARCH_MAX_CHARS = 8_000
 ANTHROPIC_VERSION = "2023-06-01"
 SEARCH_TOOL_VARIANTS = ("web_search_20260209", "web_search_20250305")
+NATIVE_CONTINUATIONS = 6  # HTTP requests per tool variant before giving up on `pause_turn`
+SEARCH_MAX_USES = 12  # default for config `search_max_uses`; 0 = send no `max_uses`
+
+
+def _search_max_uses() -> int:
+    """Server searches per native request: env `ROCKYCODE_SEARCH_MAX_USES`, else the
+    GLOBAL config key `search_max_uses` (a project file cannot lift a billing cap).
+    0 = unlimited — the provider's own pause point then bounds each request."""
+    raw = os.getenv("ROCKYCODE_SEARCH_MAX_USES")
+    if raw is not None and raw.strip().isdigit():
+        return int(raw)
+    from rockycode import config as C
+    try:
+        return int(C.global_value("search_max_uses"))
+    except (KeyError, TypeError, ValueError):
+        return SEARCH_MAX_USES
 RESEARCH_CONCURRENCY = 4  # polite cap on parallel lookups
 
 # Honest, transparent UA — we say who we are rather than impersonate a browser.
@@ -62,7 +78,7 @@ def _anthropic_messages_url() -> str:
 
 
 def _search_model() -> str:
-    """The model the native (DeepSeek /anthropic) search backend calls: env
+    """The independent native-search model/endpoint selector: env
     override, else the registry's `search` role (deepseek-flash)."""
     explicit = os.getenv("ROCKYCODE_SEARCH_MODEL")
     if explicit:
@@ -151,38 +167,134 @@ def _normalize_anthropic_usage(u: dict) -> dict:
     }
 
 
+def _deepseek_search_count(data: dict) -> int | None:
+    """Only tool_search counts successful searches; never count source URLs.
+
+    Official Messages omits server_tool_use when no search was attempted.
+    Missing/malformed usage or contradictory tool blocks remains unknown.
+    """
+    usage = data.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    if "server_tool_use" not in usage:
+        blocks = data.get("content")
+        if not isinstance(blocks, list) or any(
+            not isinstance(b, dict) or b.get("type") in ("server_tool_use", "web_search_tool_result")
+            for b in blocks
+        ):
+            return None
+        return 0
+    counters = usage["server_tool_use"]
+    count = counters.get("tool_search") if isinstance(counters, dict) else None
+    return count if type(count) is int and count >= 0 else None
+
+
+def _native_route():
+    """Resolve search independently of the chat model; never borrow another key."""
+    from rockycode.engine import providers as P
+    from rockycode.engine import route as route_mod
+    resolved = P.resolve(_search_model())
+    if resolved is None:
+        raise ValueError("unknown or ambiguous ROCKYCODE_SEARCH_MODEL")
+    provider, endpoint, model = resolved
+    if provider.search not in ("anthropic", "minimax_messages"):
+        raise ValueError("selected provider has no supported native search protocol")
+    if provider.search == "minimax_messages" and "search" not in provider.spec(model).roles:
+        # MiniMax's backend serves search on some models only: the rows that carry the role.
+        raise ValueError("MiniMax native search needs a model whose row has the `search` role")
+    try:
+        key = route_mod.bind(provider, endpoint, model, gateway_ok=False).key
+    except route_mod.RouteError:
+        raise RuntimeError(f"no API key for search endpoint {endpoint.eid}") from None
+    root = endpoint.base_url.rstrip("/")
+    if not root.endswith("/v1"):
+        raise ValueError("native search endpoint must end in /v1")
+    url = root[:-3] + "/anthropic/v1/messages"
+    # Preserve the historical DeepSeek-only explicit override.
+    if provider.name == "deepseek" and endpoint.eid == "deepseek":
+        url = _anthropic_messages_url()
+    if urlparse(url).scheme != "https":
+        raise ValueError("native search requires an HTTPS endpoint")
+    return provider, model, key, url
+
+
 async def _native(query: str, ledger=None) -> str:
     import httpx
 
-    key = current_key()
-    if not key:
-        raise RuntimeError(f"no API key for native search — set {KEY_ENV}")
+    provider, model, key, url = _native_route()
+    minimax = provider.search == "minimax_messages"
+    variants = ("web_search_20250305",) if minimax else SEARCH_TOOL_VARIANTS
     headers = {"x-api-key": key, "anthropic-version": ANTHROPIC_VERSION, "content-type": "application/json"}
     prompt = f"Search the web and answer concisely with key facts: {query}\nCite the sources you used."
-    async with httpx.AsyncClient(timeout=120) as client:
-        last = None
-        for variant in SEARCH_TOOL_VARIANTS:
-            r = await client.post(_anthropic_messages_url(), headers=headers, json={
-                "model": _search_model(), "max_tokens": 2048,
-                "tools": [{"type": variant, "name": "web_search", "max_uses": 5}],
-                "messages": [{"role": "user", "content": prompt}],
-            })
-            if r.status_code == 400 and "unknown variant" in r.text:
-                last = r.text
-                continue
-            r.raise_for_status()
-            data = r.json()
-            # flash search tokens count toward the session cost too
-            if ledger is not None and isinstance(data.get("usage"), dict):
-                ledger.add(_search_model(), _normalize_anthropic_usage(data["usage"]))
-            text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
-            sources = [
-                {"title": it.get("title", ""), "url": it["url"]}
-                for b in data.get("content", []) if b.get("type") == "web_search_tool_result"
-                for it in (b.get("content") or []) if isinstance(it, dict) and it.get("url")
-            ]
-            return _format_native(text.strip(), sources)
-    raise RuntimeError(f"no supported web_search variant: {last}")
+    # Bounded continuation: a server pauses (`pause_turn`) after roughly ten
+    # searches in one request (MiniMax M3.1 Flash, observed 2026-10-29), and a
+    # broad question can need several pauses before `end_turn`. `max_uses` is
+    # documented by Anthropic; MiniMax accepts it and searches less with it,
+    # without treating it as a hard cap. The user's `search_max_uses` sets it
+    # (0 = none); the wall-clock deadline still bounds it.
+    async with asyncio.timeout(240), httpx.AsyncClient(timeout=120) as client:
+        for variant in variants:
+            messages = [{"role": "user", "content": prompt}]
+            sources = []
+            stops: list[str] = []
+            max_uses = _search_max_uses()
+            for turn in range(NATIVE_CONTINUATIONS):
+                tool = {"type": variant, "name": "web_search"}
+                if max_uses > 0:
+                    tool["max_uses"] = max_uses
+                deepseek = provider.name == "deepseek"
+                official = url == "https://api.deepseek.com/anthropic/v1/messages"
+                try:
+                    r = await client.post(url, headers=headers, json={
+                        "model": provider.api_model(model), "max_tokens": 8192 if minimax else 2048,
+                        "tools": [tool], "messages": messages,
+                    })
+                except (httpx.HTTPError, TimeoutError, asyncio.CancelledError):
+                    # The server may have completed searches before the connection failed.
+                    if ledger is not None and deepseek:
+                        ledger.add_deepseek_search(None)
+                    raise
+                if not minimax and turn == 0 and r.status_code == 400 and "unknown variant" in r.text:
+                    break
+                r.raise_for_status()
+                try:
+                    data = r.json()
+                    if not isinstance(data, dict):
+                        raise ValueError("invalid native search response")
+                except ValueError:
+                    if ledger is not None and deepseek:
+                        ledger.add_deepseek_search(None)
+                    raise
+                if ledger is not None and deepseek:
+                    # A custom gateway's billing is not the official endpoint's tariff.
+                    ledger.add_deepseek_search(_deepseek_search_count(data) if official else None)
+                if ledger is not None and isinstance(data.get("usage"), dict):
+                    ledger.add(model, _normalize_anthropic_usage(data["usage"]))
+                if (data.get("base_resp") or {}).get("status_code", 0) != 0:
+                    raise RuntimeError("native search provider error")
+                blocks = data.get("content")
+                if not isinstance(blocks, list) or not all(isinstance(b, dict) for b in blocks):
+                    raise RuntimeError("invalid native search content")
+                for block in blocks:
+                    if block.get("type") == "web_search_tool_result":
+                        items = block.get("content")
+                        if isinstance(items, list):
+                            sources.extend({"title": it.get("title", ""), "url": it["url"]}
+                                           for it in items if isinstance(it, dict) and it.get("url"))
+                stop = data.get("stop_reason")
+                stops.append(str(stop))
+                if stop == "pause_turn":
+                    messages.append({"role": "assistant", "content": blocks})
+                    continue
+                if stop != "end_turn" or any(b.get("type") == "tool_use" for b in blocks):
+                    raise RuntimeError("incomplete native search response")
+                text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip()
+                return _format_native(text, sources) if text else ""
+            else:
+                raise RuntimeError(
+                    f"native search continuation limit reached after {NATIVE_CONTINUATIONS} "
+                    f"requests (stop reasons {', '.join(stops)}; {len(sources)} sources collected)")
+    raise RuntimeError("no supported web_search variant")
 
 
 async def _brave(query: str) -> str:

@@ -1,4 +1,4 @@
-"""Loops — the in-session cron behind /loop (alias /cron) and the loop_start
+"""Loops — the in-session cron behind /loop and the loop_start
 / loop_stop tools. Pure core: no asyncio, no Textual, no I/O.
 
 A loop re-fires ONE prompt into the live session on an interval. Each tick is

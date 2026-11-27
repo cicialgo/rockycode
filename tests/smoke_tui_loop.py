@@ -21,6 +21,9 @@ Paths driven through the real RockyCodeApp:
      the following tick runs the command.
   K) careful still pauses, with a prompt that names yolo / allow / resume;
      switching to ask does not resume; denying /loop allow says yolo resumes.
+  L) a tick stays active through async quiet folding and receipt rendering.
+  M) yolo: a tick that reaches for what only the user can allow does not
+     prompt and does not pause; the step joins the waiting list, once.
 """
 import asyncio
 import json
@@ -42,9 +45,23 @@ from textual.widgets import Static
 from rockycode.engine.cron import LoopBook, build_loop_tools
 from rockycode.engine.loop import Engine
 from rockycode.engine.tools import Tool
-from rockycode.tui.app import ChatInput, RockyCodeApp
+from rockycode.tui.app import RockyCodeApp
+from rockycode.tui.chatinput import ChatInput
 from rockycode.tui.loopcard import LoopCard
 from rockycode.tui.permission import InlineApproval, PermissionPicker
+from rockycode.tui import cardkeys
+
+cardkeys.ENTER_GUARD = 0  # the half second is tested in smoke_tui_card_keys.py; here Enter answers a card at once
+
+
+async def come_to_card(pilot, app):
+    """A card the user did not open never takes the keyboard: Enter in the empty message box goes to it."""
+    await pilot.press("enter")
+    for _ in range(80):
+        await pilot.pause(0.025)
+        if isinstance(app.focused, cardkeys.CardKeys):
+            return
+    raise AssertionError("Enter in the empty message box did not bring the keyboard to the card")
 from invariants import assert_history_api_valid
 
 WD = Path.cwd()
@@ -67,7 +84,8 @@ def tc(i, id_, name, args):
 
 
 async def stream(chunks):
-    for c in chunks:
+    from invariants import completed_chunks
+    for c in completed_chunks(chunks):
         yield c
 
 
@@ -301,7 +319,7 @@ async def case_d():
         # decide it now
         await submit(pilot, app, "/loop allow 1")
         assert await wait_until(pilot, lambda: has_approval(app)), "allow must mount the inline approval"
-        await pilot.press("y")  # once
+        await pilot.press("enter")  # once
         assert await wait_until(pilot, lambda: lp.status == "running" and not has_approval(app))
         assert "resumed" in txt(app)
         # the retry runs — no prompt
@@ -316,7 +334,7 @@ async def case_d():
         assert await wait_until(pilot, lambda: lp.status == "paused" and lp.ticks == 3)
         await submit(pilot, app, "/loop allow")
         assert await wait_until(pilot, lambda: has_approval(app))
-        await pilot.press("n")
+        await pilot.press("down", "down", "enter")
         assert await wait_until(pilot, lambda: not has_approval(app))
         t = txt(app)
         assert lp.status == "paused" and "stays paused" in t, t
@@ -351,7 +369,8 @@ async def case_f():
         await submit(pilot, app, "run the bench and check every 10 minutes if it finished")
         assert await wait_until(pilot, lambda: has_approval(app))
         assert "every 10m — check the bench · no budget" in txt(app), txt(app)
-        await pilot.press("y")
+        await come_to_card(pilot, app)
+        await pilot.press("enter")
         assert await wait_until(pilot, lambda: app._loops.get(1) is not None)
         lp = app._loops.get(1)
         assert lp.origin == "model" and lp.interval_s == 600
@@ -377,7 +396,10 @@ async def case_f():
 async def case_g():
     app, engine, script, ran = build("yolo")
     async with app.run_test(size=(100, 34)) as pilot:
-        await submit(pilot, app, "/cron 2m ping")   # the alias
+        await submit(pilot, app, "/cron 2m ping")   # the alias was cut in 1.0.0
+        assert await wait_until(pilot, lambda: "i no know /cron" in txt(app))
+        assert app._loops.get(1) is None, "an unknown command starts nothing"
+        await submit(pilot, app, "/loop 2m ping")
         assert await wait_until(pilot, lambda: app._loops.get(1) is not None)
         lp = app._loops.get(1)
         await submit(pilot, app, "/loop pause")
@@ -561,12 +583,70 @@ async def case_k():
 
         await submit(pilot, app, "/loop allow 1")
         assert await wait_until(pilot, lambda: has_approval(app))
-        await pilot.press("n")
+        await pilot.press("down", "down", "enter")
         assert await wait_until(pilot, lambda: not has_approval(app))
         t = txt(app)
         assert lp.status == "paused" and "stays paused" in t, t
         assert "retries without it" in t and "/permission yolo" in t, t
     print("  K ok — careful pauses with a prompt; ask does not resume; deny names yolo")
+
+
+async def case_l():
+    """Engine completion is not tick completion: the folded receipt must settle."""
+    app, engine, script, ran = build("yolo")
+    async with app.run_test(size=(100, 34)) as pilot:
+        await submit(pilot, app, "/loop 5m check")
+        lp = app._loops.get(1)
+        n_hist = len(engine.history)
+        rendering, release = asyncio.Event(), asyncio.Event()
+        original_add = app._add
+
+        async def delayed_add(widget):
+            if "quiet ×1" in str(widget.render()):
+                rendering.set()
+                await release.wait()
+            await original_add(widget)
+
+        app._add = delayed_add
+        script.text("nothing changed.\nLOOP QUIET")
+        fire(app, lp)
+        try:
+            assert await wait_until(pilot, rendering.is_set), "quiet receipt was not reached"
+            assert lp.last_verdict == "quiet" and len(engine.history) == n_hist
+            assert app._tick_loop is lp, "tick became idle before its receipt finished rendering"
+            assert app._turn_worker.is_running
+            assert "quiet ×1" not in txt(app)
+            worker = app._turn_worker
+            app._loop_pump()
+            assert app._turn_worker is worker, "receipt rendering must not launch another tick"
+        finally:
+            release.set()
+        assert await tick_done(pilot, app, lp, 1)
+        assert "quiet ×1" in txt(app) and app._tick_loop is None
+        assert "ticking" not in str(app.query_one("#cwd", Static).render())
+        assert_history_api_valid(engine.history)
+    print("  L ok — tick stays active until quiet receipt rendering settles")
+
+
+async def case_m():
+    app, engine, script, ran = build("yolo")
+    keys = "cat ~/.rockycode/.env"
+    async with app.run_test(size=(100, 34)) as pilot:
+        await submit(pilot, app, "/loop 5m check the deploy")
+        assert await wait_until(pilot, lambda: app._loops.get(1) is not None)
+        lp = app._loops.get(1)
+        for n in (1, 2):
+            script.tool("bash", {"command": keys}).tool("bash", {"command": "ls results/"}).text("nothing new.\nLOOP QUIET")
+            fire(app, lp)
+            assert await tick_done(pilot, app, lp, n), (lp.ticks, lp.last_verdict)
+            assert not has_approval(app), "a tick never prompts"
+            assert lp.status == "running", "yolo keeps the loop on its schedule"
+            assert [p.detail for p in app._approver.parked] == [keys], "parked for the user, listed once"
+            assert keys not in ran and ran.count("ls results/") == n, ran
+        chip = app.query_one("#parkchip", Static)
+        assert chip.display and "1 waiting" in str(chip.render())
+        assert_history_api_valid(engine.history)
+    print("  M ok — a yolo tick parks what only the user can allow: no prompt, no pause, listed once")
 
 
 async def main():
@@ -582,6 +662,8 @@ async def main():
     await case_i()
     await case_j()
     await case_k()
+    await case_l()
+    await case_m()
     print("TUI LOOP SMOKE OK — receipt · idle-only ticks · fold · never-prompt + allow · yolo resume · tools · verbs. amaze!")
 
 

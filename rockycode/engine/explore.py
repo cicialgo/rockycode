@@ -46,10 +46,10 @@ from pathlib import Path
 from typing import Optional
 
 from rockycode.engine import tools as tools_mod
-from rockycode.engine.events import TurnFinished
+from rockycode.engine.events import CURRENT_CALL, TurnFinished
 from rockycode.engine.tools import Tool
 
-EXPLORE_MAX_STEPS = 20     # parent runs 50; a focused purchase should not need more
+EXPLORE_MAX_STEPS = 20     # focused child budget, independent of the parent turn
 EXPLORE_FINALIZE_STEPS = 2
 EXPLORE_EFFORT = "high"    # parent default is "max"; delegated lookups don't need it
 EXPLORE_TIMEOUT_S = int(os.getenv("ROCKYCODE_EXPLORE_TIMEOUT", "600"))
@@ -197,13 +197,13 @@ _RO_BASH_SCHEMA = tools_mod._fn_schema(
 
 
 def build_explore_registry(
-    workdir: Path, allowed_roots: tuple[Path, ...] = ()
+    workdir: Path, allowed_roots: tuple[Path, ...] = (), *, file_access=None
 ) -> dict[str, Tool]:
     """The child's toolset: the safe tier of the normal registry plus gated
     read-only bash. Built FRESH (not filtered from the parent's live registry)
     so session extras — MCP, memory, web, skills — never leak into children,
     and the toolset stays deterministic and byte-stable per role."""
-    base = tools_mod.build_registry(workdir, allowed_roots)
+    base = tools_mod.build_registry(workdir, allowed_roots, file_access=file_access)
     reg = {name: t for name, t in base.items() if t.risk == "safe"}
 
     async def _ro_bash(command: str) -> str:
@@ -250,6 +250,7 @@ async def _git_show(workdir: Path, ref: str, path: str) -> Optional[str]:
         proc = await asyncio.create_subprocess_exec(
             "git", "-C", str(workdir), "show", f"{ref}:{path}",
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            env=tools_mod.tool_env(),
         )
         out, _ = await proc.communicate()
         return out.decode("utf-8", "replace") if proc.returncode == 0 else None
@@ -374,6 +375,8 @@ async def run_explore(
     git_ref: Optional[str] = None,
     max_steps: int = EXPLORE_MAX_STEPS,
     engine_cls=None,
+    file_access=None,
+    route=None,
 ) -> str:
     """Buy one investigation: spawn a fresh child Engine on *task*, verify the
     report's citations, and return report + citation footer + stats line.
@@ -383,7 +386,10 @@ async def run_explore(
     (source=explore, linked to the parent session) — a clean single-task
     episode whose citation footer doubles as a grounding signal. Usage folds
     into *ledger* so /cost stays truthful. *engine_cls* is a test seam, same
-    spirit as goal.Driver.
+    spirit as goal.Driver. *route* is the buyer's own route (engine/route.py):
+    the child rides the buyer's client, so it must speak that model's wire
+    shape too — without it a child on any non-default model sent the default
+    reasoning fields, wire id and history rules.
     """
     prompt = ROLE_PROMPTS.get(role)
     if prompt is None:
@@ -392,6 +398,11 @@ async def run_explore(
     if engine_cls is None:
         from rockycode.engine.loop import Engine as engine_cls  # avoid import cycle
 
+    # Lineage beyond parent_session: the parent's turn, model request and
+    # logical call that bought this child, when a tool call spawned it.
+    parent = CURRENT_CALL.get()
+    lineage = ({"parent_turn": parent.turn, "parent_request": parent.request,
+                "parent_call": parent.logical_call_id} if parent is not None else {})
     child = engine_cls(
         model=model,
         thinking=thinking,
@@ -401,7 +412,7 @@ async def run_explore(
         allowed_roots=allowed_roots,
         system_prompt=prompt,
         client=client,
-        registry=build_explore_registry(workdir, allowed_roots),
+        registry=build_explore_registry(workdir, allowed_roots, file_access=file_access),
         max_steps=max_steps,
         finalize_steps=EXPLORE_FINALIZE_STEPS,
         trajectory_meta={
@@ -409,7 +420,9 @@ async def run_explore(
             "role": role,
             "parent_session": parent_session,
             "task": task[:200],
+            **lineage,
         },
+        **({"route": route} if route is not None else {}),
     )
     message = task if not context else (
         f"{task}\n\nContext from the buyer:\n{context}"
@@ -477,11 +490,13 @@ def make_branch_reviewer(engine):
             client=engine.client,
             workdir=engine.workdir,
             allowed_roots=engine.allowed_roots,
+            file_access=getattr(engine, "file_access", None),
             thinking=engine.thinking,
             max_tokens=engine.max_tokens,
             ledger=getattr(engine, "ledger", None),
             parent_session=engine.trajectory.session_id,
             git_ref=branch,
+            route=getattr(engine, "route", None),
         )
 
     return _review
@@ -535,10 +550,31 @@ def make_goal_verifier(*, client, model, workdir: Path, ledger=None, engine_cls=
         first = (body.splitlines() or [""])[0].strip().upper()
         if not (first.startswith(("PASS", "FAIL")) or _VERDICT_LATE.search(body)):
             raise RuntimeError("grounded verify returned no clean PASS/FAIL verdict")
-        from rockycode.engine.goal import parse_verdict  # lazy: goal never imports explore
         return parse_verdict(body)
 
     return _verify
+
+
+_VERDICT_MARK = re.compile(
+    r"(?i)\b(?:revised\s+)?(?:judg?ment|verdict|conclusion|decision|final answer)"
+    r"\s*[:\-]?\s*\**\s*(pass|fail)\b"
+)
+
+
+def parse_verdict(text: str) -> tuple[bool, str]:
+    """Read a verify reply. A clean PASS/FAIL on the first line wins. If the model
+    reasoned first and stated its call at the end ('Revised judgment: PASS'), honor
+    that explicit marker. Otherwise ambiguity → FAIL (never pass on a guess)."""
+    body = text.strip()
+    first = (body.splitlines() or [""])[0].strip().upper()
+    if first.startswith("PASS") or first == "OK":
+        return True, body
+    if first.startswith("FAIL"):
+        return False, body
+    marks = _VERDICT_MARK.findall(body)  # 'judgment: PASS' when it reasoned first
+    if marks:
+        return marks[-1].lower() == "pass", body
+    return False, body  # conservative: no clean verdict → FAIL
 
 
 EXPLORE_SCHEMA = tools_mod._fn_schema(
@@ -583,10 +619,12 @@ def build_explore_tool(engine) -> dict[str, Tool]:
             client=engine.client,
             workdir=engine.workdir,
             allowed_roots=engine.allowed_roots,
+            file_access=getattr(engine, "file_access", None),
             thinking=engine.thinking,
             max_tokens=engine.max_tokens,
             ledger=getattr(engine, "ledger", None),
             parent_session=engine.trajectory.session_id,
+            route=getattr(engine, "route", None),
         )
 
     return {"explore": Tool(name="explore", schema=EXPLORE_SCHEMA, fn=_explore, risk="safe")}

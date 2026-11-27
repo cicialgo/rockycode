@@ -199,10 +199,8 @@ from rockycode import config as C  # noqa: E402
 from rockycode.engine import tools as T  # noqa: E402
 
 C.GLOBAL_PATH = Path(tempfile.mkdtemp()) / "config.toml"  # never the real ~/.rockycode
-assert C.DEFAULTS["image_route"] == "auto"
-_v, cerr = C.set_value("image_route", "nope")
-assert cerr and "allowed" in cerr
-_v, cerr = C.set_value("image_cli", "echo tool-eyes {path}")
+assert C.DEFAULTS["image"] == "auto"
+_v, cerr = C.set_value("image", "echo tool-eyes {path}")
 assert cerr is None
 reg = T.build_registry(Path.cwd())
 assert "view_image" in reg and reg["view_image"].risk == "risky", \
@@ -213,21 +211,49 @@ out, _ok = asyncio.run(T.execute(reg, "view_image", json.dumps({"path": "/etc/pa
 assert "blocked" in out, "read jail applies"
 out, ok = asyncio.run(T.execute(reg, "view_image", json.dumps({"path": "nope.png"})))
 assert not ok and "not found" in out
-print("view_image: registered + risky + jailed + routed through image_cli  ✓")
+print("view_image: registered + risky + jailed + routed through the image command  ✓")
 
-# ── config hygiene + known CLIs: "/config image_cli mmx" is the whole setup ──
+# ── one `image` key: words, a command, an endpoint; old files still read ─────
+from rockycode.engine.vision import ImageSetting, image_setting  # noqa: E402
+
+assert image_setting("auto") == ImageSetting("auto") == image_setting("") == image_setting(None)
+assert image_setting("ASK").route == "ask" and image_setting("off").route == "off"
+assert image_setting("mmx") == ImageSetting("cli", template="mmx"), "a known tool name is a command"
+assert image_setting("mytool {path}").route == "cli" and image_setting("see --q {question}").route == "cli"
+assert image_setting("/usr/local/bin/see").route == "cli" and image_setting("./see").route == "cli"
+assert image_setting("kimi") == ImageSetting("provider", preferred="kimi")
+assert image_setting("kimi:kimi-k3").preferred == "kimi:kimi-k3"
+assert image_setting("openrouter:poolside/laguna-s-2.1:free").route == "provider", "a model id's slash is not a path"
+for raw, want in [
+    ({"image_route": "cli", "image_cli": "mmx"}, "mmx"),
+    ({"image_route": "provider", "image_provider": "kimi"}, "kimi"),
+    ({"image_route": "off", "image_cli": "mmx"}, "off"),
+    ({"image_route": "ask", "image_provider": "kimi"}, "ask"),
+    ({"image_route": "auto", "image_cli": "mmx", "image_provider": "kimi"}, "mmx"),  # auto preferred the CLI
+    ({"image_route": "auto", "image_provider": "kimi"}, "kimi"),
+    ({"image_cli": "mmx"}, "mmx"),
+    ({"image_route": "provider"}, "auto"),
+    ({"image_route": "cli"}, "auto"),
+    ({"image": "off", "image_route": "cli", "image_cli": "mmx"}, "off"),  # the new key wins
+    ({"image_route": "cli", "image_cli": 7}, "auto"),
+    ({"image": 7}, "auto"),
+]:
+    assert C._sanitize(raw, C.DEFAULTS)["image"] == want, (raw, want, C._sanitize(raw, C.DEFAULTS)["image"])
+print("config: one image key — auto|ask|off, a command, an endpoint; old keys fold in  ✓")
+
+# ── config hygiene + known CLIs: "/config image mmx" is the whole setup ──────
 import tomllib  # noqa: E402
 
 from rockycode.engine.vision import DESCRIBE_PROMPT, _cli_argv  # noqa: E402
 
 # Shell-habit quotes are stripped on set, and the stored file stays valid TOML
 # (an unescaped quote once corrupted the WHOLE config into silent defaults).
-_v, cerr = C.set_value("image_cli", '"mmx vision describe --image {path}"')
+_v, cerr = C.set_value("image", '"mmx vision describe --image {path}"')
 assert cerr is None and _v == "mmx vision describe --image {path}", _v
-assert tomllib.loads(C.GLOBAL_PATH.read_text())["image_cli"] == _v
-_v, cerr = C.set_value("image_cli", 'has "inner" quotes')
+assert tomllib.loads(C.GLOBAL_PATH.read_text())["image"] == _v
+_v, cerr = C.set_value("image", 'has "inner" quotes')
 assert cerr is None
-assert tomllib.loads(C.GLOBAL_PATH.read_text())["image_cli"] == 'has "inner" quotes'
+assert tomllib.loads(C.GLOBAL_PATH.read_text())["image"] == 'has "inner" quotes'
 
 # A bare known tool name expands to its real, --help-grounded invocation.
 argv = _cli_argv("mmx", img, "what breed?")
@@ -237,10 +263,10 @@ argv = _cli_argv("mmx", img, "")  # no question → the dense default prompt,
 assert argv[-1] == DESCRIBE_PROMPT and "--prompt" in argv, argv  # never an empty --prompt
 argv = _cli_argv("sometool", img, "")  # unknown bare tool → path appended last
 assert argv == ["sometool", str(img)], argv
-print("config: quotes stripped + TOML-safe · image_cli mmx expands via KNOWN_CLIS  ✓")
+print("config: quotes stripped + TOML-safe · image mmx expands via KNOWN_CLIS  ✓")
 
 # ── route picker: choices reflect which backends exist ───────────────────────
-from rockycode.tui.app import ImageRouteChoice  # noqa: E402
+from rockycode.tui.images import ImageRouteChoice  # noqa: E402
 
 
 async def _mk(provider_label, cli_label):
@@ -263,7 +289,7 @@ reg_v = T.build_registry(Path.cwd(), vision_active=lambda: flag["on"])
 out, ok = asyncio.run(T.execute(reg_v, "view_image", json.dumps({"path": str(img)})))
 assert ok and out.startswith(T.VIEW_ATTACH_PREFIX) and out.endswith(str(img)), out
 flag["on"] = False  # live flip — same registry, /model switch, no rebuild
-C.set_value("image_cli", "echo tool-eyes {path}")  # earlier sections changed it
+C.set_value("image", "echo tool-eyes {path}")  # earlier sections changed it
 out, ok = asyncio.run(T.execute(reg_v, "view_image", json.dumps({"path": str(img)})))
 assert "tool-eyes" in out, "text model → back to the sidecar describe route"
 

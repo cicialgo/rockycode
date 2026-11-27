@@ -16,6 +16,14 @@ ASK = [
     "pip install requests", "pip install -r requirements.txt", "python -m pip install .",
     "uv add httpx", "npm install", "npm i react", "yarn add lodash",
     "cargo install ripgrep", "go get github.com/x/y", "poetry add numpy", "gem install rails",
+    # disabling the lake kernel sandbox is ask-tier, including on comparator
+    "lake check --inadvisably-no-sandbox",
+    "lake check --paranoid --inadvisably-no-sandbox",
+    "lake comparator --inadvisably-no-sandbox",
+    # rocky's key and settings files, its whole folder and the OS keychain: a person decides
+    "cat ~/.rockycode/.env", "ls $HOME/.rockycode", "cat $ROCKYCODE_HOME/config.toml",
+    "cd ~ && cat .rockycode/endpoints.toml", "security find-generic-password -s rockycode -w",
+    "secret-tool lookup service rockycode",
 ]
 ALLOW = [
     "rm -rf node_modules", "rm -rf ./build dist", "rm -f package-lock.json",
@@ -24,6 +32,13 @@ ALLOW = [
     # non-install package-manager subcommands must NOT gate (false-positive guard)
     "pip list", "pip show requests", "npm test", "npm init", "go build ./...", "cargo test",
     "echo 'run git push to publish' > README.md", "ls -la && echo done",
+    # a normal kernel recheck is ordinary dev, not the no-sandbox flag
+    "lake check", "lake check --paranoid", "lake env lean Foo.lean",
+    # a project's own .rockycode folder, a goal worktree and the variable's name are ordinary
+    "cat .rockycode/plans/plan.md", "ls ../.rockycode-goal-fix", "grep -rn ROCKYCODE_HOME rockycode/",
+    "ROCKYCODE_HOME=$(mktemp -d) python tests/smoke_route.py", "security find-identity -v",
+    # inside rocky's folder, a plainly named thing that is not a key or settings file is ordinary too
+    "python3 ~/.rockycode/skills/pdf/scripts/extract.py in.pdf", "ls ~/.rockycode/trajectories",
 ]
 
 fails = []

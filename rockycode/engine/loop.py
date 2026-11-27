@@ -12,37 +12,52 @@ registry (engine/providers.py ← rockycode/models.toml) as a ModelSpec, so a
 new model is a data edit. What the loop does assume of every provider:
 - reasoning params ride `extra_body` (effort.build_extra_body shapes them)
 - the stream carries delta.reasoning_content AND delta.content
-- reasoning_content is never sent back in history — we only ever append
-  {role, content, tool_calls} for assistant turns
+- reasoning history and sampling follow an explicit per-model protocol
 - usage extras (cache hit/miss) are read via model_dump()
 """
 from __future__ import annotations
 
 import asyncio
+import copy
+from contextlib import aclosing
+from contextvars import ContextVar
+from dataclasses import asdict
+import hashlib
 import json
 import re
 import time
+import uuid
+from urllib.parse import urlsplit
 from pathlib import Path
 from typing import AsyncIterator, Awaitable, Callable, Optional
 
+import httpx
 from openai import AsyncOpenAI
 
-from rockycode.onboarding import current_key_source, require_base_url, require_key
+from rockycode.onboarding import current_key_source, require_base_url
 
+from rockycode.engine.model_protocol import GENERIC
 from rockycode.engine import compaction
+from rockycode.engine import errors as errors_mod
 from rockycode.engine import images as images_mod
 from rockycode.engine import planmode
+from rockycode.engine.planning import PlanningSession, build_plan_tools
 from rockycode.engine import providers as providers_mod
+from rockycode.engine import route as route_mod
 from rockycode.engine import tools as tools_mod
 from rockycode.engine import effort as effort_mod
+from rockycode.engine.approval import Refusal
 from rockycode.engine.effort import build_extra_body
+from rockycode.engine.file_access import FileAccessPolicy
 from rockycode.engine.redact import redact
 from rockycode.engine.events import (
+    CURRENT_CALL,
     AgentState,
     CacheReset,
     Compacted,
     ContextReminder,
     EngineError,
+    Envelope,
     Event,
     StateChanged,
     TextDelta,
@@ -57,8 +72,9 @@ from rockycode.engine.trajectory import TrajectoryLogger
 from rockycode.prompts.rocky import ROCKY_SYSTEM
 from rockycode.session import repair_history
 
-MAX_STEPS = 50
-FINALIZE_STEPS = 3  # forced wrap-up window after the explore budget is spent
+MAX_STEPS = 100
+_TURN_STOPPED = "[not run] rocky stopped this turn before this call: the user decides the parked steps first."
+FINALIZE_STEPS = 10  # room to verify and report before the finite turn stops
 # Fallbacks for a model the registry doesn't know; a known model brings its
 # own limits (ModelSpec.context / max_output) at launch and on every switch.
 CONTEXT_WINDOW = providers_mod.DEFAULT_CONTEXT
@@ -74,31 +90,38 @@ COMPACT_THRESHOLD = 0.90  # hard auto-compact — the safety net before overflow
 # as an eviction.
 CACHE_BLOCK = 64
 
-# Soft nudge while there's still explore budget. Evidence (dev10, twice):
-# without pressure the model explores right through the cap and submits
-# nothing — matplotlib-23476 burned all 50 steps on investigation, zero edits.
-BUDGET_WARNINGS = {
-    10: (
-        "[harness] only 10 steps remain. stop exploring — commit to your best "
-        "fix now, make the edit, verify with one targeted test run, then finish."
-    ),
-}
 
-# The finalize loop: once explore budget is spent, the model gets FINALIZE_STEPS
-# extra turns with this hard instruction so it ALWAYS applies its fix instead of
-# stopping empty-handed. This is the "make sure it finishes" mechanism.
-FINALIZE_NOTICE = (
-    "[harness] EXPLORE BUDGET SPENT — this is your final chance. If your fix is "
-    "not yet written to disk, apply it NOW with edit_file/write_file, then stop. "
-    "Do not read or search anymore. When the edit is saved, reply DONE with a one-"
-    "line summary of what you changed."
-)
+def budget_notice(remaining: int, *, closing: bool = False) -> str:
+    """Resource information, not a demand to edit or declare success."""
+    phase = "Closing window" if closing else "Resource update"
+    return (
+        f"[harness] {phase}: {remaining} model calls remain in this turn, including this one. "
+        "Continue relevant investigation and verification within the user's scope. "
+        "Prioritize the unresolved question that matters most; you do not need to "
+        "finish early or make a change because of this notice. If the work cannot "
+        "be completed within this limit, leave a clear account of evidence, changes, "
+        "unverified work and the next step. Do not claim unverified success."
+    )
 
 
 def _merge_usage(total: dict[str, int], usage: dict) -> None:
     for k, v in usage.items():
         if isinstance(v, int):
             total[k] = total.get(k, 0) + v
+
+
+# The model request in flight on this task, for the transport hook below:
+# {"attempts": n} counts physical sends, SDK retries included.
+_REQUEST: ContextVar[Optional[dict]] = ContextVar("rockycode_request", default=None)
+
+
+async def _count_attempt(request) -> None:
+    """httpx request hook: one call per physical send. Any other traffic on the
+    same client (a compaction summary, an explore child) finds no record and is
+    ignored; the loop sets one only around its own chat.completions.create."""
+    record = _REQUEST.get()
+    if record is not None:
+        record["attempts"] += 1
 
 
 async def _always_allow(name: str, args: dict) -> bool:
@@ -121,8 +144,14 @@ class Engine:
         allowed_roots: tuple[Path, ...] = (),
         system_prompt: str = ROCKY_SYSTEM,
         client: Optional[AsyncOpenAI] = None,
+        model_choice=None,  # trusted host snapshot; keeps injected transports native
+        # The route this engine's requests take (engine/route.py). None without a
+        # client = resolve `model` here. With a client, it is that client's route:
+        # how a child or a host-opened transport brings the model's contract along.
+        route: Optional[route_mod.Route] = None,
         registry: Optional[dict[str, tools_mod.Tool]] = None,
         trajectory_meta: Optional[dict] = None,
+        trajectory_logger=None,  # host-owned recorder; None preserves normal persistence
         context_window: Optional[int] = None,  # None = the model's registry value
         compact_threshold: float = COMPACT_THRESHOLD,
         remind_threshold: float = REMIND_THRESHOLD,
@@ -131,12 +160,18 @@ class Engine:
         approver: Optional[Callable[[str, dict], Awaitable[bool]]] = None,
     ) -> None:
         self.model = model
+        self._host_selected_model = model_choice is not None
+        # Friendly registry id stays on self.model (pricing, /model, trajectory).
+        # self.wire_model is what chat.completions receives; adopt() replaces it
+        # when the spec spells a different API id.
+        self.wire_model = model
         self.thinking = thinking
         self.reasoning_effort = effort_mod.normalize(reasoning_effort)
         # The active provider's reasoning WIRE SHAPE + its own effort tiers +
         # whether thinking can be switched off + where usage reports cache
         # hits — all registry data (providers.Provider), adopted at launch and
         # on every /model switch. Defaults = the home provider's shape.
+        self.protocol = GENERIC
         self.reasoning_policy = "thinking"
         self.efforts: Optional[tuple[str, ...]] = None
         self.thinking_off = True
@@ -159,6 +194,7 @@ class Engine:
         # model's registry entry decides, and a switch re-paces them.
         self._explicit_limits = {"context_window": bool(context_window),
                                  "max_tokens": bool(max_tokens)}
+        self.model_max_output = MAX_OUTPUT
         self.max_tokens = max_tokens or MAX_OUTPUT
         self.context_window = context_window or CONTEXT_WINDOW
         self.compact_threshold = compact_threshold
@@ -166,6 +202,7 @@ class Engine:
         self._reminded = False  # fired the soft 50% nudge? re-arms below the mark
         self.max_steps = max_steps
         self.finalize_steps = finalize_steps
+        self._pending_turn_state = None
         # Opt-in approval gate. Default = always-allow, so bench/headless and the
         # current TUI stay unchanged until a real approver is injected (the TUI
         # sets one that runs permission.decide() + a modal). Used by _approve.
@@ -174,10 +211,11 @@ class Engine:
         # read-only — planmode.gate() then runs on every tool call BEFORE the
         # approver (the plan file itself is the one writable target). None = off.
         # Host state only; the model never toggles it (docs/plan-mode-design.md).
-        self.plan_file: Optional[Path] = None
-        # Resolved paths a live human approval widened the READ jail to (read_file
-        # only). Mutable + held by reference in the registry, so an approval takes
-        # effect immediately. Never fed by a file — only a launch flag or a click.
+        self.planning = PlanningSession(self)
+        self._planning_tools_enabled = False
+        # Resolved paths a live human approval widened file reads to. Mutable
+        # and held by reference in the registry, so approval takes effect live.
+        # Never fed by a file — only a launch flag or a click.
         self.read_grants: set[Path] = set()
         # Compaction bookkeeping: the API's real prompt size for everything
         # up to history[_sent_until], estimates for anything appended after.
@@ -196,37 +234,46 @@ class Engine:
         # finalize_outcome() when the session ends.
         self.stats = SessionStats()
         self._outcome_written = False
+        # Boundary hooks (duck-typed): on_boundary(engine, reason=, history_view=)
+        # is called sync at a turn end / before a compaction / at a step-limit
+        # exit; on_final(engine, timeout=) is awaited once by the exit paths;
+        # cancel() drops in-flight work. Empty by default — bench never
+        # attaches one. Reflect (dream/reflect.py) is the one hook today.
+        self.hooks: list = []
         self.workdir = workdir or Path.cwd()
         self.allowed_roots = allowed_roots
-        # Launch-model resolution: when the engine builds its OWN client, the
-        # launch model is looked up in the provider registry so reasoning
-        # policy / tools / vision are right from step one — previously
-        # `--model minimax-m3` started with deepseek params and vision off
-        # until a /model switch. A spec that doesn't resolve keeps today's
-        # env-only behavior; a resolved NON-deepseek endpoint supplies its own
-        # client only when its key is set (a keyless hit — e.g. someone
-        # serving kimi-k3 behind ROCKYCODE_BASE_URL — keeps the env transport
-        # and just gains the right capability flags). An INJECTED client is
-        # never second-guessed: the caller owns the transport.
-        launch = None if client is not None else providers_mod.resolve(self.model)
+        self.file_access = (FileAccessPolicy(self.workdir, allowed_roots, self.read_grants)
+                            if registry is None else None)
+        # Launch model: when the engine builds its OWN client, engine/route.py
+        # decides where the model's requests go and with which key, and a
+        # registry model brings its reasoning shape / tools / vision along from
+        # step one. A missing key raises RouteError here: nothing is ever sent
+        # to another provider instead. An INJECTED client with no route is
+        # never second-guessed: the caller owns the transport and its contract.
+        if model_choice is not None and client is None:
+            raise ValueError("model_choice requires its explicitly bound client")
+        self.route = route
+        launch = None
+        if model_choice is not None:
+            launch = (model_choice.provider, model_choice.endpoint, model_choice.model)
+        else:
+            if self.route is None and client is None:
+                self.route = route_mod.route(self.model)
+            if self.route is not None and self.route.known:
+                launch = (self.route.provider, self.route.endpoint, self.route.model)
         if launch is not None:
-            prov, ep, mdl = launch
-            self.adopt(prov, ep, mdl)
-            # The home endpoint keeps the env transport (ROCKYCODE_BASE_URL +
-            # ROCKYCODE_API_KEY, below); any other keyed endpoint — another
-            # provider, a plan row, an own-URL row — supplies its own client.
-            if ep.key() is not None and (prov.name != "deepseek"
-                                         or ep.base_url != require_base_url()):
-                client = AsyncOpenAI(api_key=ep.key(), base_url=ep.base_url,
-                                     max_retries=5, timeout=300.0)
-        # Explicit key AND endpoint (not the SDK's env fallbacks): an ambient
-        # OPENAI_API_KEY/OPENAI_BASE_URL must never decide what gets sent where.
-        self.client = client or AsyncOpenAI(api_key=require_key(), base_url=require_base_url(),
-                                            max_retries=5, timeout=300.0)
+            self.adopt(*launch)
+        self.client = client or route_mod.open_client(self.route)
+        # Call identity (docs/design/call-identity.md, phase 1): the catalog
+        # generation stamped on every request and receipt, the logical turn in
+        # progress, and whether the transport reports its physical sends.
+        self.registry_generation = 0
+        self._turn_id = ""
+        self._instrumented = self._instrument(self.client)
         self.registry = (
             registry if registry is not None
             else tools_mod.build_registry(self.workdir, allowed_roots, read_grants=self.read_grants,
-                                          vision_active=lambda: self.vision_enabled)
+                                          vision_active=lambda: self.vision_enabled, file_access=self.file_access)
         )
         self.history: list[dict] = [{"role": "system", "content": system_prompt}]
         # Collaboration mode (host-owned, like plan_file — the model never
@@ -235,7 +282,7 @@ class Engine:
         self._mode_contract: Optional[str] = None
         self.mode_name: Optional[str] = None
         self.resumed_mode: Optional[str] = None  # mode seen in a resumed session's prompt
-        self.trajectory = TrajectoryLogger(
+        self.trajectory = trajectory_logger if trajectory_logger is not None else TrajectoryLogger(
             meta={
                 "model": self.model,
                 "provider": self.provider_name,
@@ -246,13 +293,31 @@ class Engine:
                 "context_window": self.context_window,
                 "max_steps": max_steps,
                 "workdir": str(self.workdir),
-                "base_url": require_base_url(),
+                "base_url": self.route.base_url if self.route else require_base_url(),
                 **(trajectory_meta or {}),
             }
         )
         self.trajectory.message(self.history[0])
 
-    def resume(self, messages: list[dict], *, from_session: Optional[str] = None) -> list[dict]:
+    @property
+    def plan_file(self) -> Optional[Path]:
+        return self.planning.path if self.planning.active else None
+
+    @plan_file.setter
+    def plan_file(self, path: Optional[Path]) -> None:
+        if path is None:
+            self.planning.leave()
+        else:
+            self.planning.attach(path)
+
+    def enable_planning(self) -> None:
+        """Register interactive planning once, without changing bench/headless tools."""
+        if not self._planning_tools_enabled:
+            self._planning_tools_enabled = True
+            self.registry.update(build_plan_tools(self))
+
+    def resume(self, messages: list[dict], *, from_session: Optional[str] = None,
+               planning_state: Optional[dict] = None) -> list[dict]:
         """Seed history from a prior session's messages. Keeps the CURRENT
         system prompt (so updated memory/skills/instructions apply) and carries
         the rest of the conversation. The carried messages are logged into the
@@ -265,15 +330,94 @@ class Engine:
                 for line in str(m.get("content", "")).splitlines():
                     if line.startswith("# Collaboration mode: "):
                         self.resumed_mode = line.removeprefix("# Collaboration mode: ").strip()
+        self.artifact_resumed_from = from_session
+        registry = getattr(self, "artifact_registry", None)
+        if registry is not None and from_session:
+            registry.resume_from(from_session)
+        self.planning.restore(planning_state)
         carried = [m for m in messages if m.get("role") != "system"]
         for m in carried:
             self._append(m)
         self.trajectory.note({"resumed_from": from_session, "carried": len(carried)})
         return carried
 
-    def swap_registry(self, registry: dict[str, tools_mod.Tool]) -> None:
-        """Hot-swap the tool registry at runtime (e.g. sandbox on/off)."""
+    def swap_registry(self, registry: dict[str, tools_mod.Tool], *,
+                      file_access: FileAccessPolicy | None = None) -> None:
+        """Swap tools and their host-owned read policy as one capability set.
+
+        A custom/sandbox registry never implicitly inherits local YOLO. A host
+        restoring its own registry must explicitly restore its matching policy.
+        """
         self.registry = registry
+        self.file_access = file_access
+        if self._planning_tools_enabled:
+            self.registry.update(build_plan_tools(self))
+        self.bump_registry("swap", tools=sorted(self.registry))
+
+    def bump_registry(self, reason: str, *, tools=()) -> int:
+        """Advance the catalog generation after the tool set changed. Hosts go
+        through Runtime.publish_registry; swap_registry calls this itself. The
+        number is stamped on every request and receipt, so a receipt names the
+        catalog the model was offered. Phase 1 records; phase 2 binds."""
+        self.registry_generation += 1
+        self.trajectory.note({"registry": {"generation": self.registry_generation,
+                                           "reason": reason, "tools": list(tools)}})
+        return self.registry_generation
+
+    @staticmethod
+    def _instrument(client) -> bool:
+        """Count physical sends on the SDK's httpx client, so an SDK retry is an
+        observable attempt rather than a silent re-spend. A transport that is
+        not httpx (a fake, another SDK) stays uninstrumented: attempts then read
+        as the one send we know of. Idempotent — explore children share the
+        parent's client."""
+        http = getattr(client, "_client", None)
+        if not isinstance(http, httpx.AsyncClient):
+            return False
+        hooks = http.event_hooks["request"]
+        if _count_attempt not in hooks:
+            hooks.append(_count_attempt)
+        return True
+
+    def _route(self) -> dict:
+        # The resolved route, never the key: endpoint, model and wire protocol
+        # this request is bound to (a /model switch changes all three).
+        return {"endpoint": self.provider_name, "model": self.model, "protocol": self.protocol.label}
+
+    async def _execute(self, env: Envelope, name: str, arguments_json: str) -> tuple[str, bool]:
+        # The envelope is visible to the tool while it runs (CURRENT_CALL), so a
+        # child it spawns can record its parent turn / request / call.
+        token = CURRENT_CALL.set(env)
+        try:
+            return await tools_mod.execute(self.registry, name, arguments_json)
+        finally:
+            CURRENT_CALL.reset(token)
+
+    def _receipt(self, env: Envelope, tool: str, receipt: str, duration_s: float) -> None:
+        # One trajectory line per logical call, written when its result is
+        # known: ok / error (it ran), refused (a gate or the user), unknown
+        # (cancelled after dispatch — the effect may have happened), cancelled
+        # (never dispatched). executed_generation differs from the envelope's
+        # when the catalog changed between request and dispatch — the mid-turn
+        # swap phase 2 closes; phase 1 makes it visible.
+        self.trajectory.note({"call": {**asdict(env), "tool": tool, "receipt": receipt,
+                                       "duration_s": round(duration_s, 3),
+                                       "executed_generation": self.registry_generation}})
+
+    def _note_request(self, request_id: str, step: int, sends: dict, generation: int,
+                      route: dict, *, tools, error: Optional[str] = None) -> int:
+        # One trajectory line per admitted model request. attempts counts the
+        # physical sends when the transport is instrumented; otherwise it is
+        # the one send we know of and attempts_observed says so.
+        observed = self._instrumented and sends["attempts"] > 0
+        attempts = sends["attempts"] if observed else 1
+        self.trajectory.note({"request": {
+            "turn": self._turn_id, "request": request_id, "step": step,
+            "attempts": attempts, "attempts_observed": observed,
+            "registry_generation": generation, "route": route, "tools": len(tools or []),
+            **({"error": error} if error else {}),
+        }})
+        return attempts
 
     def rollback(self, n: int, *, reason: str = "") -> int:
         """Drop everything after the first *n* messages — a turn boundary the
@@ -297,13 +441,52 @@ class Engine:
         self.trajectory.note({"rollback": {"to": n, "dropped": dropped, "reason": reason}})
         return dropped
 
+    def flush_to(self, seed: list[dict], *, reason: str = "") -> int:
+        """Drop the running conversation back to `seed` (context-inertia fix for goal mode).
+
+        Keeps the CURRENT system prompt (history[0]). Prefix intact -> truncate in place
+        (cache-neutral like rollback()). Prefix rewritten (compaction happened) -> replace with
+        deepcopy(seed[1:]) and mark a cache reset. Zero projection counters. Write a `compaction`
+        trajectory record with strategy "flush" + new_history so load_history/--resume replays it.
+        Returns messages dropped; 0 = no-op.
+        """
+        if not seed or seed[0].get("role") != "system":
+            raise ValueError("flush_to: seed must start with the system message")
+        n = len(seed)
+        intact = len(self.history) >= n and self.history[1:n] == seed[1:]
+        if intact and len(self.history) == n:
+            return 0
+        self._boundary(reason="compaction")
+        before = len(self.history)
+        if intact:
+            del self.history[n:]
+            cache_kept = True
+        else:
+            del self.history[1:]
+            self.history.extend(copy.deepcopy(seed[1:]))
+            self._mark_cache_reset("context flush")
+            cache_kept = False
+        self._last_prompt_tokens = 0
+        self._sent_until = 0
+        self._reminded = False
+        self.trajectory.compaction({
+            "strategy": "flush",
+            "reason": reason,
+            "messages_before": before,
+            "messages_after": len(self.history),
+            "cache_kept": cache_kept,
+            "new_history": copy.deepcopy(self.history),
+        })
+        return before - len(self.history)
+
     def finalize_outcome(self) -> Optional[dict]:
         """Write the session's heuristic outcome record (self-evolve phase 0).
 
-        Called once at session end — cli: after the app closes, before the
-        exit card. Idempotent, and skipped when no user turn ever ran, so an
+        Called once at session end — the app's exit flow, or cli after the
+        app closes. Idempotent, and skipped when no user turn ever ran, so an
         open-and-close session doesn't grow a meaningless reward line. The
-        judge-graded outcome (source="judge") is appended much later, by dream.
+        graded outcome (source="reflect") is appended right after, by
+        the reflect hook's final call — or much later by the dream's cold reflect.
         """
         if self._outcome_written or self.stats.turns == 0:
             return None
@@ -311,6 +494,40 @@ class Engine:
         data = {"source": "heuristic", **self.stats.as_data()}
         self.trajectory.outcome(data)
         return data
+
+    # ---- boundary hooks -------------------------------------------------------
+
+    def _boundary(self, *, reason: str = "messages",
+                  history_view: Optional[list[dict]] = None) -> None:
+        """A turn ended, a compaction is about to rewrite history, or the step
+        limit stopped the turn. Hooks see it synchronously and may schedule
+        their own tasks; a hook must never break a turn."""
+        for hook in list(self.hooks):
+            try:
+                hook.on_boundary(self, reason=reason, history_view=history_view)
+            except Exception:  # noqa: BLE001 — observers never break the loop
+                pass
+
+    async def run_final_hooks(self, timeout: float = 15.0) -> list:
+        """Awaited once by every exit path (chat exit flow, exec / goal / serve
+        teardown). Returns one result per hook; a hook that raises yields None."""
+        out = []
+        for hook in list(self.hooks):
+            try:
+                out.append(await hook.on_final(self, timeout=timeout))
+            except Exception:  # noqa: BLE001
+                out.append(None)
+        return out
+
+    async def cancel_hooks(self) -> None:
+        """Teardown of a cancelled host: drop whatever the hooks have in flight."""
+        for hook in list(self.hooks):
+            cancel = getattr(hook, "cancel", None)
+            if cancel is not None:
+                try:
+                    await cancel()
+                except Exception:  # noqa: BLE001
+                    pass
 
     def set_base_system(self, text: str) -> None:
         """Finalize the base system prompt after startup composition.
@@ -333,6 +550,7 @@ class Engine:
             self.history[0]["content"] = text
         self.trajectory.message(self.history[0])
         self.trajectory.note({"system_finalized": len(text)})
+        self.planning.sync_prompt()
 
     def set_mode(self, name: str, contract: str) -> None:
         """Swap a collaboration contract into the system prompt (a REAL swap,
@@ -347,6 +565,7 @@ class Engine:
         self.mode_name = name
         self._mode_contract = contract
         self.trajectory.note({"mode": name})
+        self.planning.sync_prompt()
 
     def clear_mode(self) -> None:
         """Back to the plain rocky contract."""
@@ -357,6 +576,13 @@ class Engine:
         self.mode_name = None
         self._mode_contract = None
         self.trajectory.note({"mode": None})
+        self.planning.sync_prompt()
+
+    def _api_messages(self, *, tools: bool | None = None) -> list[dict]:
+        if tools is None:
+            tools = self.tools_enabled and bool(self.registry)
+        return self.protocol.messages(
+            images_mod.api_view(self.history, vision=self.vision_enabled), tools=tools)
 
     def _extra_body(self) -> dict:
         # self.reasoning_effort holds the dial value (low|high|max) and is
@@ -372,10 +598,13 @@ class Engine:
         The transport (self.client) is the caller's business."""
         spec = prov.spec(model)
         self.model = model
+        self.wire_model = prov.api_model(model)
+        self.protocol = spec.protocol
+        self.model_max_output = spec.max_output
         self.provider_name = ep.eid
         self.reasoning_policy = prov.reasoning
-        self.efforts = prov.efforts
-        self.thinking_off = prov.thinking_off
+        self.efforts = prov.efforts_for(model)
+        self.thinking_off = prov.thinking_off_for(model)
         self.cache_field = prov.cache_field
         self.tools_enabled = prov.tools == "native"
         self.vision_enabled = providers_mod.Choice(prov, ep, model).vision
@@ -404,10 +633,12 @@ class Engine:
     def switch_provider(self, client, model: str, *, provider_name: str,
                         reasoning_policy: str, tools_enabled: bool = True,
                         vision: bool = False, local: bool = False,
-                        provider=None, endpoint=None) -> None:
+                        provider=None, endpoint=None, route=None) -> None:
         """Point the engine at a different OpenAI-compatible endpoint/model live
-        (a /model switch). The caller builds the client with the provider's
-        base_url + key; we swap model + reasoning shape. With the registry
+        (a /model switch). The caller builds the client from a route
+        (engine/route.py) and passes it along, so an auth error can still say
+        where the key came from and where it went; we swap model + reasoning
+        shape. With the registry
         `provider`/`endpoint` given, everything else (effort tiers, cache
         field, un-pinned limits) is adopted from the model's spec too; the
         explicit flags stay as the override for callers without a registry
@@ -415,6 +646,8 @@ class Engine:
         naturally starts a fresh cache — no stale-hit risk. History and tools
         are untouched (same OpenAI protocol)."""
         self.client = client
+        self.route = route  # None = the caller owns the transport
+        self._instrumented = self._instrument(client)
         if provider is not None and endpoint is not None:
             self.adopt(provider, endpoint, model)
             self.provider_name = provider_name or endpoint.eid
@@ -422,6 +655,9 @@ class Engine:
             self.vision_enabled = vision or self.vision_enabled  # a preflight may add sight
         else:
             self.model = model
+            self.wire_model = model
+            self.protocol = GENERIC
+            self.model_max_output = MAX_OUTPUT
             self.provider_name = provider_name
             self.reasoning_policy = "thinking" if reasoning_policy == "deepseek" else reasoning_policy
             self.efforts = None
@@ -550,8 +786,9 @@ class Engine:
         bash / web / mcp) stays serial so two writes can never clobber."""
         return getattr(self.registry.get(name), "risk", "risky") == "safe"
 
-    async def _approve(self, name: str, arguments_json: str) -> bool:
-        """Ask the injected approver whether this tool call may run. Parses args
+    async def _approve(self, name: str, arguments_json: str):
+        """Ask the injected approver whether this tool call may run: True, False,
+        or a Refusal (falsy) whose text becomes the tool's result. Parses args
         to a dict for the approver; a malformed payload becomes {} (execute will
         surface the real error). Short-circuits the always-allow default so
         headless/bench runs pay nothing."""
@@ -563,7 +800,18 @@ class Engine:
             args = {}
         if not isinstance(args, dict):
             args = {}
-        return bool(await self.approver(name, args))
+        answer = await self.approver(name, args)
+        return answer if isinstance(answer, Refusal) else bool(answer)
+
+    @staticmethod
+    def _refused(answer) -> str:
+        """The tool result for a call the approver refused: its own words, else the stock line."""
+        return str(answer) if isinstance(answer, Refusal) else "[denied] user rejected this tool call"
+
+    def _turn_stopped(self) -> bool:
+        """The approver ended this turn (the park limit, engine/approval.py). The rest
+        of the batch is answered without running, then the turn finishes as any other."""
+        return bool(getattr(self.approver, "stop_turn", False))
 
     def _plan_gate(self, name: str, arguments_json: str) -> planmode.Verdict:
         """Plan-mode read-only gate, evaluated BEFORE the approver. Always
@@ -576,7 +824,16 @@ class Engine:
             args = {}
         if not isinstance(args, dict):
             args = {}
-        risk = getattr(self.registry.get(name), "risk", "risky")
+        tool = self.registry.get(name)
+        root = getattr(tool, "workspace_root", None)
+        if root is not None and isinstance(args.get("path"), str):
+            try:
+                args["path"] = str(self.workdir / Path(args["path"]).relative_to(root))
+            except ValueError:
+                if Path(args["path"]).is_absolute():
+                    return planmode.Verdict("deny", "[blocked] plan mode: use a project-relative "
+                                             f"plan path or a path under {root}")
+        risk = getattr(tool, "risk", "risky")
         return planmode.gate(name, args, risk, self.plan_file, self.workdir)
 
     def _projected_prompt_tokens(self) -> int:
@@ -607,6 +864,10 @@ class Engine:
         if projected <= limit or len(self.history) < 3:
             return
         yield StateChanged(state=AgentState.COMPACTING)
+        # Reflect over the pre-compaction view (snapshotted inside) — the
+        # rewrite below is about to squash exactly the detail a checkpoint
+        # wants, and this prefix is the one the provider has cached right now.
+        self._boundary(reason="compaction")
 
         before_msgs = len(self.history)
         record: dict = {}
@@ -631,17 +892,19 @@ class Engine:
             strategy = "summarize"
             try:
                 summary, usage = await compaction.summarize(
-                    self.client, self.model,
+                    self.client, self.wire_model,
                     # Same view as the main call — the request prefix matches
                     # what the provider has cached, and image_path parts never
                     # reach the wire. LOCAL providers get no tool schemas:
                     # their compat layers drop tool_choice="none", and a local
                     # model handed tools may emit a call instead of a summary.
-                    images_mod.api_view(self.history, vision=self.vision_enabled),
-                    tools=([] if self.provider_local
+                    self._api_messages(tools=self.tools_enabled and not self.provider_local
+                                       and bool(self.registry)),
+                    tools=([] if self.provider_local or not self.tools_enabled
                            else [t.schema for t in self.registry.values()]),
                     reasoning=self.reasoning_policy,
                     efforts=self.efforts, thinking_off=self.thinking_off,
+                    protocol=self.protocol,
                 )
                 if not summary:
                     raise ValueError("model returned an empty summary")
@@ -664,6 +927,8 @@ class Engine:
         self._mark_cache_reset("compaction")  # prefix forfeited → free refresh window
         self.stats.compactions += 1
         tokens_after = compaction.estimate_tokens(self.history)
+        # Resume the compacted history, including reasoning in the retained tail.
+        record["new_history"] = copy.deepcopy(self.history)
         self.trajectory.compaction(
             {
                 "strategy": strategy,
@@ -694,19 +959,84 @@ class Engine:
         reference parts; the base64 only ever exists in the API request
         (images.api_view).
         """
-        yield TurnStarted(user_message=user_message)  # UI sees the clean message
+        self._pending_turn_state = None
+        self._turn_id = uuid.uuid4().hex[:12]
+        begin = getattr(self.approver, "begin_turn", None)
+        if callable(begin):
+            begin()  # the approver counts some things per turn (the park limit)
+        yield TurnStarted(user_message=user_message, turn=self._turn_id)  # UI sees the clean message
         self.stats.turns += 1
-        # Plan mode rides the USER turn (never the system prompt/tools → the cached
-        # prompt prefix stays byte-identical when the mode toggles).
+        self.planning.continue_discussion()
         if self.plan_file is not None:
-            user_message = planmode.marker(self.plan_file) + "\n\n" + user_message
+            self.planning.sync_prompt()
+            user_message = "[Plan mode is active; discuss and plan only.]\n\n" + user_message
         parts = [p if isinstance(p, dict) else images_mod.image_part(p)
                  for p in (images or [])]
         self._append({"role": "user", "content": images_mod.make_content(user_message, parts)})
 
-        usage_total: dict[str, int] = {}
-        used_tools = False
-        steps = 0
+        async with aclosing(self._run_loop()) as stream:
+            async for ev in stream:
+                yield ev
+
+    def export_turn_state(self) -> Optional[dict]:
+        """Checkpoint loop position while the client is about to admit a request.
+
+        Callers must also persist history/workspace and reconcile request usage.
+        This is not a license to replay an already-issued request. None means
+        no exportable request boundary (e.g. tools are executing or turn ended).
+        """
+        if self._pending_turn_state is None:
+            return None
+        return {**copy.deepcopy(self._pending_turn_state), 'version': 1,
+                'max_steps': self.max_steps, 'finalize_steps': self.finalize_steps,
+                'model': self.model, 'history_sha256': self._history_digest()}
+
+    def _history_digest(self) -> str:
+        return hashlib.sha256(json.dumps(self.history, sort_keys=True,
+                                        ensure_ascii=False).encode()).hexdigest()
+
+    async def resume_turn(self, *, state: Optional[dict] = None) -> AsyncIterator[Event]:
+        """Continue a clean request boundary without resetting a finite budget.
+
+        Finite turns require export_turn_state() from the saved admission point.
+        History, workspace and known usage must be restored together by caller.
+        Legacy unbounded checkpoints remain supported without loop state.
+        """
+        if self.max_steps > 0 and state is None:
+            raise ValueError("finite resume requires a saved turn state; cannot reset the step cap")
+        if not self.history or self.history[-1]["role"] not in ("user", "tool"):
+            raise ValueError("resume_turn needs an unfinished turn at a request boundary")
+        repaired = copy.deepcopy(self.history)
+        repair_history(repaired)
+        if repaired != self.history:
+            raise ValueError("resume_turn cannot replay unresolved tool calls")
+        if state is not None:
+            if (state.get('version') != 1 or state.get('max_steps') != self.max_steps
+                    or state.get('finalize_steps') != self.finalize_steps
+                    or state.get('model') != self.model
+                    or state.get('history_sha256') != self._history_digest()):
+                raise ValueError("turn state history/model/budget mismatch")
+            step = state.get('step')
+            if (type(step) is not int or step < 1 or
+                    (self.max_steps > 0 and step > self.max_steps + self.finalize_steps)
+                    or state.get('phase') not in ('compact', 'request')
+                    or type(state.get('used_tools')) is not bool
+                    or not isinstance(state.get('usage_total'), dict)
+                    or not isinstance(state.get('turn', ''), str)
+                    or any(type(v) is not int or v < 0 for v in state['usage_total'].values())):
+                raise ValueError("invalid turn state")
+            state = copy.deepcopy(state)
+        # A bounded continuation is the same logical turn, so it keeps the id;
+        # a legacy unbounded checkpoint saved none and starts a fresh one.
+        self._turn_id = (state or {}).get('turn') or uuid.uuid4().hex[:12]
+        async with aclosing(self._run_loop(resume_state=state)) as stream:
+            async for ev in stream:
+                yield ev
+
+    async def _run_loop(self, *, resume_state: Optional[dict] = None) -> AsyncIterator[Event]:
+        usage_total: dict[str, int] = dict(resume_state['usage_total']) if resume_state else {}
+        used_tools = resume_state['used_tools'] if resume_state else False
+        steps = resume_state['step'] - 1 if resume_state else 0
 
         while True:
             steps += 1
@@ -715,8 +1045,9 @@ class Engine:
             # max_steps <= 0 means UNLIMITED — no cap, no finalize, no budget
             # warnings. Used by interactive chat so the model runs until it's
             # done; the human (and Esc/new-message interrupt) is the backstop.
-            if self.max_steps > 0:
-                over = steps - self.max_steps  # >0 ⇒ in the forced finalize window
+            self._pending_turn_state = None
+            if self.max_steps > 0 and resume_state is None:
+                over = steps - self.max_steps  # >0 ⇒ in the closing window
                 if over > self.finalize_steps:
                     self.stats.engine_errors += 1
                     yield EngineError(
@@ -725,131 +1056,209 @@ class Engine:
                     )
                     break
                 if over >= 1 and not used_tools:
-                    # never acted — no fix to finalize, just stop
+                    # Never used tools; a normal answer would already have returned.
                     self.stats.engine_errors += 1
                     yield EngineError(message=f"step limit ({self.max_steps}) reached — stopping this turn.")
                     break
                 if over == 1:
-                    # entering finalize: one hard instruction to apply the fix now
-                    self._append({"role": "user", "content": FINALIZE_NOTICE})
+                    notice = ("Planning turn budget reached. Summarize findings and any open "
+                              "decisions, then stop. Do not implement or submit an unfinished plan."
+                              if self.planning.active
+                              else budget_notice(self.finalize_steps, closing=True))
+                    self._append({"role": "user", "content": notice})
                 elif over <= 0:
-                    # soft pressure while explore budget remains
-                    warning = BUDGET_WARNINGS.get(self.max_steps - steps)
-                    if warning is not None and used_tools:
-                        self._append({"role": "user", "content": warning})
+                    # One proportional notice at 80%; no arbitrary nudge at step 50.
+                    warning_at = max(1, (self.max_steps * 4 + 4) // 5)
+                    if steps == warning_at and used_tools and not self.planning.active:
+                        remaining = self.max_steps + self.finalize_steps - steps + 1
+                        self._append({"role": "user", "content": budget_notice(remaining)})
 
-            async for ev in self._maybe_compact(usage_total):
-                yield ev
+            self._pending_turn_state = {'step': steps, 'used_tools': used_tools,
+                                        'usage_total': usage_total, 'phase': 'compact',
+                                        'turn': self._turn_id}
+            if resume_state is None or resume_state['phase'] == 'compact':
+                async for ev in self._maybe_compact(usage_total):
+                    yield ev
+            resume_state = None
 
             self._repair_history()
             sent = len(self.history)
             # Clamp output to what the window can still hold: input can run up to
             # 90% before auto-compaction and max_tokens may be the model's full
             # output cap, so input + output could exceed the window. Reserve the
-            # rest for output, never below a usable floor.
+            # rest for output without exceeding the user or model ceiling.
             out_room = self.context_window - self._projected_prompt_tokens() - 512
-            eff_max_tokens = max(1024, min(self.max_tokens, out_room))
+            if out_room <= 0:
+                yield EngineError(message="No context space is left for a reply. Start a new task to continue.")
+                yield StateChanged(state=AgentState.IDLE)
+                return
+            eff_max_tokens = min(self.max_tokens, self.model_max_output, out_room)
+            self._pending_turn_state['phase'] = 'request'
+            # tools omitted entirely when the provider profile is tools:off
+            # (a model that calls tools badly) — the loop then runs as a
+            # plain responder rather than shipping malformed tool calls.
+            _tools = [t.schema for t in self.registry.values()] if self.tools_enabled else None
+            # One admitted model request: its id, the catalog generation it is
+            # built against and the resolved route travel on every receipt its
+            # response produces; the transport hook counts the physical sends.
+            request_id = uuid.uuid4().hex[:12]
+            generation, route, sends = self.registry_generation, self._route(), {"attempts": 0}
             try:
-                # tools omitted entirely when the provider profile is tools:off
-                # (a model that calls tools badly) — the loop then runs as a
-                # plain responder rather than shipping malformed tool calls.
-                _tools = [t.schema for t in self.registry.values()] if self.tools_enabled else None
-                stream = await self.client.chat.completions.create(
-                    model=self.model,
+                token = _REQUEST.set(sends)
+                try:
+                    stream = await self.client.chat.completions.create(
+                    model=self.wire_model,
                     # image_path parts inflate to base64 here (or collapse to a
                     # placeholder on a no-vision model) — history itself keeps
                     # only the small reference form.
-                    messages=images_mod.api_view(self.history, vision=self.vision_enabled),
+                    messages=self._api_messages(),
                     tools=_tools,
-                    max_tokens=eff_max_tokens,
+                    **self.protocol.output_cap(eff_max_tokens),
                     stream=True,
                     stream_options={"include_usage": True},
                     extra_body=self._extra_body(),
+                    **self.protocol.sampling(self.thinking),
                 )
+                finally:
+                    _REQUEST.reset(token)
             except Exception as e:  # noqa: BLE001 — surfaced to UI, turn ends
                 self.stats.engine_errors += 1
+                self._note_request(request_id, steps, sends, generation, route,
+                                   tools=_tools, error=type(e).__name__)
                 yield StateChanged(state=AgentState.ERROR)
                 # Auth-class rejections: say WHICH credential source was used
                 # and WHERE it was sent — "which key is rocky even using?"
                 # must never need an archaeology session (it once cost an
                 # evening). Never the key itself, only its source name.
-                hint = ""
-                if getattr(e, "status_code", None) in (400, 401, 402, 403):
-                    hint = (f" · key source: {current_key_source() or 'none'}"
-                            f" → {require_base_url()}")
-                yield EngineError(message=redact(f"{type(e).__name__}: {e}") + hint)
+                # The route this engine built; with an injected client only
+                # the home pair is knowable.
+                source = (self.route.describe() if self.route is not None else
+                          f"{current_key_source() or 'none'} → {require_base_url()}")
+                base = self.route.base_url if self.route is not None else require_base_url()
+                said = errors_mod.explain(e, model=self.model, host=urlsplit(base).hostname or base, key_source=source)
+                if self._host_selected_model:
+                    # A host-chosen model: the SDK's text may echo the host's
+                    # prompt or an upstream URL, so only its class is named.
+                    yield EngineError(message=f"Model request failed for {self.provider_name}:{self.model} "
+                                              f"({type(e).__name__})", kind=said.kind, params=said.params)
+                else:
+                    # One plain sentence with the next step; the SDK's own text rides along.
+                    yield EngineError(message=redact(said.message), kind=said.kind, params=said.params,
+                                      detail="" if said.kind == "unknown" else redact(f"{type(e).__name__}: {e}")[:600])
                 yield StateChanged(state=AgentState.IDLE)
                 return
 
+            self._pending_turn_state = None
             content_parts: list[str] = []
             reasoning_parts: list[str] = []
             tool_calls: dict[int, dict] = {}
             thinking_seen = False
             content_seen = False
 
-            async for chunk in stream:
-                if chunk.usage is not None:
+            finish_reason = None
+            stream_error = None
+            usage_seen = False
+            try:
+                async for chunk in stream:
+                    if chunk.usage is not None:
+                        usage_seen = True
+                        try:
+                            u = chunk.usage.model_dump()
+                        except AttributeError:
+                            u = dict(chunk.usage)
+                        # One cache shape downstream (ledger, trajectory, the
+                        # observer): providers report hits under different
+                        # fields — the registry says which; normalize here.
+                        hit = providers_mod.cache_hit_tokens(u, self.cache_field)
+                        if hit is not None and "prompt_cache_hit_tokens" not in u:
+                            u["prompt_cache_hit_tokens"] = hit
+                        _merge_usage(usage_total, u)
+                        _merge_usage(self.stats.usage, u)
+                        self.trajectory.usage(u)  # per-call: prompt/completion + cache hit/miss
+                        cache_ev = self._observe_cache(u)
+                        if cache_ev is not None:
+                            yield cache_ev
+                        if isinstance(u.get("prompt_tokens"), int):
+                            self._last_prompt_tokens = u["prompt_tokens"]
+                    if not chunk.choices:
+                        continue
+                    finish_reason = getattr(chunk.choices[0], "finish_reason", None) or finish_reason
+                    delta = chunk.choices[0].delta
+
+                    reasoning = getattr(delta, "reasoning_content", None)
+                    if reasoning:
+                        if not thinking_seen:
+                            thinking_seen = True
+                            yield StateChanged(state=AgentState.THINKING)
+                        reasoning_parts.append(reasoning)
+                        yield ThinkingDelta(text=reasoning)
+
+                    if delta.content:
+                        if not content_seen:
+                            content_seen = True
+                            yield StateChanged(state=AgentState.RESPONDING)
+                        content_parts.append(delta.content)
+                        yield TextDelta(text=delta.content)
+
+                    for tc in delta.tool_calls or []:
+                        acc = tool_calls.setdefault(
+                            tc.index, {"id": "", "name": "", "arguments": ""}
+                        )
+                        if tc.id:
+                            acc["id"] = tc.id
+                        if tc.function:
+                            if tc.function.name:
+                                acc["name"] += tc.function.name
+                            if tc.function.arguments:
+                                acc["arguments"] += tc.function.arguments
+
+            except Exception as exc:  # a broken stream must never execute partial tools
+                stream_error = f"stream interrupted ({type(exc).__name__})"
+            finally:
+                close = getattr(stream, "close", None)
+                if close is not None:
                     try:
-                        u = chunk.usage.model_dump()
-                    except AttributeError:
-                        u = dict(chunk.usage)
-                    # One cache shape downstream (ledger, trajectory, the
-                    # observer): providers report hits under different
-                    # fields — the registry says which; normalize here.
-                    hit = providers_mod.cache_hit_tokens(u, self.cache_field)
-                    if hit is not None and "prompt_cache_hit_tokens" not in u:
-                        u["prompt_cache_hit_tokens"] = hit
-                    _merge_usage(usage_total, u)
-                    _merge_usage(self.stats.usage, u)
-                    self.trajectory.usage(u)  # per-call: prompt/completion + cache hit/miss
-                    cache_ev = self._observe_cache(u)
-                    if cache_ev is not None:
-                        yield cache_ev
-                    if isinstance(u.get("prompt_tokens"), int):
-                        self._last_prompt_tokens = u["prompt_tokens"]
-                if not chunk.choices:
-                    continue
-                delta = chunk.choices[0].delta
+                        await close()
+                    except Exception:  # cleanup must not mask cancellation or the result
+                        pass
 
-                reasoning = getattr(delta, "reasoning_content", None)
-                if reasoning:
-                    if not thinking_seen:
-                        thinking_seen = True
-                        yield StateChanged(state=AgentState.THINKING)
-                    reasoning_parts.append(reasoning)
-                    yield ThinkingDelta(text=reasoning)
-
-                if delta.content:
-                    if not content_seen:
-                        content_seen = True
-                        yield StateChanged(state=AgentState.RESPONDING)
-                    content_parts.append(delta.content)
-                    yield TextDelta(text=delta.content)
-
-                for tc in delta.tool_calls or []:
-                    acc = tool_calls.setdefault(
-                        tc.index, {"id": "", "name": "", "arguments": ""}
-                    )
-                    if tc.id:
-                        acc["id"] = tc.id
-                    if tc.function:
-                        if tc.function.name:
-                            acc["name"] += tc.function.name
-                        if tc.function.arguments:
-                            acc["arguments"] += tc.function.arguments
+            attempts = self._note_request(request_id, steps, sends, generation, route,
+                                          tools=_tools, error=stream_error)
+            if self._host_selected_model and not usage_seen:
+                stream_error = stream_error or "usage unavailable; cannot account for this run"
+            problem = stream_error or self.protocol.completion_error(
+                finish_reason, tool_calls=bool(tool_calls))
+            if problem or self.protocol.strict_finish:
+                self.trajectory.note({"completion": {"finish_reason": finish_reason,
+                                                    "error": problem,
+                                                    "max_tokens": eff_max_tokens}})
+            if problem:
+                # Streamed text may already be visible, but it is NOT a committed
+                # assistant turn. No partial tool batch is added or executed.
+                self.stats.engine_errors += 1
+                yield StateChanged(state=AgentState.ERROR)
+                yield EngineError(message=f"Incomplete model response: {problem}. No tools from this response ran.")
+                yield StateChanged(state=AgentState.IDLE)
+                return
 
             self._sent_until = sent
             content = "".join(content_parts)
-            # Trajectory-only (stays OUT of history — see module doc): the
-            # thinking trace, for language-adherence checks and RL export.
-            self.trajectory.reasoning("".join(reasoning_parts))
+            reasoning_text = "".join(reasoning_parts)
+            # Keep the existing analysis record; the message is authoritative for replay.
+            self.trajectory.reasoning(reasoning_text)
+            reasoning_fields = ({"reasoning_content": reasoning_text}
+                                if self.protocol.replay_reasoning != "never" and
+                                (reasoning_text or self.protocol.reasoning_required) else {})
 
             if not tool_calls:
-                # Final answer — reasoning_content deliberately not stored.
-                self._append({"role": "assistant", "content": content})
+                # Also preserve no-tool assistant turns: a later request can carry tools.
+                self._append({"role": "assistant", "content": content, **reasoning_fields})
                 if used_tools:
                     yield StateChanged(state=AgentState.AMAZED)
-                yield TurnFinished(steps=steps, usage=usage_total)
+                # Turn boundary = the idle moment a checkpoint may ride on
+                # (background task; the user never waits on it).
+                self._boundary()
+                yield TurnFinished(steps=steps, usage=usage_total, turn=self._turn_id)
                 yield StateChanged(state=AgentState.IDLE)
                 return
 
@@ -859,6 +1268,7 @@ class Engine:
                 {
                     "role": "assistant",
                     "content": content or None,
+                    **reasoning_fields,
                     "tool_calls": [
                         {
                             "id": c["id"],
@@ -870,7 +1280,13 @@ class Engine:
                 }
             )
 
+            envelopes = [Envelope(session=self.trajectory.session_id, turn=self._turn_id,
+                                  request=request_id, attempt=attempts,
+                                  logical_call_id=f"{request_id}.{i}", provider_call_id=c["id"],
+                                  registry_generation=generation, route=route)
+                         for i, c in enumerate(calls, 1)]
             answered: set[str] = set()
+            dispatched: set[str] = set()  # handed to a tool — a cancel past this point is "unknown"
             # A read-only batch (every call is a non-mutating 'safe'-tier tool) runs
             # CONCURRENTLY — reads can't conflict, and reading/grepping several files
             # at once is the common explore step. Any batch containing a write / side
@@ -880,59 +1296,86 @@ class Engine:
             try:
                 yield StateChanged(state=AgentState.TOOL)
                 if parallel:
-                    for c in calls:
-                        yield ToolStarted(call_id=c["id"], tool=c["name"], args={"raw": c["arguments"]})
+                    for c, env in zip(calls, envelopes):
+                        yield ToolStarted(call_id=c["id"], tool=c["name"], args={"raw": c["arguments"]},
+                                          envelope=env)
                     # Approvals stay sequential (a modal can't run N-at-once); an
                     # in-workdir read auto-allows instantly, so this is usually a no-op.
                     allowed = {c["id"]: await self._approve(c["name"], c["arguments"]) for c in calls}
-                    runnable = [c for c in calls if allowed[c["id"]]]
+                    runnable = [(c, env) for c, env in zip(calls, envelopes) if allowed[c["id"]]]
                     t0 = time.monotonic()
+                    dispatched.update(c["id"] for c, _ in runnable)
                     results = await asyncio.gather(*(
-                        tools_mod.execute(self.registry, c["name"], c["arguments"]) for c in runnable
+                        self._execute(env, c["name"], c["arguments"]) for c, env in runnable
                     ))
                     dt = time.monotonic() - t0
-                    out_by_id = {c["id"]: r for c, r in zip(runnable, results)}
+                    out_by_id = {c["id"]: r for (c, _), r in zip(runnable, results)}
                     attach: list[str] = []
-                    for c in calls:  # original order — required by the API
+                    finished = []
+                    for c, env in zip(calls, envelopes):  # original order — required by the API
                         if c["id"] in out_by_id:
                             output, ok = out_by_id[c["id"]]
                             output = self._attach_rewrite(c["name"], output, attach)
                             self.stats.observe_tool(c["name"], c["arguments"], output, ok)
+                            receipt = "ok" if ok else "error"
                         else:
-                            output, ok = "[denied] user rejected this tool call", False
-                            self.stats.denials += 1
-                        yield ToolFinished(call_id=c["id"], tool=c["name"], output=output, ok=ok, duration_s=dt)
+                            output, ok = self._refused(allowed[c["id"]]), False
+                            self.stats.denials += not isinstance(allowed[c["id"]], Refusal)  # a user's "no" only
+                            receipt = "refused"
                         self._append({"role": "tool", "tool_call_id": c["id"], "content": output})
                         answered.add(c["id"])
+                        self._receipt(env, c["name"], receipt, dt)
+                        finished.append(ToolFinished(call_id=c["id"], tool=c["name"],
+                                                     output=output, ok=ok, duration_s=dt, envelope=env))
                     self._attach_images(attach)
+                    # All gathered tools already finished. Persist every result
+                    # before a consumer can close the generator at the first event.
+                    for ev in finished:
+                        yield ev
                 else:
                     attach = []
-                    for c in calls:
-                        yield ToolStarted(call_id=c["id"], tool=c["name"], args={"raw": c["arguments"]})
+                    for c, env in zip(calls, envelopes):
+                        yield ToolStarted(call_id=c["id"], tool=c["name"], args={"raw": c["arguments"]},
+                                          envelope=env)
                         t0 = time.monotonic()
                         # Plan mode (if on) gates BEFORE the approver: a write to
                         # the plan file runs, other mutations are denied with a
                         # teaching message, read-only calls fall through to ask.
                         verdict = self._plan_gate(c["name"], c["arguments"])
+                        answer = True
+                        if self._turn_stopped():
+                            verdict, answer = planmode.PASS, Refusal(_TURN_STOPPED)
+                        elif verdict.action == "pass":
+                            answer = await self._approve(c["name"], c["arguments"])
                         if verdict.action == "deny":
                             output, ok = verdict.message, False
                             self.stats.plan_denials += 1
-                        elif verdict.action == "allow" or await self._approve(c["name"], c["arguments"]):
-                            output, ok = await tools_mod.execute(self.registry, c["name"], c["arguments"])
+                            receipt = "refused"
+                        elif answer:
+                            dispatched.add(c["id"])
+                            output, ok = await self._execute(env, c["name"], c["arguments"])
                             output = self._attach_rewrite(c["name"], output, attach)
                             self.stats.observe_tool(c["name"], c["arguments"], output, ok)
+                            receipt = "ok" if ok else "error"
                         else:
-                            output, ok = "[denied] user rejected this tool call", False
-                            self.stats.denials += 1
+                            output, ok = self._refused(answer), False
+                            self.stats.denials += not isinstance(answer, Refusal)  # a user's "no" only
+                            receipt = "refused"
+                        # Consumers (notably headless approval stops) can close
+                        # us at this yield. Record the known result first, so it
+                        # cannot become an ambiguous "interrupted" stub on resume.
+                        self._append({"role": "tool", "tool_call_id": c["id"], "content": output})
+                        answered.add(c["id"])
+                        dt = time.monotonic() - t0
+                        self._receipt(env, c["name"], receipt, dt)
                         yield ToolFinished(
                             call_id=c["id"],
                             tool=c["name"],
                             output=output,
                             ok=ok,
-                            duration_s=time.monotonic() - t0,
+                            duration_s=dt,
+                            envelope=env,
                         )
-                        self._append({"role": "tool", "tool_call_id": c["id"], "content": output})
-                        answered.add(c["id"])
                     self._attach_images(attach)
             finally:
                 # Invariant: every tool_call_id above MUST get a matching tool response
@@ -954,7 +1397,7 @@ class Engine:
                     # Esc / a new submit landed mid-batch — a strong "the user
                     # wanted something else" signal for the outcome record.
                     self.stats.interrupts += 1
-                for c in calls:
+                for c, env in zip(calls, envelopes):
                     if c["id"] not in answered:
                         try:
                             self.trajectory.message({
@@ -962,8 +1405,13 @@ class Engine:
                                 "tool_call_id": c["id"],
                                 "content": "[error] tool execution was interrupted",
                             })
+                            self._receipt(env, c["name"],
+                                          "unknown" if c["id"] in dispatched else "cancelled", 0.0)
                         except Exception:  # noqa: BLE001 — never mask the cancel with I/O
                             pass
+            if self._turn_stopped():
+                break  # every call of the batch has its answer: finish the turn below, usage and all
 
-        yield TurnFinished(steps=steps, usage=usage_total)
+        self._boundary()  # step-limit exit is a turn boundary too
+        yield TurnFinished(steps=steps, usage=usage_total, turn=self._turn_id)
         yield StateChanged(state=AgentState.IDLE)

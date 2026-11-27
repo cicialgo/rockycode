@@ -1,0 +1,14 @@
+node_modules/
+dist/
+release/
+artifacts/
+.env
+.env.*
+!.env.example
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+
+# Isolated upstream core checkouts
+.worktrees/

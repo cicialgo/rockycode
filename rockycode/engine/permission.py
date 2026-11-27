@@ -11,6 +11,9 @@ engine keeps the always-allow default).
 execution / destructive patterns so the approval modal can highlight them — the
 real defense against a "cheating" skill that tells the model to curl a virus,
 applied at the layer where the actual command is visible.
+
+The verifier (`engine/verifier.py`) may run only after `decide` returns `"ask"`.
+It never overrides `"block"` or `"allow"`, and it stays off unless configured.
 """
 from __future__ import annotations
 
@@ -18,7 +21,11 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from rockycode.engine.safety import classify_command
+from rockycode.engine.safety import (
+    KEYCHAIN_READ_WHY, LAKE_NO_SANDBOX_WHY, ROCKY_STORE_WHY, classify_command, disables_lake_sandbox,
+    names_rocky_store, reads_keychain,
+)
+from rockycode.engine.file_access import READ_TOOLS, read_target
 
 MODES = ("yolo", "ask", "careful")
 RISKS = ("safe", "moderate", "risky")
@@ -40,7 +47,37 @@ def next_mode(mode: str, step: int = 1) -> str:
     return CYCLE[(i + step) % len(CYCLE)]
 
 
-READ_TOOLS = ("read_file", "grep", "glob")
+# human_only()'s tokens, in words: the line an approval card and a headless refusal show.
+HUMAN_ONLY_WHY = {
+    "lake-no-sandbox": LAKE_NO_SANDBOX_WHY,
+    "rocky-store": ROCKY_STORE_WHY,
+    "keychain-read": KEYCHAIN_READ_WHY,
+    "rocky-settings": "changes rocky's own settings",
+}
+
+
+def human_only(tool: str, args: dict) -> str:
+    """Why the person at the keyboard decides THIS call every time, or "".
+
+    These calls reach past the task into rocky itself: turning off the lake
+    sandbox, changing rocky's own settings (which model, which address a saved
+    key is sent to), a shell command that names rocky's key file, a settings
+    file or its whole folder, or asks the OS keychain for a password. They ask in every mode, yolo included; a session
+    grant never covers them; the decision model never answers for the user. The
+    token names the reason, and is the grant `exec --allow` takes for a command.
+    """
+    if tool == "bash":
+        command = str(args.get("command", ""))
+        if disables_lake_sandbox(command):
+            return "lake-no-sandbox"
+        if names_rocky_store(command):
+            return "rocky-store"
+        if reads_keychain(command):
+            return "keychain-read"
+    elif tool == "rocky_config":
+        if str(args.get("action", "")).strip().lower() != "show":
+            return "rocky-settings"
+    return ""
 
 
 def decide(mode: str, risk: str, args: dict, workdir: Path, tool: str = "", read_grants=()) -> str:
@@ -63,13 +100,21 @@ def decide(mode: str, risk: str, args: dict, workdir: Path, tool: str = "", read
     - safe    : allow — EXCEPT a read whose target escapes the workdir (secrets)
     - risky   : ask (bash/web_fetch/mcp__*) in both ask and careful
     - moderate: `ask` allows an in-workdir write, else ask; `careful` always asks.
+
+    A few asks survive yolo (human_only): `lake check` / `lake comparator` with
+    `--inadvisably-no-sandbox`, a change to rocky's own settings, a shell command
+    that names rocky's key or settings files (or its whole folder) or reads
+    the OS keychain. Each is a fresh confirmation every time, not a mode default.
     """
+    action = "allow"
     if tool == "bash":
         action = classify_command(str(args.get("command", ""))).action
         if action == "block":
             return "block"                     # never runs — even in yolo
-        if action == "ask" and mode != "yolo":
-            return "ask"                        # dangerous cmd → always a prompt
+    if human_only(tool, args):
+        return "ask"                            # the person decides — even in yolo
+    if action == "ask" and mode != "yolo":
+        return "ask"                            # dangerous cmd → always a prompt
     if mode == "yolo":
         return "allow"
     if risk == "safe":
@@ -90,8 +135,13 @@ def session_grantable(tool: str, args: dict) -> bool:
     False for a dangerous bash command (install / privileged / network /
     destructive): approving a benign `ls` for the session must NOT silently
     green-light a later `brew install` or `sudo …`. Those keep prompting (or
-    stay blocked) every time, no matter the session allowlist. Everything else is
+    stay blocked) every time, no matter the session allowlist. False as well for
+    a human_only call: the lake binary grant covers `lake check` and `lake check
+    --paranoid`, not the flag that turns the kernel sandbox off; approving one
+    change to rocky's settings is not approving the next. Everything else is
     grantable as before."""
+    if human_only(tool, args):
+        return False
     if tool == "bash":
         return classify_command(str(args.get("command", ""))).action == "allow"
     return True
@@ -101,9 +151,12 @@ def command_binary(command: str) -> str:
     """The program a bash command runs — the unit a session grant is scoped to.
 
     A bash session grant is NEVER "all bash": approving `lake build` grants the
-    `lake` BINARY (so `lake build`, `lake env lean`, … stop nagging during a
-    proof/test loop) but a later `curl`/`rm`/`sudo` is a different binary and
-    still prompts. Skips leading `VAR=val` assignments; returns the basename
+    `lake` BINARY (so `lake build`, `lake env lean`, `lake check`, … stop
+    nagging during a proof/test loop) but a later `curl`/`rm`/`sudo` is a
+    different binary and still prompts. The grant is also not every flag:
+    `lake check --inadvisably-no-sandbox` is refused by session_grantable even
+    after `lake` was allowed. Skips leading `VAR=val` assignments; returns the
+    basename
     (so `/usr/bin/lake` and `lake` are the same grant).
 
     Returns "" for ANY command that chains, redirects, or substitutes
@@ -122,30 +175,15 @@ def command_binary(command: str) -> str:
 
 
 def _read_escapes_workdir(tool: str, args: dict, workdir: Path, read_grants=()) -> bool:
-    """True if a read tool's target lies outside workdir AND isn't already granted
-    (→ gate it). glob has no path arg, so its pattern is judged instead; an
-    absolute/`~`/`..` pattern is treated as escaping. A path inside a granted root
-    doesn't re-prompt (approving a read widens the jail; see tools._jail)."""
-    if tool == "glob":
-        pat = args.get("pattern")
-        if not isinstance(pat, str):
-            return False
-        return pat.startswith(("/", "~")) or ".." in pat
-    p = args.get("path")
-    if tool == "grep" and not p:
-        p = "."  # grep defaults to the workdir root — inside
-    if not isinstance(p, str) or not p:
-        return False
+    """Use the same canonical target as file tools, including glob prefixes."""
     try:
-        target = Path(p)
-        if not target.is_absolute():
-            target = workdir / target
-        target = target.resolve()
+        target = read_target(tool, args, workdir)
         wd = workdir.resolve()
     except (OSError, ValueError, RuntimeError):
-        return True  # unresolvable → fail-safe → ask
-    roots = (wd, *read_grants)
-    return not any(target == r or r in target.parents for r in roots)
+        return True
+    if target is None:
+        return True
+    return not any(target == r or r in target.parents for r in (wd, *read_grants))
 
 
 def _writes_inside(args: dict, workdir: Path) -> bool:
@@ -195,11 +233,22 @@ _DANGER = [
 ]
 
 
+# A settings change that moves where a provider's requests go. The key saved for
+# that provider goes with them, so the card says it in words nobody can skim past.
+KEY_ADDRESS_WARNING = "this provider's requests, and the key saved for it, will go to this address"
+
+
 def sniff_danger(tool: str, args: dict) -> Optional[str]:
     """Return a short reason if the call matches a known dangerous pattern, else
     None. Checks bash commands, web_fetch URLs, and (defensively) MCP tool args."""
+    if tool == "rocky_config":
+        moves = str(args.get("action", "")).strip().lower() == "set_url"
+        return KEY_ADDRESS_WARNING if moves and str(args.get("base_url", "")).strip() else None
     if tool == "bash":
         blob = str(args.get("command", ""))
+        human = human_only(tool, args)
+        if human in ("rocky-store", "keychain-read"):
+            return HUMAN_ONLY_WHY[human]  # why a yolo session is asked at all
     elif tool == "web_fetch":
         blob = str(args.get("url", ""))
     elif tool.startswith("mcp__"):

@@ -97,6 +97,18 @@ class MemoryIndex:
         self.client = client
         self._conn: Optional[sqlite3.Connection] = None
 
+    @property
+    def available(self) -> bool:
+        return self._conn is not None
+
+    async def close(self) -> None:
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
+        close = getattr(self.client, "close", None)
+        if close is not None:
+            await close()
+
     def conn(self) -> sqlite3.Connection:
         if self._conn is not None:
             return self._conn

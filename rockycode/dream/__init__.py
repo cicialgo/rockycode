@@ -1,9 +1,9 @@
-"""rockycode dream: idle-time memory consolidation on a local Ollama model.
+"""rockycode dream: offline consolidation over reflect records (evolve v2).
 
-M2 of docs/memory-dream.md — episode digestion, reconciliation, project
-state, re-embedding. No daemon: manual `rockycode dream` now, TUI idle
-trigger in M3.
+Reflect captures each session warm on its own model (dream/reflect.py); the
+dream is the offline half — cold-reflect stragglers, fold patterns, reconcile
+facts, draft proposals. No daemon: launch catch-up + manual `rockycode dream`.
 """
-from rockycode.dream.core import DreamReport, DreamRunner, OllamaChat
+from rockycode.dream.core import CloudChat, DreamReport, DreamRunner
 
-__all__ = ["DreamReport", "DreamRunner", "OllamaChat"]
+__all__ = ["CloudChat", "DreamReport", "DreamRunner"]

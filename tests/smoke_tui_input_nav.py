@@ -23,7 +23,8 @@ sys.path.insert(0, str(_HERE))
 os.chdir(tempfile.mkdtemp(prefix="rockyinput-"))
 
 from rockycode.engine.loop import Engine
-from rockycode.tui.app import ChatInput, RockyCodeApp
+from rockycode.tui.app import RockyCodeApp
+from rockycode.tui.chatinput import ChatInput
 
 
 def build_app():

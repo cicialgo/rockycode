@@ -1,0 +1,41 @@
+name: Bench optional dependencies
+
+on:
+  pull_request:
+    paths:
+      - pyproject.toml
+      - uv.lock
+      - tests/bench_extra_smoke.py
+      - .github/workflows/bench-extra.yml
+  push:
+    branches: [main]
+    paths:
+      - pyproject.toml
+      - uv.lock
+      - tests/bench_extra_smoke.py
+      - .github/workflows/bench-extra.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bench-extra:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.10"
+          checksum: "bf65ac1a0af10f92c522d91ac096c7c0a39657647b155577e7836c2cbbb4526c"
+          python-version: "3.12.14"
+          enable-cache: false
+      - name: Clean locked bench install
+        run: uv sync --locked --extra bench --no-install-project
+      - name: Validate installed dependency requirements
+        run: uv pip check --python .venv/bin/python
+      - name: Offline cache and process concurrency regressions
+        run: uv run --no-sync python tests/bench_extra_smoke.py

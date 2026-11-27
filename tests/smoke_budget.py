@@ -1,68 +1,95 @@
-"""Step-budget smoke test: warnings injected near the cap, hard stop at it."""
+"""Neutral finite budgets, unlimited chat, and clean-boundary continuation."""
 import asyncio
+import copy
 import tempfile
 import types
 from pathlib import Path
 
 from rockycode.engine.events import EngineError, TurnFinished
 from rockycode.engine.loop import Engine
+from rockycode.engine.tools import Tool
 
 
-def chunk(tool_calls=None, usage=None):
-    if usage is not None and tool_calls is None:
-        return types.SimpleNamespace(usage=usage, choices=[])
-    delta = types.SimpleNamespace(reasoning_content=None, content=None, tool_calls=tool_calls)
-    return types.SimpleNamespace(usage=None, choices=[types.SimpleNamespace(delta=delta)])
-
-
-class ExplorerForever:
-    """A model that never stops exploring — bash every step."""
-
-    def __init__(self):
-        self.calls = 0
+class Model:
+    def __init__(self, answer_at=999):
+        self.requests = []
+        self.answer_at = answer_at
 
     async def create(self, **kwargs):
-        self.calls += 1
-        tc = types.SimpleNamespace(
-            index=0, id=f"c{self.calls}",
-            function=types.SimpleNamespace(name="bash", arguments='{"command": "echo explore"}'))
-
+        self.requests.append(copy.deepcopy(kwargs['messages']))
+        n = len(self.requests)
+        tc = types.SimpleNamespace(index=0, id=f'c{n}', function=types.SimpleNamespace(name='observe', arguments='{}'))
+        delta = types.SimpleNamespace(reasoning_content=None, content='done' if n == self.answer_at else None,
+                                      tool_calls=None if n == self.answer_at else [tc])
         async def stream():
-            yield chunk(tool_calls=[tc])
+            yield types.SimpleNamespace(usage=None, choices=[types.SimpleNamespace(
+                delta=delta, finish_reason="tool_calls" if delta.tool_calls else "stop")])
         return stream()
 
 
+async def observe():
+    return 'evidence'
+
+
+async def run(root, cap=None, finalize=None, answer_at=999):
+    model = Model(answer_at)
+    kw = {} if cap is None else {'max_steps': cap}
+    if finalize is not None:
+        kw['finalize_steps'] = finalize
+    engine = Engine(model='fake', client=types.SimpleNamespace(chat=types.SimpleNamespace(completions=model)),
+                    workdir=root, registry={'observe': Tool('observe', {}, observe, risk='safe')}, **kw)
+    events = [e async for e in engine.run_turn('investigate')]
+    return engine, model, events
+
+
+def notices(messages):
+    return [m['content'] for m in messages if m['role'] == 'user' and str(m.get('content', '')).startswith('[harness]')]
+
+
 async def main():
-    fake = types.SimpleNamespace(chat=types.SimpleNamespace(completions=ExplorerForever()))
-    eng = Engine(
-        model="fake", client=fake, workdir=Path(tempfile.mkdtemp()),
-        max_steps=13, finalize_steps=3,
-    )
-    events = [ev async for ev in eng.run_turn("explore forever")]
-
-    errors = [e for e in events if isinstance(e, EngineError)]
-    # hard stop after explore budget + finalize window
-    assert errors and "13+3 finalize" in errors[0].message, errors
-    assert any(isinstance(e, TurnFinished) for e in events)
-
-    harness_msgs = [m["content"] for m in eng.history
-                    if m["role"] == "user" and str(m.get("content", "")).startswith("[harness]")]
-    # one soft 10-step warning + one finalize notice
-    assert any("10 steps remain" in m for m in harness_msgs), harness_msgs
-    assert any("EXPLORE BUDGET SPENT" in m for m in harness_msgs), harness_msgs
-
-    # the explorer never stops calling tools, so it runs the full finalize
-    # window: total model calls == max_steps + finalize_steps == 16
-    assert fake.chat.completions.calls == 16, fake.chat.completions.calls
-
-    # finalize notice lands right after the explore budget (after 13 tool rounds)
-    idx = next(i for i, m in enumerate(eng.history)
-               if m["role"] == "user" and "EXPLORE BUDGET SPENT" in str(m.get("content")))
-    tools_before = sum(1 for m in eng.history[:idx] if m["role"] == "tool")
-    assert tools_before == 13, tools_before
-
-    print(f"soft warning + finalize notice injected; {fake.chat.completions.calls} calls (13+3) ok")
-    print("BUDGET SMOKE OK — amaze amaze amaze!")
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        engine, model, events = await run(root)
+        assert len(model.requests) == 110
+        assert not notices(model.requests[49]), 'step 50 must not pressure the default run'
+        assert len(notices(model.requests[79])) == 1
+        assert '31 model calls remain' in notices(model.requests[79])[0]
+        assert len(notices(model.requests[100])) == 2
+        assert '10 model calls remain' in notices(model.requests[100])[-1]
+        assert any(isinstance(e, EngineError) and '100+10 finalize' in e.message for e in events)
+        assert any(isinstance(e, TurnFinished) for e in events)
+        # Explicit finite limits and zero closing window still work.
+        _, small, _ = await run(root, 13, 3)
+        assert len(small.requests) == 16
+        assert '6 model calls remain' in notices(small.requests[10])[0]
+        _, tiny, _ = await run(root, 2, 0)
+        assert len(tiny.requests) == 2
+        _, unlimited, _ = await run(root, 0, answer_at=120)
+        assert len(unlimited.requests) == 120 and not notices(unlimited.requests[-1])
+        # A completed answer may finish early; a budget never forces extra work.
+        _, early, _ = await run(root, answer_at=2)
+        assert len(early.requests) == 2
+        try:
+            async for _ in engine.resume_turn():
+                pass
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('resume reset a finite cap')
+        engine.max_steps = 0
+        engine.history = [{'role': 'system', 'content': 's'}, {'role': 'user', 'content': 'u'},
+                          {'role': 'assistant', 'tool_calls': [{'id': 'lost', 'type': 'function',
+                            'function': {'name': 'observe', 'arguments': '{}'}}]}]
+        original = copy.deepcopy(engine.history)
+        try:
+            async for _ in engine.resume_turn():
+                pass
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('unresolved tools must not be replayed')
+        assert engine.history == original
+    print('BUDGET SMOKE OK — neutral notices; 100+10 default; unlimited chat; no cap-reset resume')
 
 
 asyncio.run(main())

@@ -12,12 +12,21 @@ on:
 jobs:
   smoke:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Every Python rocky supports: users bring their own (requires-python in pyproject.toml).
+        python: ["3.11", "3.12", "3.13", "3.14", "3.15"]
+    env:
+      UV_PYTHON: ${{ matrix.python }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.2.0  # no floating v8 tag; pin the exact release
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
+          version: "0.13.10"
+          checksum: "bf65ac1a0af10f92c522d91ac096c7c0a39657647b155577e7836c2cbbb4526c"
           enable-cache: true
 
       - name: Sync deps from the lockfile
@@ -28,3 +37,24 @@ jobs:
 
       - name: Smoke tests (the CORE gate)
         run: uv run python tests/run_all.py
+
+
+  pdf-extra:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.10"
+          checksum: "bf65ac1a0af10f92c522d91ac096c7c0a39657647b155577e7836c2cbbb4526c"
+          enable-cache: true
+
+      - name: Clean sync of the optional PDF dependencies
+        run: uv sync --frozen --extra pdf --no-install-project
+
+      - name: Parse a synthetic PDF with both backends
+        run: uv run --no-sync python tests/pdf_extra_smoke.py

@@ -30,7 +30,8 @@ from textual.events import MouseScrollUp
 from textual.widgets import Markdown, Static
 
 from rockycode.engine.loop import Engine
-from rockycode.tui.app import ChatInput, RockyCodeApp
+from rockycode.tui.app import RockyCodeApp
+from rockycode.tui.chatinput import ChatInput
 
 
 def build_app():

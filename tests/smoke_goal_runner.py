@@ -6,9 +6,9 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from rockycode.engine.budget import GoalBudget
-from rockycode.engine.goal import GoalRunner
-from rockycode.engine.worktree import GoalWorkspace
+from rockycode.goal.budget import GoalBudget
+from rockycode.goal.runner import GoalRunner
+from rockycode.goal.worktree import GoalWorkspace
 from rockycode.pricing import UsageLedger
 
 
@@ -35,6 +35,7 @@ class FakeDriver:
         self.work_calls = 0
         self.baseline_calls = 0
         self.plan_calls = 0
+        self.contexts: list[tuple[str, str]] = []
 
     async def plan(self, objective):
         self.plan_calls += 1
@@ -42,6 +43,7 @@ class FakeDriver:
 
     async def work(self, milestone, context):
         self.work_calls += 1
+        self.contexts.append((milestone, context))
         return f"did {milestone}"
 
     async def capture_baseline(self):
@@ -139,6 +141,27 @@ async def main():
     assert drv.plan_calls == 0, "preplanned path must not call driver.plan()"
     assert drv.baseline_calls == 1 and drv.work_calls == 2, (drv.baseline_calls, drv.work_calls)
     print("preplanned → runs the given plan, skips planning/preflight  ✓")
+
+    # 9) a failed verify is carried into the retry of the SAME milestone
+    ws = _git_ws("failcarry")
+    drv = FakeDriver(["m1"], verify_seq=[(False, "tests red: test_x"), (True, "ok")])
+    r = await GoalRunner("obj", drv, GoalBudget(), ws, UsageLedger()).run()
+    ws.cleanup(keep=False)
+    assert r.status == "done", r
+    assert len(drv.contexts) == 2, drv.contexts
+    assert "failed verification" not in drv.contexts[0][1], drv.contexts[0][1]
+    assert "tests red: test_x" in drv.contexts[1][1], drv.contexts[1][1]
+    print("verify failure carried into the retry, not the first attempt  ✓")
+
+    # 10) that reason stays on the milestone that failed — the next one doesn't see it
+    ws = _git_ws("failisolation")
+    drv = FakeDriver(["m1", "m2"], verify_seq=[(False, "boom"), (True, "ok"), (True, "ok")])
+    r = await GoalRunner("obj", drv, GoalBudget(), ws, UsageLedger()).run()
+    ws.cleanup(keep=False)
+    assert r.status == "done", r
+    m2 = [ctx for name, ctx in drv.contexts if name == "m2"]
+    assert len(m2) == 1 and "boom" not in m2[0], drv.contexts
+    print("next milestone does not inherit the previous failure  ✓")
 
     print("GOAL ORCHESTRATOR SMOKE OK — plan/verify/review/budget/safety/commit/preplanned. amaze!")
 

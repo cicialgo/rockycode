@@ -1,9 +1,13 @@
 """Fake LSP MCP server for testing rockycode's LSP integration.
 
-Exposes: diagnostics, definition, references, hover, workspace_symbol,
-document_symbol — with mock data so the agent tools work end-to-end
-without a real language server.
+Exposes: diagnostics, definition, references, hover, implementation,
+workspace_symbol, document_symbol — with mock data so the agent tools work
+end-to-end without a real language server. It has no callers/callees, and a
+few inputs are wired to misbehave on purpose, so the bridge's failure states
+can be tested: an empty answer, a server error, a slow call, several blocks.
 """
+import time
+
 from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("rockycode-fake-lsp")
@@ -82,18 +86,30 @@ def references(symbol: str) -> str:
 @mcp.tool()
 def hover(symbol: str) -> str:
     """Get hover info for a symbol."""
+    if symbol == "boom":
+        raise ValueError("backend exploded")
     return _HOVER
+
+
+@mcp.tool()
+def implementation(symbol: str) -> list:
+    """Find implementations — answered in two text blocks."""
+    return ["src/models.py:42  class User(BaseModel)", "src/admin.py:9  class AdminUser(User)"]
 
 
 @mcp.tool()
 def document_symbol(path: str) -> str:
     """List all symbols in a file."""
+    if path == "slow.py":
+        time.sleep(3)
     return _FILE_SYMBOLS
 
 
 @mcp.tool()
 def workspace_symbol(query: str) -> str:
     """Search for symbols across the workspace."""
+    if query == "nothing-here":
+        return ""
     return _WORKSPACE_SYMBOLS
 
 

@@ -22,8 +22,22 @@ from textual.widgets import Static
 
 from rockycode.engine.loop import Engine
 from rockycode.engine.tools import Tool
-from rockycode.tui.app import ChatInput, RockyCodeApp
+from rockycode.tui.app import RockyCodeApp
+from rockycode.tui.chatinput import ChatInput
 from rockycode.tui.permission import InlineApproval
+from rockycode.tui import cardkeys
+
+cardkeys.ENTER_GUARD = 0  # the half second is tested in smoke_tui_card_keys.py; here Enter answers a card at once
+
+
+async def come_to_card(pilot, app):
+    """A card the user did not open never takes the keyboard: Enter in the empty message box goes to it."""
+    await pilot.press("enter")
+    for _ in range(80):
+        await pilot.pause(0.025)
+        if isinstance(app.focused, cardkeys.CardKeys):
+            return
+    raise AssertionError("Enter in the empty message box did not bring the keyboard to the card")
 from invariants import assert_history_api_valid
 
 
@@ -43,7 +57,8 @@ def tc(index, id_, name, args):
 
 
 async def stream_from(chunks):
-    for c in chunks:
+    from invariants import completed_chunks
+    for c in completed_chunks(chunks):
         yield c
 
 
@@ -107,21 +122,23 @@ async def drive_to_modal(pilot, app):
     inp.focus()
     inp.text = "please run a command"
     await pilot.press("enter")
-    for _ in range(60):           # wait for the inline approval to mount + focus
+    for _ in range(60):           # wait for the inline approval to mount, then go to it
         await pilot.pause(0.05)
-        if approval_focused(app):
+        if has_approval(app):
+            assert not approval_focused(app), "the card must not take the keyboard by itself"
+            await come_to_card(pilot, app)
             return
     raise AssertionError(
         f"inline approval never appeared/focused (has={has_approval(app)}, focused={type(app.focused).__name__})")
 
 
 async def main():
-    # --- y: approve once → bash runs ---
+    # --- Enter on the default row: approve once → bash runs ---
     app, engine, ran = build()
     async with app.run_test(size=(90, 30)) as pilot:
         await drive_to_modal(pilot, app)
-        await pilot.press("y")
-        assert await wait_until(pilot, lambda: ran["bash"]), "approve(y) must run the tool"
+        await pilot.press("enter")
+        assert await wait_until(pilot, lambda: ran["bash"]), "approve must run the tool"
         assert await wait_until(pilot, lambda: any(r == "ran: echo hi" for r in tool_results(engine))), engine.history
     assert_history_api_valid(engine.history)
 
@@ -152,8 +169,16 @@ async def main():
         assert await wait_until(pilot, lambda: tr.scroll_offset.y <= y1), "wheel must scroll while pending"
         # the approval survived the scrolling and still approves
         assert has_approval(app), "approval must survive scrolling the history"
-        await pilot.press("y")
+        await pilot.press("pageup", "pageup", "pageup")  # well above the end: more than the card gives back
+        await pilot.pause(0.2)
+        assert tr.scroll_offset.y < tr.max_scroll_y - 12, (tr.scroll_offset.y, tr.max_scroll_y)
+        await pilot.press("enter")
         assert await wait_until(pilot, lambda: ran["bash"]), "approve after scrolling must still run the tool"
+        # … and the user who scrolled up to read is not pulled back to the end when the card goes.
+        assert await wait_until(pilot, lambda: not has_approval(app))
+        await pilot.pause(0.4)
+        assert tr.scroll_offset.y < tr.max_scroll_y - 2, \
+            f"the transcript jumped to its end under a user who was reading ({tr.scroll_offset.y} of {tr.max_scroll_y})"
     assert_history_api_valid(engine.history)
 
     # --- Enter on the default (Run once) → approve (Codex/Claude-style) ---
@@ -177,13 +202,13 @@ async def main():
         assert ran["bash"] is False, "arrow to Deny + Enter must block the tool"
     assert_history_api_valid(engine.history)
 
-    # --- n: deny → tool blocked, model gets [denied] ---
+    # --- the Deny row: deny → tool blocked, model gets [denied] ---
     app, engine, ran = build()
     async with app.run_test(size=(90, 30)) as pilot:
         await drive_to_modal(pilot, app)
-        await pilot.press("n")
+        await pilot.press("down", "down", "enter")
         assert await wait_until(pilot, lambda: any(r.startswith("[denied]") for r in tool_results(engine))), engine.history
-        assert ran["bash"] is False, "deny(n) must NOT run the tool"
+        assert ran["bash"] is False, "deny must NOT run the tool"
     assert_history_api_valid(engine.history)
 
     # --- esc: cancel the whole turn → history still valid (tool_call backfilled) ---
@@ -227,7 +252,7 @@ async def main():
         assert await wait_until(pilot, lambda: app._turn_worker is not None and not app._turn_worker.is_running), \
             "esc binding did not cancel the running turn (key swallowed?)"
         # the persistent permission chip is always visible in the status bar
-        assert "yolo" in str(app.query_one("#permchip", Static).render()), "persistent yolo chip missing"
+        assert "YOLO" in str(app.query_one("#permchip", Static).render()), "persistent YOLO chip missing"
     assert_history_api_valid(engine.history)
     assert any("interrupted" in r for r in tool_results(engine)), engine.history
 
@@ -238,7 +263,7 @@ async def main():
     async with app.run_test(size=(90, 30)) as pilot:
         assert await wait_until(pilot, lambda: any("lowered permission" in str(w.render()) for w in app.query(Static))), \
             "project-weakening warning missing"
-        assert any("yolo" in str(w.render()) for w in app.query(Static)), "yolo chip missing from status bar"
+        assert "YOLO" in str(app.query_one("#permchip", Static).render()), "YOLO chip missing from status bar"
 
     print("TUI PERMISSION SMOKE OK — inline approve / deny / scroll-while-pending / esc / esc-binding / chip+warn. amaze!")
 

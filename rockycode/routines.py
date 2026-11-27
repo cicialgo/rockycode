@@ -68,7 +68,12 @@ class Routine:
 
 def _emit_toml(r: Routine) -> str:
     def s(v: str) -> str:
-        return '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
+        # Newlines/tabs escape too: a model-drafted prompt with a literal \n
+        # used to emit invalid TOML, which load() swallowed as None — the
+        # approved routine just vanished. Escaped, it round-trips.
+        v = (v.replace("\\", "\\\\").replace('"', '\\"')
+              .replace("\n", "\\n").replace("\r", "").replace("\t", "\\t"))
+        return f'"{v}"'
 
     lines = [
         f"name = {s(r.name)}",
@@ -231,12 +236,13 @@ def _grant_tokens(tools: list[str]) -> frozenset[str]:
 
 
 async def run_routine(store: RoutineStore, r: Routine, *, model: str,
-                      client=None, registry=None, err=None) -> dict:
+                      client=None, registry=None, err=None, model_choice=None,
+                      max_tokens=None) -> dict:
     """Run one routine through exec (sandboxed ALWAYS — no host fallback for
     unattended work; Docker down = the run fails loudly, the card says so).
     Settles the odometer from the result envelope and writes last-run.md
     beside the routine for the "ready" line. Returns a summary dict."""
-    from rockycode.engine.headless import run_exec
+    from rockycode.headless import run_exec
     from rockycode.pricing import UsageLedger
     from rockycode.session import get_project
 
@@ -261,6 +267,7 @@ async def run_routine(store: RoutineStore, r: Routine, *, model: str,
         originator=f"routine:{r.name}",
         sandbox=True, network=r.network,
         write=lines.append, client=client, registry=registry, err=err,
+        model_choice=model_choice, max_tokens=max_tokens,
         extra_meta={"runner": "routine", "routine": r.name,
                     "project_id": r.project_id or project.id,
                     "project_name": project.name},
@@ -270,8 +277,10 @@ async def run_routine(store: RoutineStore, r: Routine, *, model: str,
     result = next((line for line in lines if line.get("type") == "result"), {})
     status = {0: "done", 2: "blocked", 3: "budget"}.get(code, "error")
     ledger = UsageLedger()
+    if model_choice is not None and model_choice.provider.local:
+        ledger.mark_free(model_choice.model)
     if result.get("usage"):
-        ledger.add(model, result["usage"])
+        ledger.add(model_choice.model if model_choice is not None else model, result["usage"])
     cost = ledger.cost("usd")
     store.record_run(r, session_id=meta.get("session", ""), cost=cost, status=status)
 
@@ -285,3 +294,55 @@ async def run_routine(store: RoutineStore, r: Routine, *, model: str,
             pass
     return {"status": status, "cost": cost, "summary": summary,
             "session": meta.get("session", ""), "blocked_on": result.get("blocked_on")}
+
+
+DRY_RUN_STEPS = 10          # a smoke, not a real run
+DRY_RUN_TIMEOUT_S = 180.0   # a dream pass must never hang on a slow pull
+
+
+async def dry_run_routine(r: Routine, *, model: str, client=None) -> dict:
+    """Execute a DRAFTED routine once, sandboxed, before it is ever proposed —
+    the quality receipt on the proposal card (evolve v2, locked 2026-08-02).
+    Nothing is installed and no odometer moves: no store, no state.json, no
+    last-run.md. Returns {"tested", "note", ...}:
+
+      tested "ok"          — ran clean; the card shows the receipt
+      tested "failed"      — the DRAFT is defective (out-of-grant, over
+                             budget): the caller drops it, it never asks
+      tested "unavailable" — infra, not the draft (docker down, API error,
+                             timeout): the caller proposes it untested
+    """
+    import asyncio
+
+    from rockycode import headless
+    from rockycode.pricing import UsageLedger
+
+    workdir = Path(r.workdir).expanduser() if r.workdir else Path.cwd()
+    lines: list[dict] = []
+    try:
+        code = await asyncio.wait_for(headless.run_exec(
+            prompt=r.prompt, model=model, workdir=workdir,
+            grants=_grant_tokens(r.tools), max_steps=min(r.max_steps, DRY_RUN_STEPS),
+            originator=f"routine-dryrun:{r.name}",
+            sandbox=True, network=r.network,
+            write=lines.append, client=client,
+        ), timeout=DRY_RUN_TIMEOUT_S)
+    except Exception as e:  # noqa: BLE001 — infra trouble is not the draft's fault
+        return {"tested": "unavailable", "note": f"{type(e).__name__}: {e}"[:160]}
+
+    result = next((line for line in lines if line.get("type") == "result"), {})
+    status = {0: "done", 2: "blocked", 3: "budget"}.get(code, "error")
+    ledger = UsageLedger()
+    if result.get("usage"):
+        ledger.add(model, result["usage"])
+    cost = ledger.cost("usd")
+    if status == "done":
+        return {"tested": "ok", "status": status, "cost": cost,
+                "steps": result.get("steps", 0),
+                "note": f"ran clean · {result.get('steps', 0)} step(s) · ${cost:.4f}"}
+    if status in ("blocked", "budget"):
+        blocked = result.get("blocked_on") or {}
+        return {"tested": "failed", "status": status, "cost": cost,
+                "note": f"{status}" + (f" on {blocked}"[:120] if blocked else "")}
+    return {"tested": "unavailable", "status": status, "cost": cost,
+            "note": str(result.get("error", "run errored"))[:160]}

@@ -3,7 +3,9 @@
 TorchLean (github.com/lean-dojo/TorchLean, arXiv 2602.22631) formalizes neural
 networks in Lean 4. It is NEWER than your pretraining data: you have zero latent
 knowledge of it. Everything below is verbatim from the repo and was validated by
-compile on 2026-07-15 (probe: 3/3 machine-verified). Treat this file as the whole
+compile on 2026-07-15 (probe: 3/3 sorry-free on Lean 4.32). That result is
+green · compiled: TorchLean's pinned toolchain has no `lake check`, so it is
+not a kernel recheck. Treat this file as the whole
 API surface — if a name is not here and not suggested by a compiler error, do not
 use it. Read the repo's own files (NN/Examples/) when you need more.
 

@@ -10,7 +10,7 @@ from rich.text import Text
 
 from rockycode.palette import AMBER, LAVENDER, MUTED, PURPLE, RED, VIOLET
 
-ROCKY_TAGLINE = "i learn traditional physics. i no know e=mc^2 yet. but we fix bug. amaze!"
+ROCKY_TAGLINE = "i learn traditional physics. i no know e=mc^2 yet. but we build together. amaze!"
 
 
 def show_banner(console: Console) -> None:

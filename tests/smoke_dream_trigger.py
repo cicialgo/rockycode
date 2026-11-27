@@ -1,10 +1,11 @@
-"""Dream catch-up plumbing (self-evolve phase 1, first slice) — no Ollama, no API.
+"""Dream catch-up plumbing (evolve v2) — no API.
 
 Three contracts:
-  - condense() only reveals the exit sheet to LOCAL callers (feedback=True);
-    the default keeps it out of any transcript a cloud judge might see.
-  - DreamRunner(exclude=...) never digests the excluded (live) session.
-  - The TUI's launch trigger stays perfectly silent when Ollama is unreachable.
+  - load_session collects reflect records; legacy `feedback` lines (retired
+    exit sheet) are ignored, never crash, and never reach a prompt.
+  - DreamRunner(exclude=...) never consolidates the excluded (live) session.
+  - The TUI's launch trigger stays perfectly silent when evolve is off or
+    memory is off — no dream line, no error, no nagging.
 """
 import asyncio
 import json
@@ -25,7 +26,7 @@ SID_OLD = "20260708-000001-aaaaaaaa"
 SID_LIVE = "20260708-000002-bbbbbbbb"
 
 
-def write_traj(sid: str, mood: str | None = None) -> Path:
+def write_traj(sid: str, legacy_feedback: bool = False) -> Path:
     pid = get_project(WD).id
     lines = [
         {"t": 1, "kind": "meta", "data": {"source": "chat", "project_id": pid,
@@ -34,10 +35,14 @@ def write_traj(sid: str, mood: str | None = None) -> Path:
         {"t": 3, "kind": "message", "data": {"role": "user", "content": "fix the bug"}},
         {"t": 4, "kind": "message", "data": {"role": "assistant", "content": "fixed it"}},
         {"t": 5, "kind": "outcome", "data": {"source": "heuristic", "turns": 1, "tool_errors": 0}},
+        {"t": 6, "kind": "reflect", "data": {"seq": 1, "final": True, "score": 0.9,
+                                             "angles": {}, "episode": {"task": "fix the bug"},
+                                             "facts": [], "patterns": [], "summary": "ok"}},
     ]
-    if mood:
-        lines.append({"t": 6, "kind": "feedback",
-                      "data": {"mood": mood, "text": "loved it", "local_only": True}})
+    if legacy_feedback:
+        # a pre-v2 trajectory: the retired exit sheet's record must be inert
+        lines.append({"t": 7, "kind": "feedback",
+                      "data": {"mood": "good", "text": "loved it", "local_only": True}})
     traj = _session.global_traj_dir()
     traj.mkdir(parents=True, exist_ok=True)
     p = traj / f"{sid}.jsonl"
@@ -46,30 +51,26 @@ def write_traj(sid: str, mood: str | None = None) -> Path:
 
 
 async def main():
-    p_old = write_traj(SID_OLD, mood="good")
+    p_old = write_traj(SID_OLD, legacy_feedback=True)
     write_traj(SID_LIVE)
 
-    # --- condense: the exit sheet is caller-gated, not automatic ---
+    # --- reflect records load; legacy feedback lines are inert ---
     s = load_session(p_old)
-    assert s is not None and s["feedback"]["mood"] == "good", s
-    cloud_safe = condense(s)
-    assert "exit-feedback" not in cloud_safe and "loved it" not in cloud_safe, \
-        "default condense must hide the sheet (a cloud judge may read this)"
-    local = condense(s, feedback=True)
-    assert "exit-feedback" in local and "mood=good" in local and "loved it" in local, local
-    assert "[outcome]" in local, "the heuristic outcome should reach the dream digest"
-    print("dream-trigger: exit sheet is local-caller-gated in condense  ✓")
+    assert s is not None and len(s["reflects"]) == 1 and s["reflects"][0]["score"] == 0.9, s
+    assert "feedback" not in s, "the retired sheet must not resurface on the session dict"
+    text = condense(s)
+    assert "loved it" not in text and "mood" not in text, \
+        "legacy sheet text must never enter any prompt"
+    assert "[outcome]" in text, "the outcome line should reach the cold-reflect prompt"
+    print("dream-trigger: reflects load, legacy feedback lines stay inert  ✓")
 
-    # --- exclude: the live session is never digested ---
-    runner = DreamRunner(WD, exclude={SID_LIVE})
+    # --- exclude: the live session is never consolidated ---
+    runner = DreamRunner(WD, chat=types.SimpleNamespace(), exclude={SID_LIVE})
     ids = [x["session_id"] for x in runner._pending_sessions(limit=10)]
     assert SID_OLD in ids and SID_LIVE not in ids, ids
     print("dream-trigger: the live session is excluded from the catch-up  ✓")
 
-    # --- TUI trigger: unreachable Ollama → silent no-op, chat undisturbed ---
-    import rockycode.dream.core as dream_core
-    dream_core.OLLAMA_URL = "http://127.0.0.1:9"  # nothing listens — probe fails fast
-
+    # --- TUI trigger: evolve off / memory off → silent no-op ---
     from textual.widgets import Static
 
     from rockycode.engine.loop import Engine
@@ -77,14 +78,24 @@ async def main():
     from rockycode.tui.app import RockyCodeApp
 
     client = types.SimpleNamespace(chat=types.SimpleNamespace(completions=None))
+
     eng = Engine(model="fake", client=client, workdir=WD, registry={})
-    eng.memory_store = MemoryStore.for_workdir(WD)  # dream gate: memory must be on
-    app = RockyCodeApp(eng, permission="yolo")      # dream defaults to "auto"
+    eng.memory_store = MemoryStore.for_workdir(WD)
+    app = RockyCodeApp(eng, permission="yolo", evolve="off")
     async with app.run_test(size=(95, 34)) as pilot:
-        await pilot.pause(0.6)  # give the probe time to fail
+        await pilot.pause(0.4)
         assert not any("dreamed" in str(w.render()) for w in app.query(Static)), \
-            "no Ollama must mean no dream line, no error, no nagging"
-    print("dream-trigger: unreachable Ollama stays perfectly silent  ✓")
+            "evolve=off must mean no dream line, no error, no nagging"
+    print("dream-trigger: evolve=off stays perfectly silent  ✓")
+
+    eng2 = Engine(model="fake", client=client, workdir=WD, registry={})
+    # no memory_store attribute → the catch-up gate must bail before anything
+    app2 = RockyCodeApp(eng2, permission="yolo")  # evolve defaults to "auto"
+    async with app2.run_test(size=(95, 34)) as pilot:
+        await pilot.pause(0.4)
+        assert not any("dreamed" in str(w.render()) for w in app2.query(Static)), \
+            "memory off must mean no dream, silently"
+    print("dream-trigger: memory-off stays perfectly silent  ✓")
 
     print("DREAM-TRIGGER SMOKE OK — rocky dreams when it can, quietly. amaze!")
 

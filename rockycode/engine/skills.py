@@ -24,8 +24,10 @@ Chat-only, like MCP: bench never loads skills, so scores measure the harness.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -39,6 +41,8 @@ MAX_DESCRIPTION_CHARS = 200
 BUILTIN_DIR = Path(__file__).resolve().parents[1] / "skills"
 
 _FRONTMATTER = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+# A YAML block scalar indicator on its own: `|`, `>`, with optional chomping/indent.
+_BLOCK = re.compile(r"[|>][+-]?\d?")
 
 
 @dataclass
@@ -55,10 +59,21 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
     if not m:
         return {}, text
     fields: dict[str, str] = {}
+    key = None
     for line in m.group(1).splitlines():
         if ":" in line and not line.startswith((" ", "\t", "#")):
             key, _, value = line.partition(":")
-            fields[key.strip().lower()] = value.strip().strip("'\"")
+            key = key.strip().lower()
+            fields[key] = value.strip().strip("'\"")
+        elif key is not None and line.startswith((" ", "\t")) and line.strip():
+            # An indented line continues the field above it: a YAML block scalar
+            # (`description: |` or `>`) or a wrapped plain value. Its text is the
+            # value — the indicator alone used to be shown, to the user and the model.
+            head = fields[key]
+            fields[key] = (("" if _BLOCK.fullmatch(head) else head + " ") + line.strip()).strip()
+    for key, value in fields.items():
+        if _BLOCK.fullmatch(value):  # an indicator with nothing under it
+            fields[key] = ""
     return fields, text[m.end():]
 
 
@@ -123,6 +138,41 @@ def discover_skills(workdir: Path, *, home: Optional[Path] = None,
     return list(found.values())[:MAX_SKILLS_IN_PROMPT]
 
 
+# ---- usage telemetry (evolve v2 watch loop) ------------------------------------
+#
+# A sidecar file, never the skill files themselves: per-skill load counts and
+# timestamps drive LIFECYCLE decisions only (the dream's watch drafts a retire
+# proposal for a dream-origin skill nobody ever loads) — content stays
+# untouched. Best-effort everywhere: telemetry must never break a skill load.
+
+def skill_usage_path() -> Path:
+    base = os.environ.get("ROCKYCODE_HOME")
+    root = Path(base).expanduser() if base else Path.home() / ".rockycode"
+    return root / "skills" / ".usage.json"
+
+
+def read_skill_usage() -> dict:
+    try:
+        data = json.loads(skill_usage_path().read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def bump_skill_usage(name: str) -> None:
+    try:
+        path = skill_usage_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = read_skill_usage()
+        entry = data.get(name) if isinstance(data.get(name), dict) else {}
+        data[name] = {"loads": int(entry.get("loads", 0)) + 1, "last": time.time()}
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(data, indent=1), encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:  # noqa: BLE001 — telemetry is a nicety, loading is the job
+        pass
+
+
 def skills_prompt_section(skills: list[Skill]) -> str:
     lines = [f"- {s.name} — {s.description}" for s in skills]
     return (
@@ -166,6 +216,7 @@ def build_skill_tool(skills: list[Skill]) -> Tool:
             text = skill.path.read_text(errors="replace")
         except OSError as e:
             return f"[error] could not read skill: {e}"
+        bump_skill_usage(skill.name)  # the watch loop's signal: this one earns its keep
         _, body = _parse_frontmatter(text)
         # The directory matters: skills often ship scripts referenced
         # relative to their own folder.

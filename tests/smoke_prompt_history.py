@@ -1,6 +1,9 @@
 """PromptHistory: the persistent up-arrow list — JSONL round-trip, adjacent
-dedupe, LIMIT cap, corruption tolerance, and ChatInput seeding. No tty."""
+dedupe, LIMIT cap, corruption tolerance, ChatInput seeding, and no pasted key
+kept (masked on the way in, an older file cleaned on load, the file 0600). No tty."""
 import json
+import os
+import stat
 import tempfile
 from pathlib import Path
 
@@ -62,4 +65,35 @@ assert inp._history == ["first prompt", "check tests", "check tests again"]
 assert ChatInput()._history == [] and ChatInput()._store is None
 print("ChatInput: seeded from the store; bare construction stays in-memory  ✓")
 
-print("PROMPT HISTORY SMOKE OK — up-arrow survives restarts. amaze!")
+# a pasted key is not kept: masked before it reaches the list or the disk
+SHAPED = "sk-" + "Zx9q" * 8                 # built here: never a key-shaped literal in the repo
+OPAQUE = "plain-opaque-key-value-0001"      # no known shape — known only as a key variable's value
+os.environ["ROCKYCODE_KIMI_API_KEY"] = OPAQUE
+os.environ["OPENAI_BASE_URL"] = "https://gateway.example/v1"  # a wide-list name: an ordinary word here
+try:
+    p4 = d / "keys.jsonl"
+    h5 = PromptHistory(p4)
+    h5.append(f"/key {SHAPED}")
+    h5.append(f"why does {OPAQUE} get a 401?")
+    h5.append("call https://gateway.example/v1 with curl")
+    assert h5.items == ["/key [redacted: api key]", "why does [redacted] get a 401?",
+                        "call https://gateway.example/v1 with curl"], h5.items
+    assert SHAPED not in p4.read_text() and OPAQUE not in p4.read_text()
+    assert stat.S_IMODE(p4.stat().st_mode) == 0o600, oct(p4.stat().st_mode)
+    print("keys: a pasted key is masked in memory and on disk; ordinary text is left alone; the file is 0600  ✓")
+
+    # a file from before: world-readable, with a key in it → cleaned and closed on load
+    p5 = d / "old.jsonl"
+    p5.write_text(json.dumps({"input": "hello"}) + "\n" + json.dumps({"input": f"/model {SHAPED}"}) + "\n")
+    p5.chmod(0o644)
+    assert PromptHistory(p5).items == ["hello", "/model [redacted: api key]"]
+    assert SHAPED not in p5.read_text() and stat.S_IMODE(p5.stat().st_mode) == 0o600
+    untouched = p.stat().st_mtime_ns
+    PromptHistory(p)
+    assert p.stat().st_mtime_ns == untouched, "a clean file is not rewritten"
+    print("keys: an older file is cleaned and made private the next time it loads  ✓")
+finally:
+    os.environ.pop("ROCKYCODE_KIMI_API_KEY")
+    os.environ.pop("OPENAI_BASE_URL")
+
+print("PROMPT HISTORY SMOKE OK — up-arrow survives restarts, keys do not. amaze!")

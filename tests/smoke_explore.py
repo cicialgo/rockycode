@@ -17,7 +17,7 @@ from pathlib import Path
 
 # On main: foundation + chat explore tool (buyer 1) + goal branch reviewer
 # (buyer 2, git-ref reads) + goal verifier wired into EngineDriver (buyer 3).
-from rockycode.engine.goal_review import build_goal_tools
+from rockycode.goal.review import build_goal_tools
 from rockycode.engine.explore import (
     ROLE_PROMPTS,
     _ro_bash_check,
@@ -329,7 +329,7 @@ async def test_goal_verifier():
 
 
 async def test_engine_driver_grounded_verify():
-    from rockycode.engine.goal import EngineDriver
+    from rockycode.goal.runner import EngineDriver
 
     repo = new_repo()
     ws = types.SimpleNamespace(path=repo)

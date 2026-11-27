@@ -89,12 +89,35 @@ async def main():
     b_registry = {"skill": build_skill_tool(builtins)}
     out, ok = await tools_mod.execute(b_registry, "skill", '{"name": "lean-prover"}')
     assert ok and "lake env lean" in out and "never say \"proved\"".lower() in out.lower(), out[:200]
+    assert "lake check" in out and "kernel-checked" in out and "disputed" in out, out[:400]
+    assert "--inadvisably-no-sandbox" in out and "Do not pass" in out
+    assert "green · compiled" in out
 
     # model layer: the TorchLean API excerpt ships beside SKILL.md and is referenced by it
     tl_doc = b_by_name["lean-prover"].path.parent / "torchlean-api.md"
     assert tl_doc.exists(), "torchlean-api.md must ship with the lean-prover skill"
     assert "torchlean-api.md" in out and "Model layer" in out, "SKILL.md must route to the excerpt"
     assert "open TorchLean" in tl_doc.read_text(), "excerpt must carry the namespace gotcha"
+
+    # A description written as a YAML block (`|`, `>-`) or wrapped over lines is
+    # its text. The bare indicator used to be shown — to the user in /skills and
+    # to the model in its prompt, which then could not tell when to use the skill.
+    from rockycode.engine.skills import _parse_frontmatter
+    for header, want in (
+            ("description: |\n  Make promo videos\n  for apps.\nmetadata:\n  type: x", "Make promo videos for apps."),
+            ("description: >-\n  Folded text\n  over lines.", "Folded text over lines."),
+            ("description: first part\n  second part", "first part second part"),
+            ("description: |", ""),
+            ("description: \"quoted: value\"", "quoted: value")):
+        fields, body = _parse_frontmatter(f"---\nname: sample\n{header}\n---\nbody")
+        assert (fields["name"], fields["description"], body) == ("sample", want, "body"), (header, fields)
+    with tempfile.TemporaryDirectory() as block_root:
+        block = Path(block_root) / ".rockycode" / "skills" / "promo"
+        block.mkdir(parents=True)
+        (block / "SKILL.md").write_text("---\nname: promo\ndescription: |\n  Make promo videos\n  for apps.\n---\nbody\n")
+        found = {s.name: s for s in discover_skills(Path(block_root), home=None, builtin=False)}
+        assert found["promo"].description == "Make promo videos for apps.", found["promo"].description
+        assert "- promo — Make promo videos for apps." in skills_prompt_section([found["promo"]])
 
     print("skills:", [(s.name, s.source) for s in skills])
     print("built-ins:", [(s.name, s.source) for s in builtins])

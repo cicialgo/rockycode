@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Generated from brand/rockycode-note.svg; SHA-256 dfa42b56799c6af9361d7bb18d1bbcc099c656794ca67f707f574ca1d4aaaed4. -->
+  <defs>
+    <linearGradient id="purple" x1="0" y1="0" x2="0.8" y2="1">
+      <stop offset="0" stop-color="#a38ade"/>
+      <stop offset="0.48" stop-color="#8867cc"/>
+      <stop offset="1" stop-color="#7351b9"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0.4" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.42"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0.12"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="196" fill="url(#purple)"/>
+  <rect x="68" y="68" width="888" height="888" rx="192" fill="none" stroke="url(#edge)" stroke-width="8"/>
+  <path transform="translate(128 128) scale(32)" fill="#ffffff" d="M4.8,3.6h2.4v2.4h-2.4zM7.2,3.6h2.4v2.4h-2.4zM9.6,3.6h2.4v2.4h-2.4zM12,3.6h2.4v2.4h-2.4zM14.4,3.6h2.4v2.4h-2.4zM16.8,3.6h2.4v2.4h-2.4zM4.8,6h2.4v2.4h-2.4zM16.8,6h2.4v2.4h-2.4zM4.8,8.4h2.4v2.4h-2.4zM16.8,8.4h2.4v2.4h-2.4zM4.8,10.8h2.4v2.4h-2.4zM16.8,10.8h2.4v2.4h-2.4zM4.8,13.2h2.4v2.4h-2.4zM12,13.2h2.4v2.4h-2.4zM14.4,13.2h2.4v2.4h-2.4zM16.8,13.2h2.4v2.4h-2.4zM21.6,13.2h2.4v2.4h-2.4zM0,15.6h2.4v2.4h-2.4zM2.4,15.6h2.4v2.4h-2.4zM4.8,15.6h2.4v2.4h-2.4zM12,15.6h2.4v2.4h-2.4zM14.4,15.6h2.4v2.4h-2.4zM16.8,15.6h2.4v2.4h-2.4zM0,18h2.4v2.4h-2.4zM2.4,18h2.4v2.4h-2.4zM4.8,18h2.4v2.4h-2.4z"/>
+</svg>

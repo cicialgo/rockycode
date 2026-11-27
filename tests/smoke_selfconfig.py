@@ -32,7 +32,7 @@ run = lambda **kw: asyncio.run(tool.fn(**kw))  # noqa: E731
 # set: validated config keys, saved to the global file
 out = run(action="set", key="model", value="glm:flash")
 assert out.startswith("[ok]") and C.load()["model"] == "glm:flash", out
-out = run(action="set", key="image_route", value="banana")
+out = run(action="set", key="permission", value="banana")
 assert out.startswith("[error]") and "allowed" in out
 out = run(action="set", key="max_tokens", value="0")
 assert out.startswith("[ok]") and "follow the model" in out

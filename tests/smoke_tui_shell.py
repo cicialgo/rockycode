@@ -10,7 +10,8 @@ os.chdir(tempfile.mkdtemp(prefix="rockysmoke-"))
 from textual.widgets import Static
 
 from rockycode.engine.loop import Engine
-from rockycode.tui.app import ChatInput, RockyCodeApp
+from rockycode.tui.app import RockyCodeApp
+from rockycode.tui.chatinput import ChatInput
 
 client = types.SimpleNamespace(chat=types.SimpleNamespace(completions=None))  # never called
 engine = Engine(model="fake", client=client, workdir=Path.cwd())

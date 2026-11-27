@@ -26,19 +26,22 @@ def _sidecar(client, model):
     cheap flash on the home key) when there is one — a session on kimi or
     glm must not send a deepseek model id down its own client — else the
     session's own client + model."""
-    from rockycode.engine import providers as P
+    from rockycode.engine import route as route_mod
+    if os.getenv("ROCKYCODE_TITLE_MODEL"):
+        return client, (model or _title_model())
     try:
-        sc = P.sidecar_client()
+        sc = route_mod.sidecar_client()
     except Exception:  # noqa: BLE001 — decoration only
         sc = None
-    if sc is not None and not os.getenv("ROCKYCODE_TITLE_MODEL"):
+    if sc is not None:
         return sc
     return client, (model or _title_model())
 
 
 def _clean(raw: str) -> str | None:
     """First line, quotes/periods stripped, hard cap — a title, not a reply."""
-    t = raw.strip().splitlines()[0].strip().strip('"\'“”「」').rstrip(".。").strip()
+    lines = raw.strip().splitlines()
+    t = (lines[0] if lines else "").strip().strip('"\'“”「」').rstrip(".。").strip()
     if not t:
         return None
     return t[:_MAX_CHARS]
@@ -48,11 +51,12 @@ async def generate_title(client, first_user: str, first_reply: str, *,
                          model: str | None = None) -> str | None:
     """3-8 word session title from the opening exchange, or None. `model` is
     the session's own model, used only when no sidecar is keyed."""
+    from rockycode.engine.auxiliary import request_options, response_text
+    original_client = client
     try:
         client, mdl = _sidecar(client, model)
         r = await client.chat.completions.create(
-            model=mdl,
-            max_tokens=24,
+            **request_options(mdl, 128),
             messages=[
                 {"role": "system", "content": (
                     "Write a 3-8 word title for this coding-chat session, in the "
@@ -63,6 +67,12 @@ async def generate_title(client, first_user: str, first_reply: str, *,
                 )},
             ],
         )
-        return _clean(r.choices[0].message.content or "")
+        return _clean(response_text(r))
     except Exception:  # noqa: BLE001 — titles are decoration; never break a session
         return None
+    finally:
+        if client is not original_client:
+            try:
+                await client.close()
+            except Exception:  # decoration must not mask a session result
+                pass

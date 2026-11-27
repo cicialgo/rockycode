@@ -35,7 +35,8 @@ def tc(i, id_, name, args):
 
 
 async def stream(chunks):
-    for c in chunks:
+    from invariants import completed_chunks
+    for c in completed_chunks(chunks):
         yield c
 
 
@@ -131,12 +132,12 @@ async def main():
     assert not any(l["kind"] == "outcome" for l in lines2)
     print("outcome: open-and-close session stays outcome-free  ✓")
 
-    # --- feedback records: written with the local-only flag, readable back ---
-    eng.trajectory.feedback({"mood": "good", "text": "汉字 ok", "local_only": True})
+    # --- reflect records: the evolve checkpoint shape lands readable (utf-8) ---
+    eng.trajectory.reflect({"seq": 1, "final": True, "score": 0.79, "summary": "汉字 ok"})
     lines = [json.loads(l) for l in eng.trajectory.path.read_text(encoding="utf-8").splitlines()]
-    fb = [l for l in lines if l["kind"] == "feedback"]
-    assert len(fb) == 1 and fb[0]["data"]["mood"] == "good" and fb[0]["data"]["local_only"] is True
-    print("outcome: feedback record lands with local_only  ✓")
+    rf = [l for l in lines if l["kind"] == "reflect"]
+    assert len(rf) == 1 and rf[0]["data"]["score"] == 0.79 and rf[0]["data"]["summary"] == "汉字 ok"
+    print("outcome: reflect record lands, utf-8 intact  ✓")
 
     # --- SessionStats is inert until something happens ---
     assert SessionStats().as_data()["tests"] == {"run": 0, "passed": 0}

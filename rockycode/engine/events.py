@@ -6,6 +6,7 @@ ignore what you don't handle, so new events never break old UIs.
 """
 from __future__ import annotations
 
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -35,6 +36,7 @@ class StateChanged(Event):
 @dataclass
 class TurnStarted(Event):
     user_message: str
+    turn: str = ""  # the engine's id for this logical turn — Envelope.turn on its calls
 
 
 @dataclass
@@ -52,10 +54,36 @@ class TextDelta(Event):
 
 
 @dataclass
+class Envelope:
+    """Who a tool call is, apart from the provider's call id (docs/design/call-identity.md).
+
+    A sidecar: it never enters the model request. It rides on ToolStarted /
+    ToolFinished, on serve / exec receipts and on the per-call trajectory note, so
+    a receipt can be tied to the turn, the model request and the catalog that
+    produced it. Consumers that only know call_id keep working.
+    """
+
+    session: str = ""             # TrajectoryLogger.session_id; a history fork is a new session
+    turn: str = ""                # one logical user turn; a bounded continuation keeps it
+    request: str = ""             # one admitted model request
+    attempt: int = 1              # physical sends that request took (SDK retries, when observable)
+    logical_call_id: str = ""     # host-minted, unique across turns and sessions
+    provider_call_id: str = ""    # the model's tool_call id — may legally recur across turns
+    registry_generation: int = 0  # the catalog generation the request was built against
+    route: dict = field(default_factory=dict)  # resolved endpoint / model / protocol, never a key
+
+
+# The envelope of the tool call running in this task, for a tool that spawns
+# work of its own (explore, a branch review) to record its parent lineage.
+CURRENT_CALL: ContextVar[Envelope | None] = ContextVar("rockycode_current_call", default=None)
+
+
+@dataclass
 class ToolStarted(Event):
     call_id: str
     tool: str
     args: dict = field(default_factory=dict)
+    envelope: Envelope = field(default_factory=Envelope)
 
 
 @dataclass
@@ -65,6 +93,7 @@ class ToolFinished(Event):
     output: str
     ok: bool
     duration_s: float
+    envelope: Envelope = field(default_factory=Envelope)
 
 
 @dataclass
@@ -107,8 +136,15 @@ class TurnFinished(Event):
 
     steps: int
     usage: dict = field(default_factory=dict)
+    turn: str = ""
 
 
 @dataclass
 class EngineError(Event):
     message: str
+    # A failed model request also says what kind of failure it was (engine/errors.py),
+    # carries the facts a front end may word for itself, and keeps the SDK's own
+    # text as `detail`. Empty for every other error.
+    kind: str = ""
+    detail: str = ""
+    params: dict = field(default_factory=dict)

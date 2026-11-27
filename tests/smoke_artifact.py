@@ -18,6 +18,8 @@ import os
 import sys
 import tempfile
 from pathlib import Path
+from functools import partial
+from unittest.mock import patch
 from types import SimpleNamespace
 from urllib.parse import quote, unquote, urlsplit
 
@@ -81,7 +83,7 @@ async def test_live_cjk_roundtrip(opened: list[str]):
                 # /list must emit encoded (ASCII) URLs that themselves resolve.
                 async with session.get(f"{server.base_url}/list?t={server.token}") as resp:
                     items = await resp.json()
-                assert items and items[0]["name"] == CJK_TITLE, items
+                assert items and items[0]["name"].startswith(CJK_TITLE + "--art_"), items
                 assert items[0]["url"].isascii(), items[0]["url"]
                 async with session.get(items[0]["url"]) as resp:
                     assert resp.status == 200
@@ -106,8 +108,8 @@ async def test_static_cjk_file_uri(opened: list[str]):
         assert uri.startswith("file://") and uri.isascii(), f"file URI must be encoded: {uri}"
         # The encoded URI must decode back to the real on-disk file.
         fpath = Path(unquote(urlsplit(uri).path))
-        assert fpath.exists() and fpath.stem == CJK_TITLE, fpath
-        assert (workdir / ARTIFACT_DIR / f"{CJK_TITLE}.html").exists()
+        assert fpath.exists() and fpath.stem.startswith(CJK_TITLE + "--art_"), fpath
+        assert fpath.is_relative_to(workdir.resolve() / ARTIFACT_DIR / "versions")  # the store resolves its root
 
 
 async def test_token_gate(opened: list[str]):
@@ -221,27 +223,27 @@ async def test_session_registry_tracks_browser_clients():
             engine.artifact_target = target
             out = await tools["create_artifact"].fn("Session report", "<p>tracked</p>")
             assert "[ok]" in out
-            record = registry.get("Session_report")
+            record = registry.records()[0]
             assert registry.count == 1 and record is not None
             assert record.live and record.open_clients == 0
-            assert actions[0][:2] == ("created", "Session_report"), actions
+            assert actions[0][:2] == ("created", record.name), actions
 
             replacement = None
             try:
                 url = (f"{server.base_url}/api/events?t={server.token}"
-                       "&artifact=Session_report")
+                       f"&artifact={quote(record.name)}")
                 async with aiohttp.ClientSession() as client:
                     async with client.get(url) as response:
                         assert b"connected" in await response.content.readline()
                         assert record.open_clients == 1
-                await server.broadcast("reload", {"name": "Session_report"})
+                await server.broadcast("reload", {"name": record.name})
                 for _ in range(20):
                     if record.open_clients == 0:
                         break
                     await asyncio.sleep(0.01)
                 assert record.open_clients == 0, "closed browser connection stayed marked open"
-                assert ("clients", "Session_report", 1) in actions
-                assert actions[-1] == ("clients", "Session_report", 0), actions
+                assert ("clients", record.name, 1) in actions
+                assert actions[-1] == ("clients", record.name, 0), actions
 
                 # A manual stop/restart may change both port and token. Older
                 # session entries and their EventSource script must be rebound.
@@ -250,7 +252,10 @@ async def test_session_registry_tracks_browser_clients():
                 await replacement.start()
                 assert replacement.token in record.url, record.url
                 saved = record.path.read_text()
-                assert replacement.token in saved and replacement.base_url in saved
+                assert replacement.token not in saved and replacement.base_url not in saved
+                async with aiohttp.ClientSession() as client:
+                    async with client.get(record.url) as response:
+                        assert replacement.token in await response.text()
             finally:
                 await server.stop()
                 if replacement is not None:
@@ -261,7 +266,7 @@ async def test_session_registry_tracks_browser_clients():
 
 async def test_serve_owns_artifact_lifecycle():
     """The JSON-RPC serve adapter retains and closes its session server."""
-    from rockycode.engine import server as server_mod
+    from rockycode import server as server_mod
 
     class FakeEngine:
         def __init__(self, *, model, workdir, **kwargs):
@@ -269,6 +274,9 @@ async def test_serve_owns_artifact_lifecycle():
             self.history = []
 
         def finalize_outcome(self):
+            pass
+
+        def enable_planning(self):
             pass
 
     original = server_mod.Engine
@@ -338,9 +346,59 @@ async def test_no_browser_env(opened: list[str]):
         del os.environ["ROCKYCODE_ARTIFACT_NO_BROWSER"]
 
 
+async def test_initial_request_timeout():
+    """GHSA-5wr8-gcqf-gqf3: bound pre-auth idle/partial-header sockets.
+
+    Shorten only the test runner's deadline. The production server keeps the
+    upstream default; no private aiohttp parser internals are patched.
+    """
+    from aiohttp import ClientSession, web
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        server = ArtifactServer(Path(tmpdir))
+        with patch("aiohttp.web.AppRunner", partial(
+            web.AppRunner, keepalive_timeout=0.1, shutdown_timeout=0.1,
+        )):
+            await server.start()
+        try:
+            for initial in (b"", b"GET /list HTTP/1.1\r\nHost: "):
+                reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+                try:
+                    if initial:
+                        writer.write(initial)
+                        await writer.drain()
+                    # Two bounded loopback connections, no resource-exhaustion load.
+                    assert await asyncio.wait_for(reader.read(1), timeout=2) == b"", \
+                        "initial request connection did not close at its deadline"
+                finally:
+                    writer.close()
+                    await writer.wait_closed()
+
+            async with ClientSession() as client:
+                async with client.get(f"{server.base_url}/list") as response:
+                    assert response.status == 401
+                async with client.get(f"{server.base_url}/list?t={server.token}") as response:
+                    assert response.status == 200
+                async with client.get(f"{server.base_url}/api/events?t={server.token}") as response:
+                    assert b"connected" in await asyncio.wait_for(response.content.readline(), 2)
+                    await asyncio.sleep(0.2)  # established SSE survives initial deadline
+                    await server.broadcast("reload", {"name": "timeout-regression"})
+                    for _ in range(8):
+                        if b"reload" in await asyncio.wait_for(response.content.readline(), 2):
+                            break
+                    else:
+                        raise AssertionError("SSE stopped after initial request deadline")
+            await server.broadcast("reload", {"name": "wake"})
+        finally:
+            await server.stop()
+
+
 async def main() -> None:
     test_safe_filename()
     print("PASS test_safe_filename")
+
+    await test_initial_request_timeout()
+    print("PASS test_initial_request_timeout")
 
     opened = _capture_opens()
     await test_live_cjk_roundtrip(opened)

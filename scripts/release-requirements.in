@@ -1,0 +1,5 @@
+# Regenerate deliberately; review all version/hash changes before committing.
+# uv pip compile --generate-hashes --only-binary=:all: --python-version 3.12 \
+#   --default-index https://pypi.org/simple scripts/release-requirements.in \
+#   -o scripts/release-requirements.txt
+hatchling==1.32.4

@@ -42,7 +42,8 @@ def tc(i, id_, name, args):
 
 
 async def stream(chunks):
-    for c in chunks:
+    from invariants import completed_chunks
+    for c in completed_chunks(chunks):
         yield c
 
 

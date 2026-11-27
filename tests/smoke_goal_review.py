@@ -17,7 +17,7 @@ from pathlib import Path
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
-from rockycode.engine.goal_review import build_goal_tools
+from rockycode.goal.review import build_goal_tools
 
 
 def sh(cwd, *a):

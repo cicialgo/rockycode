@@ -64,8 +64,8 @@ ROOT = f"http://127.0.0.1:{srv.server_address[1]}"
 DEAD = "http://127.0.0.1:9"  # discard port — refused instantly
 os.environ["ROCKYCODE_OLLAMA_URL"] = ROOT
 
-from rockycode import onboarding
 from rockycode.engine import providers as P
+from rockycode.engine import route as route_mod
 from rockycode.engine.localcheck import CTX_RECOMMENDED, preflight
 from rockycode.pricing import UsageLedger
 
@@ -86,7 +86,9 @@ for v in list(os.environ):
         os.environ.pop(v, None)
 ids = {c.id for c in P.configured_choices()}
 assert "ollama:qwen3.8:27b-mlx" in ids, "keyless local = configured, no key needed"
-assert onboarding.provider_key("") == "local", "keyless endpoint → placeholder key"
+local = route_mod.route("ollama")
+assert local.key == "local" and local.key_env == "" and local.via == "endpoint", \
+    "keyless endpoint → placeholder key, and no cloud key is asked for"
 p, e, m = P.resolve("ollama")
 assert e.eid == "ollama" and m == "qwen3.8:27b-mlx", "bare /model ollama → first pulled"
 p, e, m = P.resolve("ollama:llama")
@@ -187,7 +189,7 @@ class _FakeCompletions:
     async def create(self, **kw):
         captured.clear(); captured.update(kw)
         msg = types.SimpleNamespace(content="state doc")
-        return types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg)],
+        return types.SimpleNamespace(choices=[types.SimpleNamespace(finish_reason="stop", message=msg)],
                                      usage=None)
 
 

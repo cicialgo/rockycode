@@ -23,7 +23,8 @@ from textual.css.query import NoMatches
 from textual.screen import Screen
 from textual.widgets import Input, Static
 
-from rockycode.engine.goal_session import GoalSummary, Permits
+from rockycode.goal.session import GoalSummary, Permits
+from rockycode.i18n import tr, resolve_locale
 from rockycode.palette import AMBER, LAVENDER, MUTED, PURPLE, RED, VIOLET
 
 _ROCKY = "#8b6fc9"
@@ -61,7 +62,8 @@ class GoalScreen(Screen):
         Binding("pagedown", "log_down", "scroll", show=False, priority=True),
     ]
 
-    def __init__(self, backend, objective: str) -> None:
+    def __init__(self, backend, objective: str, *, language: str = "en") -> None:
+        self._language = resolve_locale(language)
         super().__init__()
         self._backend = backend
         self._objective = objective
@@ -79,21 +81,21 @@ class GoalScreen(Screen):
         yield VerticalScroll(id="goal-log")
         foot = Static("", id="goal-foot")
         yield foot
-        edit = Input(placeholder="ask about or change the plan…", id="goal-edit")
+        edit = Input(placeholder=tr("widgets.goal.edit", self._language), id="goal-edit")
         yield edit
 
     def on_mount(self) -> None:
         self.query_one("#goal-log", VerticalScroll).can_focus = False
-        self._render_head("starting…")
+        self._render_head(tr("widgets.goal.starting", self._language))
         self._run()
 
     # ---- rendering ----------------------------------------------------------
 
     def _render_head(self, status: str) -> None:
-        obj = escape(self._objective) if self._objective else "(no objective)"
+        obj = escape(self._objective) if self._objective else tr("widgets.goal.empty", self._language)
         try:
             self.query_one("#goal-head", Static).update(
-                f"[bold {VIOLET}]◆ goal[/]  [dim]·[/]  [{LAVENDER}]{status}[/]\n[dim]{obj}[/]")
+                tr("widgets.goal.heading", self._language, title_colour=VIOLET, colour=LAVENDER, status=status, objective=obj))
         except NoMatches:
             pass  # screen tearing down (app closing / popped) — nothing to paint
 
@@ -135,29 +137,31 @@ class GoalScreen(Screen):
 
     async def _drive(self) -> None:
         try:
-            self._render_head("setting up the isolated workspace…")
+            self._render_head(tr("widgets.goal.setup", self._language))
             where = await self._backend.setup()
-            await self._line(f"[{PURPLE}]workspace[/] [dim]{escape(where)}[/]")
+            await self._line(tr("widgets.goal.workspace", self._language, colour=PURPLE, path=escape(where)))
 
-            self._render_head("planning…")
-            self._foot(f"[dim]rocky is drafting a plan for:[/] [{LAVENDER}]{escape(self._objective)}[/]")
+            self._render_head(tr("widgets.goal.planning", self._language))
+            self._foot(tr("widgets.goal.drafting", self._language, colour=LAVENDER, objective=escape(self._objective)))
             plan, requires = await self._backend.plan()
             if not plan:
-                await self._fail("the planner produced no milestones.")
+                await self._fail("the planner produced no milestones.",
+                                 display_reason=tr("widgets.goal.no_plan", self._language))
                 return
 
             # confirm ⇄ edit loop (cheap — no sandbox yet)
             while True:
                 permits = self._backend.permits(plan, requires)
                 if permits.blocked:
-                    await self._fail(f"plan names a blocked action: {permits.blocked}")
+                    await self._fail(f"plan names a blocked action: {permits.blocked}",
+                                     display_reason=tr("widgets.goal.blocked", self._language, action=permits.blocked))
                     return
                 await self._show_plan(plan, permits)
                 choice = await self._await_decision()
                 if choice == "go":
                     break
                 if choice == "cancel":
-                    await self._line(f"[{AMBER}]cancelled[/] [dim]— nothing ran.[/]")
+                    await self._line(tr("widgets.goal.nothing_ran", self._language, colour=AMBER))
                     await self._backend.cleanup(keep=False)
                     self._finish(GoalSummary("cancelled", "cancelled at the plan gate"))
                     return
@@ -165,8 +169,8 @@ class GoalScreen(Screen):
                 # re-show the (revised) plan.
                 msg = await self._await_edit()
                 if msg:
-                    await self._line(f"[b {LAVENDER}]you:[/] {escape(msg)}")
-                    self._render_head("thinking about your note…")
+                    await self._line(tr("widgets.goal.user_note", self._language, colour=LAVENDER, note=escape(msg)))
+                    self._render_head(tr("widgets.goal.thinking", self._language))
                     reply, plan, requires = await self._backend.discuss(plan, requires, msg)
                     if reply:
                         await self._line(f"[b {_ROCKY}]rocky:[/] [italic]{escape(reply)}[/]")
@@ -174,10 +178,9 @@ class GoalScreen(Screen):
             # run — a single consumer renders events in order; join() guarantees
             # every event is on screen before the summary prints.
             self._state = "running"          # so Esc now stops the run (not cancels a gate)
-            self._render_head("running — working milestones")
-            self._foot(f"[dim]working autonomously · [/][{LAVENDER}]esc[/][dim] to stop "
-                       f"(finished milestones stay committed)[/]")
-            await self._line(f"[{PURPLE}]sandbox[/] [dim]network {'on' if permits.use_network else 'off (offline)'} — provisioning…[/]")
+            self._render_head(tr("widgets.goal.running", self._language))
+            self._foot(tr("widgets.goal.running_keys", self._language, colour=LAVENDER))
+            await self._line(tr("widgets.goal.sandbox", self._language, colour=PURPLE, network=tr("widgets.on" if permits.use_network else "widgets.goal.offline", self._language)))
             self._events = asyncio.Queue()
             self._consumer = asyncio.create_task(self._consume_events())
             try:
@@ -196,53 +199,49 @@ class GoalScreen(Screen):
         except Exception as e:  # noqa: BLE001
             await self._fail(f"{type(e).__name__}: {e}")
 
-    async def _fail(self, reason: str) -> None:
-        await self._line(f"[bold {RED}]✗ {escape(reason)}[/]")
+    async def _fail(self, reason: str, *, display_reason: str | None = None) -> None:
+        await self._line(f"[bold {RED}]✗ {escape(display_reason or reason)}[/]")
         await self._backend.cleanup(keep=False)
         self._finish(GoalSummary("error", reason))
 
     # ---- plan + summary panels ---------------------------------------------
 
     async def _show_plan(self, plan: list[str], permits: Permits) -> None:
-        self._render_head(f"review the plan — {len(plan)} milestone(s)")
-        await self._line(f"\n[bold {VIOLET}]plan[/] [dim]({len(plan)} milestones)[/]")
+        self._render_head(tr("widgets.goal.review", self._language, count=len(plan)))
+        await self._line(tr("widgets.goal.plan_heading", self._language, colour=VIOLET, count=len(plan)))
         for i, m in enumerate(plan, 1):
             await self._line(f"  [{PURPLE}]{i}.[/] {escape(m)}")
         if permits.needs_notice:
-            await self._line("[dim]this run will need — approve before you leave:[/]")
+            await self._line(tr("widgets.goal.notice", self._language))
             if permits.use_network:
-                await self._line(f"  [magenta]🌐 network[/] — {escape(permits.net_reason or 'requested')}")
+                await self._line(tr("widgets.goal.network_notice", self._language, reason=escape(permits.net_reason or tr("widgets.goal.requested", self._language))))
             elif permits.net_reason:
-                await self._line(f"  [dim]· plan implies network ({escape(permits.net_reason)}) but it's forced off — those steps will fail[/]")
+                await self._line(tr("widgets.goal.network_forced_off", self._language, reason=escape(permits.net_reason)))
             for v in permits.asks:
                 await self._line(f"  [{AMBER}]⬆ {escape(v.reason)}[/]")
         else:
-            await self._line("[dim]no extra permissions (offline, no privileged commands).[/]")
-        self._foot(f"[{LAVENDER}]y[/] run   [{LAVENDER}]e[/] discuss/edit   [{LAVENDER}]n[/] cancel"
-                   f"   [dim]· pgup/pgdn scroll[/]")
+            await self._line(tr("widgets.goal.no_permissions", self._language))
+        self._foot(tr("widgets.goal.decision_keys", self._language, colour=LAVENDER))
 
     async def _show_summary(self, s: GoalSummary) -> None:
         sym = "¥" if s.currency == "cny" else "$"
         colour = {"done": VIOLET}.get(s.status, AMBER if s.status in ("budget", "stalled", "stopped") else RED)
-        await self._line(f"\n[bold {colour}]goal {escape(s.status)}[/] — {escape(s.reason)}")
-        await self._line(f"[dim]{s.milestones_done}/{s.milestones_total} milestones · "
-                         f"spend {sym}{s.spend:.4f}[/]")
+        await self._line(tr("widgets.goal.summary", self._language, colour=colour, status=tr("widgets.goal.status." + s.status, self._language) if s.status in ("done", "budget", "stalled", "stopped", "error", "cancelled") else escape(s.status), reason=escape(s.reason)))
+        await self._line(tr("widgets.goal.spend", self._language, done=s.milestones_done, total=s.milestones_total, symbol=sym, spend=s.spend))
         if s.branch:
             # The single most important thing to say: this did NOT touch their files.
             await self._line(
-                f"[{AMBER}]⚠ these changes are on branch [b]{escape(s.branch)}[/] in a separate "
-                f"worktree — your current files are untouched.[/]")
-            await self._line(f"[{LAVENDER}]review:[/]  [dim]{escape(s.review_cmd)}[/]")
-            await self._line(f"[{LAVENDER}]run it:[/]  [dim]cd {escape(s.workspace)}[/]")
-            await self._line(f"[{LAVENDER}]tidy:[/]   [dim]{escape(s.tidy_cmd)}[/]")
+                tr("widgets.goal.branch_notice", self._language, colour=AMBER, branch=escape(s.branch)))
+            await self._line(tr("widgets.goal.review_command", self._language, colour=LAVENDER, command=escape(s.review_cmd)))
+            await self._line(tr("widgets.goal.run_command", self._language, colour=LAVENDER, path=escape(s.workspace)))
+            await self._line(tr("widgets.goal.tidy_command", self._language, colour=LAVENDER, command=escape(s.tidy_cmd)))
         elif s.workspace:
-            await self._line(f"[{LAVENDER}]review the work in:[/] [dim]{escape(s.workspace)}[/]")
+            await self._line(tr("widgets.goal.review_workspace", self._language, colour=LAVENDER, path=escape(s.workspace)))
         if s.log:
-            await self._line(f"[{LAVENDER}]log:[/]    [dim]{escape(s.log)}[/]")
+            await self._line(tr("widgets.goal.log_path", self._language, colour=LAVENDER, path=escape(s.log)))
         if s.branch:
             await self._line(
-                "\n[dim]↵ back to chat — ask rocky to review or merge it for you, "
-                "or run the commands above yourself.[/]")
+                tr("widgets.goal.back", self._language))
 
     # ---- input plumbing -----------------------------------------------------
 
@@ -259,7 +258,7 @@ class GoalScreen(Screen):
         box.add_class("on")
         box.value = ""
         box.focus()
-        self._foot(f"[dim]type a note and press[/] [{LAVENDER}]enter[/][dim] — or empty to go back[/]")
+        self._foot(tr("widgets.goal.edit_keys", self._language, colour=LAVENDER))
         try:
             return await self._edit
         finally:
@@ -301,8 +300,8 @@ class GoalScreen(Screen):
         there's no separate screen 'mode' to get stuck in."""
         self._summary = summary
         self._state = "done"
-        self._render_head(f"goal {summary.status}")
-        self._foot(f"[{LAVENDER}]enter[/] [dim]· back to chat[/]   [dim]· pgup/pgdn scroll[/]")
+        self._render_head(tr("widgets.goal.status_label", self._language, status=tr("widgets.goal.status." + summary.status, self._language) if summary.status in ("done", "budget", "stalled", "stopped", "error", "cancelled") else summary.status))
+        self._foot(tr("widgets.goal.done_keys", self._language, colour=LAVENDER))
         try:
             self.focus()
         except Exception:  # noqa: BLE001 — screen may be tearing down

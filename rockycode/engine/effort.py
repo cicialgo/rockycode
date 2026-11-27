@@ -2,9 +2,10 @@
 
 The dial is rocky-owned and provider-neutral. Providers name their tiers
 differently — DeepSeek / GLM / Kimi take low|high|max, OpenAI-style models
-(StepFun) low|medium|high, MiniMax has no tiers at all — so the dial value
-never goes on the wire directly: it is clamped onto the provider's own tier
-list (registry `efforts`, or the wire shape's default) per call.
+(StepFun) low|medium|high, MiniMax-M3 sends no effort, MiniMax-M3.1-Flash
+takes low|medium|high|xhigh|max — so the dial value never goes on the wire
+directly: it is clamped onto the provider's own tier list (registry
+`efforts`, or the wire shape's default) per call.
 
 `off` never reaches a request body as an effort: it means thinking disabled,
 and callers keep the last effort so switching back on restores it. A provider
@@ -78,8 +79,12 @@ def build_extra_body(thinking: bool, effort: str, reasoning: str = "thinking", *
 
     - "thinking":        `{thinking: {type}, reasoning_effort}` (DeepSeek, GLM, MiMo)
     - "effort":          bare `{reasoning_effort}`, thinking always on (Kimi)
-    - "enable_thinking": `{enable_thinking: bool}` (Qwen / DashScope)
+    - "enable_thinking": `{enable_thinking: bool}` plus effort for models
+                         that declare tiers (Qwen / DashScope)
     - "minimax":         `{thinking: {type: adaptive|disabled}, reasoning_split}`
+                         plus `reasoning_effort` when the model lists tiers.
+                         `thinking_off=False` never sends `disabled` (that 400s
+                         on MiniMax-M3.1-Flash); dial off sends the lowest tier.
     - "openai":          bare `{reasoning_effort}` low|medium|high, only when thinking
     - "none":            nothing — the provider has no reasoning param
 
@@ -114,9 +119,21 @@ def build_extra_body(thinking: bool, effort: str, reasoning: str = "thinking", *
             return {} if thinking_off else ({"reasoning_effort": tiers[0]} if tiers else {})
         return {"reasoning_effort": tier} if tier else {}
     if policy == "enable_thinking":
-        return {"enable_thinking": bool(thinking)}
+        body = {"enable_thinking": bool(thinking)}
+        if thinking and tier:
+            body["reasoning_effort"] = tier
+        return body
     if policy == "minimax":
-        if not thinking:
+        # reasoning_split=false is rejected by MiniMax-M3.1-Flash; true is the
+        # shape M3 already used (thinking on reasoning_content).
+        if not thinking and thinking_off:
             return {"thinking": {"type": "disabled"}}
-        return {"thinking": {"type": "adaptive"}, "reasoning_split": True}
+        body = {"thinking": {"type": "adaptive"}, "reasoning_split": True}
+        if not thinking:
+            if tiers:
+                body["reasoning_effort"] = tiers[0]
+            return body
+        if tier:
+            body["reasoning_effort"] = tier
+        return body
     return {}
